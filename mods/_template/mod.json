@@ -1,0 +1,69 @@
+{
+ "_template_info": "TEMPLATE: this folder is never built into the game (folders starting with _ are skipped). To make a character, run:  python3 games/dissidia/tools/charmod.py new <folder> --like <retail code> --display \"Name\" --series \"FINAL FANTASY ...\"  It copies this file, fills in the character, gives it a free roster slot and unpacks the based-on character's moves for editing.",
+ "_read_me": [
+  "One extra character. Edit this file and the folders next to it, then start the game (tools/run.sh builds every character",
+  "folder in) or build by hand:  python3 games/dissidia/tools/charmod.py build <this folder's name>",
+  "character: who it is. name = what menus call it; slot = its roster slot; based_on = the retail character it is built on",
+  "  (its skeleton, animations, moves and models are the starting point; anything not replaced here stays theirs).",
+  "avatars: the menu / HUD pictures. null = the based-on character's picture. Add PNGs in avatars/, or make them all from",
+  "  one big picture:  charmod.py avatars <folder> --from-picture my_art.png   (charmod.py avatars <folder> = preview)",
+  "body: \"as_is\" = the based-on character's model; give it another body with  charmod.py body <folder> --from-gmo model.gmo --as mine",
+  "move_names: in-game name and help text per ability (the key is the ability's number; cmd = its command in moveset/p_<code>/moves.json).",
+  "Moves, timing and damage: moveset/p_<code>/ (damage: hits.json \"power\"; list every hit: charmod.py hits <folder>).",
+  "runtime_hooks: extra runtime settings (roster.cpp), usually none. menu_ids: filled in by the build.",
+  "files: the character's game files. _auto = every file not listed is the based-on character's.",
+  "Full guide: mods/README.md"
+ ],
+ "character": {
+  "name": "New Character",
+  "full_name": "New Character",
+  "series": "FINAL FANTASY",
+  "code": "new100",
+  "slot": 0,
+  "based_on": "fiv100",
+  "based_on_id": 9,
+  "_info": {
+   "name": "shown in menus (name plate, menus); at most 28 characters",
+   "full_name": "VS screen and the battle-start banner",
+   "series": "the logo plate text, e.g. FINAL FANTASY VI",
+   "code": "1..6 lower case letters/digits, unique (files are named p_<code>_...)",
+   "slot": "roster slot 35..42; a taken slot is replaced by the next free one when the character is added",
+   "based_on": "retail character code it starts from (fiv100 Bartz, eht100 Squall, sev100 Cloud, ten110 Yuna, gst130 Lightning ...)",
+   "based_on_id": "its charId (filled in by charmod.py new)"
+  }
+ },
+ "avatars": {
+  "_info": "Filled in by charmod.py new: one entry per menu / HUD picture.",
+  "generated_from": {
+   "_info": "the picture the menu art is cut from when the character is first added (a grey placeholder until you set yours); crop boxes x0,y0,x1,y1 in picture pixels per avatar",
+   "picture": "avatars/source/placeholder.png",
+   "portrait": null,
+   "logo": null,
+   "crops": {},
+   "options": {
+    "tile_cutout": true
+   }
+  }
+ },
+ "body": {
+  "_info": "\"as_is\" = the based-on character's model files. Another body: charmod.py body <folder> --from-gmo model.gmo --as mine (then \"skin\": \"mine\").",
+  "skin": "as_is",
+  "models": []
+ },
+ "move_names": {
+  "_info": "Rename moves: key = the ability's number (hex, as in games/dissidia/docs/roster.md for the based-on character), cmd = its command id in moveset/p_<code>/moves.json. Keys starting with _ are ignored. Other fields: games/dissidia/extra_abilities.json (_doc).",
+  "_example": {
+   "cmd": "0xA2",
+   "name": "My First Combo",
+   "help": "[Close] Three quick slashes.\n{bonus}"
+  }
+ },
+ "runtime_hooks": [],
+ "menu_ids": {
+  "_info": "entry ids in the shared menu pack; filled in by the build when the character is added; leave as they are"
+ },
+ "files": {
+  "_auto": true,
+  "_info": "game path -> folder path (moveset/..., models/..., files/...) or {\"like\": retail path}. _auto: every file of the based-on character not listed here is used as it is."
+ }
+}

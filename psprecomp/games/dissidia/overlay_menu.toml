@@ -1,0 +1,1609 @@
+[recompile]
+force_entries = ["0x089DD4D0", "0x089DD534", "0x089DD67C", "0x089DD6B4", "0x089DD8A0", "0x089DD8DC", "0x089DD8EC", "0x089DD954", "0x089DD9C0", "0x089DDA10", "0x089DDA60", "0x089DDA98", "0x089DDB8C", "0x089DDC10", "0x089DDC54", "0x089DDC98", "0x089DDD74", "0x089DDD90", "0x089DE3A4", "0x089DE668", "0x089DE9D4", "0x089DEBDC", "0x089E0190", "0x089E0AA4", "0x089E0D94", "0x089E3C90", "0x089E6448", "0x089E7678", "0x089E7F04", "0x089E7F28", "0x089E7F30", "0x089E7F40", "0x089E7F48", "0x089E9C80", "0x089EA1D4", "0x089EA1DC", "0x089EA1F0", "0x089EAA74", "0x089EAEC4", "0x089EAECC", "0x089EAED4", "0x089EAF3C", "0x089EB2D4", "0x089EB2E0", "0x089EB2F0", "0x089EB4E0", "0x089EB504", "0x089EB798", "0x089EBAF0", "0x089EBAFC", "0x089EBB04", "0x089EBB14", "0x089EBB1C", "0x089EBB28", "0x089EC190", "0x089ED0B4", "0x089ED1E4", "0x089ED20C", "0x089ED23C", "0x089EDCA8", "0x089FE5BC", "0x089FE5D8", "0x08A074FC", "0x08A08EE8", "0x08A08EF8", "0x08A0B794", "0x08A0B8E4", "0x08A0B8EC", "0x08A0B8F4", "0x08A0B8FC", "0x08A0B904", "0x08A0B90C", "0x08A0B914", "0x08A11510", "0x08A15A70", "0x08A1AB08", "0x08A1B1D0", "0x08A1B1D8", "0x08A1B1E0", "0x08A1B1E8", "0x08A1B928", "0x08A206F0", "0x08A20748", "0x08A20770", "0x08A21F48", "0x08A2200C", "0x08A22044", "0x08A222C8", "0x08A22328", "0x08A22744", "0x08A22970", "0x08A22AB8", "0x08A22B74", "0x08A22C1C", "0x08A22C78", "0x08A23410", "0x08A28560", "0x08A2BCC4", "0x08A2BD4C", "0x08A2BD68", "0x08A2E328", "0x08A31250", "0x08A31258", "0x08A31260", "0x08A312B4", "0x08A37870", "0x08A399A0", "0x08A3BFC8", "0x08A3BFEC", "0x08A3D7E8", "0x08A3D858", "0x08A3DCCC", "0x08A3E268", "0x08A3E844", "0x08A3E874", "0x08A3E8E0", "0x08A3EAB4", "0x08A3FE10", "0x08A40248", "0x08A40658", "0x08A42CCC", "0x08A431D0", "0x08A43228", "0x08A43250", "0x08A43564", "0x08A47D7C", "0x08A48100", "0x08A48698", "0x08A48968", "0x08A489A0", "0x08A489D8", "0x08A4ACC4", "0x08A4ACE0", "0x08A4BD60", "0x08A4C77C", "0x08A4C784", "0x08A4C840", "0x08A4C880", "0x08A4CF64", "0x08A4D5D0", "0x08A4D5F0", "0x08A4FD00", "0x08A4FD38", "0x08A4FDF0", "0x08A4FE00", "0x08A4FFD8", "0x08A50060", "0x08A500A8", "0x08A50118", "0x08A50140", "0x08A50154", "0x08A507C8", "0x08A507E8", "0x08A50930", "0x08A50A94", "0x08A50C80", "0x08A51570", "0x08A51750", "0x08A51B08", "0x08A51D78", "0x08A51D80", "0x08A51D88", "0x08A51D90", "0x08A51D98", "0x08A52024", "0x08A5202C", "0x08A525A8", "0x08A527CC", "0x08A535D8", "0x08A548F0", "0x08A54E98", "0x08A55C60", "0x08A562BC", "0x08A56C90", "0x08A56F98", "0x08A570F4", "0x08A58098", "0x08A58360", "0x08A587F4", "0x08A58860", "0x08A58A5C", "0x08A59E30", "0x08A5BD20", "0x08A5BE70", "0x08A5BED8", "0x08A5BEE0", "0x08A5BF84", "0x08A5C11C", "0x08A5C2C8", "0x08A5C2FC", "0x08A5C530", "0x08A5CCB4", "0x08A5D2B8", "0x08A5D2D0", "0x08A5DB80", "0x08A5DF00", "0x08A5F0DC", "0x08A60274", "0x08A60670", "0x08A607F8", "0x08A60BC8", "0x08A60E4C", "0x08A60E64", "0x08A60E7C", "0x08A60E94", "0x08A6158C", "0x08A61C3C", "0x08A61C40", "0x08A61F10", "0x08A61FAC", "0x08A61FC8", "0x08A62020", "0x08A62064", "0x08A620B0", "0x08A62120", "0x08A62660", "0x08A627EC", "0x08A62978", "0x08A62B04", "0x08A62DD8", "0x08A63680", "0x08A63908", "0x08A639E4", "0x08A639EC", "0x08A639F8", "0x08A63A00", "0x08A63A08", "0x08A63A10", "0x08A63A18", "0x08A63A20", "0x08A63A28", "0x08A63A30", "0x08A63A38", "0x08A64054", "0x08A64078", "0x08A640CC", "0x08A6419C", "0x08A641E8", "0x08A6420C", "0x08A64698", "0x08A64EA0", "0x08A65864", "0x08A663DC", "0x08A68460", "0x08A696D4", "0x08A69D60", "0x08A6B55C", "0x08A6CBD0", "0x08A6CBD8", "0x08A6D650", "0x08A6D7CC", "0x08A6D8A4", "0x08A6D9D4", "0x08A6DA68", "0x08A6DB40", "0x08A6DB48", "0x08A6DC00", "0x08A6DC4C", "0x08A6DC7C", "0x08A6DD64", "0x08A6E0A4", "0x08A6E0D4", "0x08A6E138", "0x08A6E748", "0x08A6E840", "0x08A6E878", "0x08A6E9B8", "0x08A6E9C0", "0x08A6E9C8", "0x08A6F648", "0x08A6F650", "0x08A6F6AC", "0x08A6F6B4", "0x08A6F710", "0x08A6FFD0", "0x08A70268", "0x08A702A0", "0x08A70C4C", "0x08A72358", "0x08A748F0", "0x08A74914", "0x08A74950", "0x08A749A8", "0x08A7760C", "0x08A77800", "0x08A77838", "0x08A77840", "0x08A778C8", "0x08A77900", "0x08A77908", "0x08A78364", "0x08A788E0", "0x08A796E0", "0x08A79788", "0x08A79A04", "0x08A79A0C", "0x08A79A2C", "0x08A79B14", "0x08A7ADBC", "0x08A7B2D4", "0x08A7C9D8", "0x08A7D05C", "0x08A7D078", "0x08A7D080", "0x08A7DC88", "0x08A7E370", "0x08A7E64C", "0x08A7E99C", "0x08A7EA58", "0x08A800A0", "0x08A80154", "0x08A80188", "0x08A801B4", "0x08A801E4", "0x08A85B48", "0x08A85B58", "0x08A87490", "0x08A874AC", "0x08A87BA0", "0x08A87FC4", "0x08A8A1FC", "0x08A8A21C", "0x08A8B1D8", "0x08A93DF4", "0x08A969CC", "0x08A97D70", "0x08A988A8", "0x08A98998", "0x08A98D10", "0x08A9CEA8", "0x08A9CEC4", "0x08AA3860", "0x08AA4144", "0x08AA4158", "0x08AA5628", "0x08AA7788", "0x08AA7850", "0x08AA7888", "0x08AA7ED0", "0x08AA8F48", "0x08AB2034", "0x08AB2A14", "0x08AB3280", "0x08AB3CB8", "0x08AB3D80", "0x08AB4020", "0x08AB40DC", "0x08AB54C0", "0x08AB54D8", "0x08AB54E4", "0x08AB55E8", "0x08AB75B0", "0x08AB7F18", "0x08AB8134", "0x08AB81E0", "0x08AB863C", "0x08AB86FC", "0x08AB9C80", "0x08AB9C9C", "0x08ABACA8", "0x08ABAE5C", "0x08ABAE78", "0x08ABB00C", "0x08ABB084", "0x08ABB114", "0x08ABB3C4", "0x08ABB4B4", "0x08ABB4BC", "0x08ABB4FC", "0x08ABB538", "0x08ABB570", "0x08ABB5BC", "0x08ABB60C", "0x08ABB690", "0x08ABB714", "0x08ABB7FC", "0x08ABD5D4", "0x08ABF760", "0x08AC3AC8", "0x08AC4960", "0x08AC5BF8", "0x08AC6080", "0x08AC6088", "0x08AC6098", "0x08AC60BC", "0x08AC6124", "0x08AC61AC", "0x08AC6218", "0x08AC6608", "0x08AC6624", "0x08AC6F10", "0x08AC8F00", "0x08AC8FC8", "0x08AC8FE4", "0x08AC9034", "0x08ACA178", "0x08ACA8B4", "0x08ACAA74", "0x08ACAA9C", "0x08ACABFC", "0x08ACAC38", "0x08ACCD78", "0x08ACCE68", "0x08ACCEB0", "0x08ACD0F0", "0x08ACD138", "0x08ACD7EC", "0x08ACD9B4", "0x08ACD9F0", "0x08ACDC88", "0x08ACE908", "0x08ACEE28", "0x08ACEEA8", "0x08ACEEC4", "0x08ACEEF4", "0x08ACEF94", "0x08ACF234", "0x08ACFA14", "0x08ACFE30", "0x08AD0810", "0x08AD091C", "0x08AD0978", "0x08AD0A94", "0x08AD0AF8", "0x08AD8E50", "0x08ADC348", "0x08ADC378", "0x08ADC5C0", "0x08ADCA88", "0x08ADCAC4", "0x08ADD7C8", "0x08ADD8D0", "0x08ADE380", "0x08ADE3CC", "0x08ADE42C", "0x08ADE458", "0x08ADE4B8", "0x08ADFDDC", "0x08ADFE20", "0x08AE05A4", "0x08AE06E8", "0x08AE090C", "0x08AE09C4", "0x08AE0AB0", "0x08AE3898", "0x08AE3948", "0x08AE398C", "0x08AE3A30", "0x08AE3A58", "0x08AE3E34", "0x08AE4550", "0x08AE4720", "0x08AEAF9C", "0x08AEAFE4", "0x08AEB118", "0x08AEB9D0", "0x08AEB9F4", "0x08AEBA2C", "0x08AEBBB0", "0x08AEBCB4", "0x08AEBEE8", "0x08AEBF04", "0x08AEBF10", "0x08AECB54", "0x08AECB90", "0x08AECC18", "0x08AECC34", "0x08AECC50", "0x08AECDC0", "0x08AECE08", "0x08AECE14", "0x08AECF20", "0x08AECF30", "0x08AED2C0", "0x08AED2F0", "0x08AED330", "0x08AEE0E0", "0x08AEE11C", "0x08AEEF4C", "0x08AEF05C", "0x08AEF124", "0x08AEF220", "0x08AEF284", "0x08AEF4B0", "0x08AEF718", "0x08AEFB88", "0x08AEFBB4", "0x08AEFBBC", "0x08AEFE34", "0x08AEFE3C", "0x08AEFE4C", "0x08AEFE5C", "0x08AF0070", "0x08AF0078", "0x08AF0080", "0x08AF0088", "0x08AF0090", "0x08AF0098", "0x08AF00A0", "0x08AF0908", "0x08AF2C10", "0x08AF2CBC", "0x08AF2F14", "0x08AF7574", "0x08AF8720", "0x08AF99C0", "0x08AFA860", "0x08AFA868", "0x08AFA870", "0x08AFA8CC", "0x08AFA8F8", "0x08AFA9D8", "0x08AFA9E4", "0x08AFA9F0", "0x08AFBDD8", "0x08AFBE40", "0x08AFBE4C", "0x08AFC944", "0x08AFCB28", "0x08AFCB44", "0x08AFCB68", "0x08AFCBCC", "0x08AFCC18", "0x08AFCC80", "0x08AFCC88", "0x08AFCD40", "0x08AFCD74", "0x08AFCDAC", "0x08AFFF54", "0x08AFFF78", "0x08B01090", "0x08B014D8", "0x08B015DC", "0x08B015F8", "0x08B01870", "0x08B044F8", "0x08B04628", "0x08B04BA8", "0x08B04CA0", "0x08B04D4C", "0x08B05BF8", "0x08B05C94", "0x08B05CCC", "0x08B05D34", "0x08B05DEC", "0x08B09D88", "0x08B0C1CC", "0x08B0D9DC", "0x08B0DAD8", "0x08B0DB10", "0x08B0DB40", "0x08B0DB90", "0x08B0DDC8", "0x08B0DE14", "0x08B11988", "0x08B129E0", "0x08B12BD4", "0x08B12C48", "0x08B12CF4", "0x08B13234", "0x08B132A0", "0x08B13314", "0x08B133E4", "0x08B13B70", "0x08B13B9C", "0x08B13C34", "0x08B13C6C", "0x08B158C8", "0x08B17680", "0x08B177B4", "0x08B177DC", "0x08B177FC", "0x08B184F0", "0x08B18590", "0x08B185D0", "0x08B18C68", "0x08B18E20", "0x08B1B540", "0x08B1CD68", "0x08B1D8A8", "0x08B1D980", "0x08B1D99C", "0x08B1DBD0", "0x08B1DC10", "0x08B1E5DC", "0x08B1F1B0", "0x08B20A88", "0x08B20B70", "0x08B20BC8", "0x08B20D28", "0x08B21018", "0x08B21058", "0x08B212F0", "0x08B21480", "0x08B21778", "0x08B21AB8", "0x08B221F0", "0x08B2286C", "0x08B22BAC", "0x08B2368C", "0x08B236EC", "0x08B239E8", "0x08B23D18", "0x08B24B1C", "0x08B24EA0", "0x08B26FD8", "0x08B27998", "0x08B27A9C", "0x08B27B1C", "0x08B27C58", "0x08B29750", "0x08B2976C", "0x08B29948", "0x08B2CB80", "0x08B2CCD0", "0x08B2CD60", "0x08B2CE04", "0x08B2E7B8", "0x08B2EF44", "0x08B2F054", "0x08B2F17C", "0x08B2F22C", "0x08B2F274", "0x08B2F2E4", "0x08B2F3B0", "0x08B2F408", "0x08B2F984", "0x08B2F9BC", "0x08B2F9D0", "0x08B2F9E0", "0x08B2FD90", "0x08B2FE9C", "0x08B2FEA0", "0x08B2FF2C", "0x08B307BC", "0x08B30898", "0x08B308C8", "0x08B308D8", "0x08B30904", "0x08B309C8", "0x08B30B54", "0x08B30E10", "0x08B30F9C", "0x08B31108", "0x08B31244", "0x08B32760", "0x08B3277C", "0x08B32A40", "0x08B32AC4", "0x08B32B6C", "0x08B32C14", "0x08B32CBC", "0x08B333C8", "0x08B33418", "0x08B33904", "0x08B3390C", "0x08B33B08", "0x08B33CD0", "0x08B33CD8", "0x08B33CF4", "0x08B33DDC", "0x08B33F84", "0x08B33F8C", "0x08B3406C", "0x08B343E4", "0x08B343EC", "0x08B343F4", "0x08B343FC", "0x08B34410", "0x08B34418", "0x08B34420", "0x08B34428", "0x08B34430", "0x08B34438", "0x08B34440", "0x08B34448", "0x08B34450", "0x08B34458", "0x08B34464", "0x08B34470", "0x08B3453C", "0x08B347AC", "0x08B347CC", "0x08B3486C", "0x08B348F4", "0x08B34DD4", "0x08B34E00", "0x08B34E38", "0x08B34E4C", "0x08B34E98", "0x08B34ED0", "0x08B34F40", "0x08B34F9C", "0x08B34FE4", "0x08B358B8", "0x08B3593C", "0x08B368B8", "0x08B37D80", "0x08B39E5C", "0x08B3B1B8", "0x08B3B310", "0x08B3B3EC", "0x08B3B5EC", "0x08B3B9C4", "0x08B3BA40", "0x08B3BBFC", "0x08B3C45C", "0x08B3CB08", "0x08B3CB24", "0x08B3CB40", "0x08B3E840", "0x08B3E864", "0x08B42234", "0x08B42270", "0x08B42688", "0x08B42AA0", "0x08B42C18", "0x08B4306C", "0x08B435F8", "0x08B43620", "0x08B43674", "0x08B437D4", "0x08B43818", "0x08B43834", "0x08B43850", "0x08B438A8", "0x08B438B0", "0x08B43A3C", "0x08B43AE8", "0x08B43E60", "0x08B44750", "0x08B448A0", "0x08B44E70", "0x08B44E90", "0x08B44F6C", "0x08B44F8C", "0x08B44FA8", "0x08B44FC4", "0x08B44FD4", "0x08B44FDC", "0x08B4511C", "0x08B452B4", "0x08B45310", "0x08B453F8", "0x08B45444", "0x08B45488", "0x08B4571C", "0x08B45768", "0x08B45820", "0x08B45B44", "0x08B484B8", "0x08B48540", "0x08B485A0", "0x08B485B8", "0x08B48604", "0x08B48614", "0x08B48660", "0x08B48684", "0x08B4885C", "0x08B49890", "0x08B49914", "0x08B49AAC", "0x08B49B04", "0x08B49B5C", "0x08B49C54", "0x08B49CA4", "0x08B49CEC", "0x08B49CF4", "0x08B49DE4", "0x08B49E54", "0x08B49E80", "0x08B49EE4", "0x08B49F08", "0x08B49F58", "0x08B49F98", "0x08B4A054", "0x08B4A238", "0x08B4A474", "0x08B4A644", "0x08B4BFF8", "0x08B4C000", "0x08B4C008", "0x08B4C750", "0x08B4C7E0", "0x08B4C7E8", "0x08B4C7F0", "0x08B4CA80", "0x08B4CA88", "0x08B4CA90", "0x08B4ECB0", "0x08B4ECB8", "0x08B4ECC0", "0x08B4FD50", "0x08B50830", "0x08B50858", "0x08B51400", "0x08B5202C", "0x08B52270", "0x08B52278", "0x08B52280", "0x08B52814", "0x08B5284C", "0x08B52E98", "0x08B52EA0", "0x08B52EA8", "0x08B53254", "0x08B532AC", "0x08B532B4", "0x08B532FC", "0x08B53354", "0x08B533A0", "0x08B533E4", "0x08B5341C", "0x08B53454", "0x08B534E8", "0x08B5354C", "0x08B535C4", "0x08B5363C", "0x08B53748", "0x08B537B0", "0x08B53890", "0x08B53B10", "0x08B53B88", "0x08B54060", "0x08B543B8", "0x08B543C0", "0x08B543C8", "0x08B54B80", "0x08B55014", "0x08B57CE0", "0x08B58B30", "0x08B59200", "0x08B5C640"]
+
+[[recompile.force_mid_entries]]
+entry  = "0x089DE768"
+parent = "0x089DE548"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089E0DC0"
+parent = "0x089E0CEC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089E0DE0"
+parent = "0x089E0CEC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089E0DFC"
+parent = "0x089E0CEC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089E0E20"
+parent = "0x089E0CEC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089E0E44"
+parent = "0x089E0CEC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089E0E60"
+parent = "0x089E0CEC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089E0E78"
+parent = "0x089E0CEC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089E0EB4"
+parent = "0x089E0CEC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089E0ED8"
+parent = "0x089E0CEC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089E0F14"
+parent = "0x089E0CEC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089E0F50"
+parent = "0x089E0CEC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089E0F8C"
+parent = "0x089E0CEC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089E0F94"
+parent = "0x089E0CEC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089E0FA4"
+parent = "0x089E0CEC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089E0FB4"
+parent = "0x089E0CEC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089E0FE4"
+parent = "0x089E0CEC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089E0FEC"
+parent = "0x089E0CEC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089E47C4"
+parent = "0x089E45E8"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089E47D8"
+parent = "0x089E45E8"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089E4830"
+parent = "0x089E45E8"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089E4854"
+parent = "0x089E45E8"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089E4868"
+parent = "0x089E45E8"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089E48C0"
+parent = "0x089E45E8"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089E48D4"
+parent = "0x089E45E8"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089EFE60"
+parent = "0x089EFE0C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089EFE74"
+parent = "0x089EFE0C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089EFE88"
+parent = "0x089EFE0C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089EFE9C"
+parent = "0x089EFE0C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089EFEA4"
+parent = "0x089EFE0C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089EFEAC"
+parent = "0x089EFE0C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089EFEB4"
+parent = "0x089EFE0C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089EFEBC"
+parent = "0x089EFE0C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089EFEC4"
+parent = "0x089EFE0C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089EFEDC"
+parent = "0x089EFE0C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089EFF04"
+parent = "0x089EFE0C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089EFF18"
+parent = "0x089EFE0C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089EFF1C"
+parent = "0x089EFE0C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089FED94"
+parent = "0x089FEAFC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089FEDA0"
+parent = "0x089FEAFC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089FEDAC"
+parent = "0x089FEAFC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089FEDC4"
+parent = "0x089FEAFC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089FEDD0"
+parent = "0x089FEAFC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089FEDE8"
+parent = "0x089FEAFC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089FEE00"
+parent = "0x089FEAFC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089FEE18"
+parent = "0x089FEAFC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089FEE30"
+parent = "0x089FEAFC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A00CA8"
+parent = "0x08A00C38"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A00CD8"
+parent = "0x08A00C38"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A00D44"
+parent = "0x08A00C38"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A00D54"
+parent = "0x08A00C38"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A00D68"
+parent = "0x08A00C38"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A00D78"
+parent = "0x08A00C38"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A00E88"
+parent = "0x08A00D98"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A00EB8"
+parent = "0x08A00D98"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A00F24"
+parent = "0x08A00D98"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A00F34"
+parent = "0x08A00D98"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A00F44"
+parent = "0x08A00D98"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A00F54"
+parent = "0x08A00D98"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A01D1C"
+parent = "0x08A01CEC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A01D5C"
+parent = "0x08A01CEC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A01D84"
+parent = "0x08A01CEC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A01D8C"
+parent = "0x08A01CEC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A13294"
+parent = "0x08A131B0"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A132B4"
+parent = "0x08A131B0"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A132D4"
+parent = "0x08A131B0"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A132F4"
+parent = "0x08A131B0"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A13314"
+parent = "0x08A131B0"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A13334"
+parent = "0x08A131B0"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A13354"
+parent = "0x08A131B0"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A2B704"
+parent = "0x08A2B690"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A2B738"
+parent = "0x08A2B690"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A2B794"
+parent = "0x08A2B690"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A2B8A8"
+parent = "0x08A2B830"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A2B8D8"
+parent = "0x08A2B830"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A2B934"
+parent = "0x08A2B830"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A2B998"
+parent = "0x08A2B830"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A3DD90"
+parent = "0x08A3DD10"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A3DDAC"
+parent = "0x08A3DD10"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A3DDC8"
+parent = "0x08A3DD10"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A49AF0"
+parent = "0x08A499A0"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A49B04"
+parent = "0x08A499A0"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A49B18"
+parent = "0x08A499A0"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A5ACF4"
+parent = "0x08A5AC08"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A5AD14"
+parent = "0x08A5AC08"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A5AD78"
+parent = "0x08A5AC08"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A5ADDC"
+parent = "0x08A5AC08"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A5AE40"
+parent = "0x08A5AC08"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A5B048"
+parent = "0x08A5AF08"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A5B04C"
+parent = "0x08A5AF08"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A5BD68"
+parent = "0x08A5BD28"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A5BD70"
+parent = "0x08A5BD28"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A5BDD8"
+parent = "0x08A5BD28"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A5BDF0"
+parent = "0x08A5BD28"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A5BE0C"
+parent = "0x08A5BD28"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A5BE30"
+parent = "0x08A5BD28"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A609C4"
+parent = "0x08A60988"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A609E0"
+parent = "0x08A60988"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A609FC"
+parent = "0x08A60988"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A60A10"
+parent = "0x08A60988"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A60B74"
+parent = "0x08A60B38"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A60B8C"
+parent = "0x08A60B38"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A60BA4"
+parent = "0x08A60B38"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A60BBC"
+parent = "0x08A60B38"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A60BCC"
+parent = "0x08A60B38"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A60BDC"
+parent = "0x08A60B38"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A619BC"
+parent = "0x08A6197C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A619E4"
+parent = "0x08A6197C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A61A08"
+parent = "0x08A6197C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A61A18"
+parent = "0x08A6197C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A61A28"
+parent = "0x08A6197C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A61A38"
+parent = "0x08A6197C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A61A48"
+parent = "0x08A6197C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A61A6C"
+parent = "0x08A6197C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A61A98"
+parent = "0x08A6197C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A61B24"
+parent = "0x08A61AD4"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A61BA0"
+parent = "0x08A61AD4"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A61BDC"
+parent = "0x08A61AD4"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A61C18"
+parent = "0x08A61AD4"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A6A470"
+parent = "0x08A6A428"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A6A478"
+parent = "0x08A6A428"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A6A4B0"
+parent = "0x08A6A428"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A6A4B8"
+parent = "0x08A6A428"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A6A4DC"
+parent = "0x08A6A428"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A6DE4C"
+parent = "0x08A6DE00"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A6DE70"
+parent = "0x08A6DE00"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A6DE8C"
+parent = "0x08A6DE00"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A6DF04"
+parent = "0x08A6DE00"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A6DF3C"
+parent = "0x08A6DE00"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A6E3CC"
+parent = "0x08A6E3A0"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A6E3DC"
+parent = "0x08A6E3A0"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A6E3EC"
+parent = "0x08A6E3A0"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A6E3FC"
+parent = "0x08A6E3A0"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A6E40C"
+parent = "0x08A6E3A0"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A6E41C"
+parent = "0x08A6E3A0"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A6E42C"
+parent = "0x08A6E3A0"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A6E43C"
+parent = "0x08A6E3A0"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A70A2C"
+parent = "0x08A709EC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A70A48"
+parent = "0x08A709EC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A70A64"
+parent = "0x08A709EC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A70A80"
+parent = "0x08A709EC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A70A9C"
+parent = "0x08A709EC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A70AB8"
+parent = "0x08A709EC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A70AD4"
+parent = "0x08A709EC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A70AF0"
+parent = "0x08A709EC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A70B0C"
+parent = "0x08A709EC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A70B28"
+parent = "0x08A709EC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A70B44"
+parent = "0x08A709EC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A70B60"
+parent = "0x08A709EC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A70B7C"
+parent = "0x08A709EC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A70B98"
+parent = "0x08A709EC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A70BB4"
+parent = "0x08A709EC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A70BD0"
+parent = "0x08A709EC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A70BEC"
+parent = "0x08A709EC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A70C08"
+parent = "0x08A709EC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A70C24"
+parent = "0x08A709EC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A79FCC"
+parent = "0x08A79FA0"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A79FDC"
+parent = "0x08A79FA0"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A79FEC"
+parent = "0x08A79FA0"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A79FFC"
+parent = "0x08A79FA0"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A7A00C"
+parent = "0x08A79FA0"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A7A01C"
+parent = "0x08A79FA0"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A7A02C"
+parent = "0x08A79FA0"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A7A03C"
+parent = "0x08A79FA0"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A7A04C"
+parent = "0x08A79FA0"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A7A05C"
+parent = "0x08A79FA0"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A7A06C"
+parent = "0x08A79FA0"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A7A07C"
+parent = "0x08A79FA0"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A7A08C"
+parent = "0x08A79FA0"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A7A09C"
+parent = "0x08A79FA0"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A7A0AC"
+parent = "0x08A79FA0"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A7A0BC"
+parent = "0x08A79FA0"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A7D450"
+parent = "0x08A7D40C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A7D494"
+parent = "0x08A7D40C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A7D4C4"
+parent = "0x08A7D40C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A7D4D0"
+parent = "0x08A7D40C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A7D4DC"
+parent = "0x08A7D40C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A7D4E4"
+parent = "0x08A7D40C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A7ED94"
+parent = "0x08A7EC7C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A7EDB0"
+parent = "0x08A7EC7C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A7EDD4"
+parent = "0x08A7EC7C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A7EDE0"
+parent = "0x08A7EC7C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A7EE84"
+parent = "0x08A7EDF0"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A7EE94"
+parent = "0x08A7EDF0"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A7EE9C"
+parent = "0x08A7EDF0"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A7EED0"
+parent = "0x08A7EDF0"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A85A78"
+parent = "0x08A85A4C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A85A80"
+parent = "0x08A85A4C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A85AB8"
+parent = "0x08A85A4C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A85AC0"
+parent = "0x08A85A4C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A85AF8"
+parent = "0x08A85A4C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A85B00"
+parent = "0x08A85A4C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A85B38"
+parent = "0x08A85A4C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A85B40"
+parent = "0x08A85A4C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A930A4"
+parent = "0x08A92F18"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A930E0"
+parent = "0x08A92F18"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A9311C"
+parent = "0x08A92F18"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A93130"
+parent = "0x08A92F18"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A93144"
+parent = "0x08A92F18"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A93164"
+parent = "0x08A92F18"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A9317C"
+parent = "0x08A92F18"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A93190"
+parent = "0x08A92F18"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A931A4"
+parent = "0x08A92F18"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A931AC"
+parent = "0x08A92F18"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A931BC"
+parent = "0x08A92F18"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A931D0"
+parent = "0x08A92F18"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A931D8"
+parent = "0x08A92F18"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A931E8"
+parent = "0x08A92F18"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A931FC"
+parent = "0x08A92F18"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A93214"
+parent = "0x08A92F18"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A9322C"
+parent = "0x08A92F18"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A93244"
+parent = "0x08A92F18"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A93258"
+parent = "0x08A92F18"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08A93298"
+parent = "0x08A92F18"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08AB313C"
+parent = "0x08AB304C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08AB3148"
+parent = "0x08AB304C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08AB3170"
+parent = "0x08AB304C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08AB3194"
+parent = "0x08AB304C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08AB31B8"
+parent = "0x08AB304C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08AB31C4"
+parent = "0x08AB304C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08AB31EC"
+parent = "0x08AB304C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08AB3210"
+parent = "0x08AB304C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08AB321C"
+parent = "0x08AB304C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08AB3244"
+parent = "0x08AB304C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08AB3268"
+parent = "0x08AB304C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08AC4B50"
+parent = "0x08AC4AA4"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08AC4B5C"
+parent = "0x08AC4AA4"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08AC4B64"
+parent = "0x08AC4AA4"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08AC4B6C"
+parent = "0x08AC4AA4"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08AC4B74"
+parent = "0x08AC4AA4"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08AC4B7C"
+parent = "0x08AC4AA4"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08AC4B84"
+parent = "0x08AC4AA4"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08AC76CC"
+parent = "0x08AC76A4"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08AC76D4"
+parent = "0x08AC76A4"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08AC76DC"
+parent = "0x08AC76A4"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08AC76E4"
+parent = "0x08AC76A4"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08AC76EC"
+parent = "0x08AC76A4"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08AC76F4"
+parent = "0x08AC76A4"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08AC76F8"
+parent = "0x08AC76A4"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08AF6ADC"
+parent = "0x08AF6A74"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08AF6AE4"
+parent = "0x08AF6A74"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08AF6B04"
+parent = "0x08AF6A74"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08AF6B24"
+parent = "0x08AF6A74"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08AF6B3C"
+parent = "0x08AF6A74"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08AF6B58"
+parent = "0x08AF6A74"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08AF6B74"
+parent = "0x08AF6A74"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08AF6B90"
+parent = "0x08AF6A74"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B1F9A4"
+parent = "0x08B1F5AC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B1F9C8"
+parent = "0x08B1F5AC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B1F9E8"
+parent = "0x08B1F5AC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B1FA24"
+parent = "0x08B1F5AC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B1FA4C"
+parent = "0x08B1F5AC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B1FA74"
+parent = "0x08B1F5AC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B1FA9C"
+parent = "0x08B1F5AC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B1FAC8"
+parent = "0x08B1F5AC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B1FAF4"
+parent = "0x08B1F5AC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B354EC"
+parent = "0x08B353DC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B35510"
+parent = "0x08B353DC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B35540"
+parent = "0x08B353DC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B35564"
+parent = "0x08B353DC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B357E4"
+parent = "0x08B35760"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B35808"
+parent = "0x08B35760"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3582C"
+parent = "0x08B35760"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B37314"
+parent = "0x08B37264"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B37344"
+parent = "0x08B37264"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3735C"
+parent = "0x08B37264"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3736C"
+parent = "0x08B37264"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B37380"
+parent = "0x08B37264"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B385B8"
+parent = "0x08B384D4"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B385C0"
+parent = "0x08B384D4"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B385C8"
+parent = "0x08B384D4"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B385D0"
+parent = "0x08B384D4"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B385D8"
+parent = "0x08B384D4"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B385E0"
+parent = "0x08B384D4"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B385F4"
+parent = "0x08B384D4"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3D97C"
+parent = "0x08B3D784"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3D9B0"
+parent = "0x08B3D784"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3DB90"
+parent = "0x08B3D9FC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3DBB4"
+parent = "0x08B3D9FC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3DBE4"
+parent = "0x08B3D9FC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3DC64"
+parent = "0x08B3D9FC"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3DE40"
+parent = "0x08B3DD4C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3DE44"
+parent = "0x08B3DD4C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3DE50"
+parent = "0x08B3DD4C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3DE80"
+parent = "0x08B3DD4C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3DE98"
+parent = "0x08B3DD4C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3DEB0"
+parent = "0x08B3DD4C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3DED8"
+parent = "0x08B3DD4C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3DEFC"
+parent = "0x08B3DD4C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3DF0C"
+parent = "0x08B3DD4C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3DF2C"
+parent = "0x08B3DD4C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3DF4C"
+parent = "0x08B3DD4C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3DF6C"
+parent = "0x08B3DD4C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3DF84"
+parent = "0x08B3DD4C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3E98C"
+parent = "0x08B3E720"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3E998"
+parent = "0x08B3E720"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3E9B0"
+parent = "0x08B3E720"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3EA64"
+parent = "0x08B3E720"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3EA9C"
+parent = "0x08B3E720"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3EAB0"
+parent = "0x08B3E720"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3EAD8"
+parent = "0x08B3E720"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3EB00"
+parent = "0x08B3E720"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3EB28"
+parent = "0x08B3E720"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3EB44"
+parent = "0x08B3E720"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3EB5C"
+parent = "0x08B3E720"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3EB74"
+parent = "0x08B3E720"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3EB88"
+parent = "0x08B3E720"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3EB9C"
+parent = "0x08B3E720"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3EBC4"
+parent = "0x08B3E720"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3EBE4"
+parent = "0x08B3E720"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3EC04"
+parent = "0x08B3E720"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3EC24"
+parent = "0x08B3E720"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3EC44"
+parent = "0x08B3E720"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3EC60"
+parent = "0x08B3E720"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3EC84"
+parent = "0x08B3E720"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3ECC4"
+parent = "0x08B3E720"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3ECD8"
+parent = "0x08B3E720"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3ECF4"
+parent = "0x08B3E720"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3ED34"
+parent = "0x08B3E720"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3ED74"
+parent = "0x08B3E720"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3ED94"
+parent = "0x08B3E720"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3EDB4"
+parent = "0x08B3E720"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3EDD0"
+parent = "0x08B3E720"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3EDE4"
+parent = "0x08B3E720"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3EE74"
+parent = "0x08B3E720"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3EE88"
+parent = "0x08B3E720"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3EE98"
+parent = "0x08B3E720"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3EEA8"
+parent = "0x08B3E720"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3EEBC"
+parent = "0x08B3E720"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3EFD8"
+parent = "0x08B3E720"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3EFE0"
+parent = "0x08B3E720"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3F00C"
+parent = "0x08B3E720"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3F05C"
+parent = "0x08B3E720"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3F084"
+parent = "0x08B3E720"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3F0A4"
+parent = "0x08B3E720"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3F758"
+parent = "0x08B3F56C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3F76C"
+parent = "0x08B3F56C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3F7B4"
+parent = "0x08B3F56C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3F800"
+parent = "0x08B3F56C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3F848"
+parent = "0x08B3F56C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3F898"
+parent = "0x08B3F56C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3F8F0"
+parent = "0x08B3F56C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3F90C"
+parent = "0x08B3F56C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3F92C"
+parent = "0x08B3F56C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3F93C"
+parent = "0x08B3F56C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3FE18"
+parent = "0x08B3FD7C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3FE28"
+parent = "0x08B3FD7C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3FE38"
+parent = "0x08B3FD7C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3FE48"
+parent = "0x08B3FD7C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3FE58"
+parent = "0x08B3FD7C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3FE68"
+parent = "0x08B3FD7C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3FE78"
+parent = "0x08B3FD7C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B3FEB4"
+parent = "0x08B3FD7C"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B40EBC"
+parent = "0x08B40E60"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B40EFC"
+parent = "0x08B40E60"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B40F44"
+parent = "0x08B40E60"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B40F54"
+parent = "0x08B40E60"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B482FC"
+parent = "0x08B48254"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B4830C"
+parent = "0x08B48254"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B48368"
+parent = "0x08B48254"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B48448"
+parent = "0x08B48254"
+
+[[recompile.force_mid_entries]]
+entry  = "0x08B4846C"
+parent = "0x08B48254"
+
+# Roster patches (Quick Battle grid bounds, relocated per-charId tables) are generated from
+# runtime/roster_max.h by tools/roster_patches.py; see docs/roster.md.
+# BEGIN ROSTER_MAX patches (tools/roster_patches.py)
+[[patches]]
+address = "0x08A7F30C"
+instruction = "0x2963002B"
+reason = "FUN_08A7F2B4: grid record idx < 43 (ROSTER_MAX 43)"
+
+[[patches]]
+address = "0x08A8019C"
+instruction = "0x2A04002B"
+reason = "FUN_08A80130: grid record idx < 43"
+
+[[patches]]
+address = "0x08A85100"
+instruction = "0x2A84002B"
+reason = "FUN_08A84FD4: record scan loop < 43"
+
+[[patches]]
+address = "0x08A541E8"
+instruction = "0x2A44002B"
+reason = "charId -> name text record guard: charId < 43"
+
+[[patches]]
+address = "0x08A1BE74"
+instruction = "0x2884002B"
+reason = "charId validity check: charId < 43 (class b, docs/roster.md)"
+
+[[patches]]
+address = "0x08A4CB10"
+instruction = "0x2884002B"
+reason = "charId validity check: charId < 43 (class b, docs/roster.md)"
+
+[[patches]]
+address = "0x08A6A0C8"
+instruction = "0x2844002B"
+reason = "charId validity check: charId < 43 (class b, docs/roster.md)"
+
+[[patches]]
+address = "0x08A6A930"
+instruction = "0x2A25002B"
+reason = "charId validity check: charId < 43 (class b, docs/roster.md)"
+
+[[patches]]
+address = "0x08A6AA68"
+instruction = "0x2A25002B"
+reason = "charId validity check: charId < 43 (class b, docs/roster.md)"
+
+[[patches]]
+address = "0x08A6ADDC"
+instruction = "0x28A5002B"
+reason = "charId validity check: charId < 43 (class b, docs/roster.md)"
+
+[[patches]]
+address = "0x08A8032C"
+instruction = "0x2A04002B"
+reason = "charId validity check: charId < 43 (class b, docs/roster.md)"
+
+[[patches]]
+address = "0x08A80438"
+instruction = "0x2885002B"
+reason = "charId validity check: charId < 43 (class b, docs/roster.md)"
+
+[[patches]]
+address = "0x08A804C8"
+instruction = "0x2885002B"
+reason = "charId validity check: charId < 43 (class b, docs/roster.md)"
+
+[[patches]]
+address = "0x08A816F0"
+instruction = "0x2885002B"
+reason = "charId validity check: charId < 43 (class b, docs/roster.md)"
+
+[[patches]]
+address = "0x08A81760"
+instruction = "0x2885002B"
+reason = "charId validity check: charId < 43 (class b, docs/roster.md)"
+
+[[patches]]
+address = "0x08AB1CE8"
+instruction = "0x2885002B"
+reason = "charId validity check: charId < 43 (class b, docs/roster.md)"
+
+[[patches]]
+address = "0x08B36268"
+instruction = "0x2A04002B"
+reason = "charId validity check: charId < 43 (class b, docs/roster.md)"
+
+[[patches]]
+address = "0x08B38720"
+instruction = "0x2884002B"
+reason = "charId validity check: charId < 43 (class b, docs/roster.md)"
+
+[[patches]]
+address = "0x08B388BC"
+instruction = "0x2A84002B"
+reason = "charId validity check: charId < 43 (class b, docs/roster.md)"
+
+[[patches]]
+address = "0x08B3A758"
+instruction = "0x2AC4002B"
+reason = "charId validity check: charId < 43 (class b, docs/roster.md)"
+
+[[patches]]
+address = "0x08B3AB08"
+instruction = "0x2885002B"
+reason = "charId validity check: charId < 43 (class b, docs/roster.md)"
+
+[[patches]]
+address = "0x08B409A8"
+instruction = "0x28E7002B"
+reason = "charId validity check: charId < 43 (class b, docs/roster.md)"
+
+[[patches]]
+address = "0x08B41024"
+instruction = "0x28E7002B"
+reason = "charId validity check: charId < 43 (class b, docs/roster.md)"
+
+[[patches]]
+address = "0x089E9F18"
+instruction = "0x3C050870"
+reason = "arcade last-chara gim (FUN_089E9EB4): table base -> 0x08700400 (hi)"
+
+[[patches]]
+address = "0x089E9F20"
+instruction = "0x24A50400"
+reason = "arcade last-chara gim (FUN_089E9EB4): table base -> 0x08700400 (lo)"
+
+[[patches]]
+address = "0x089EA528"
+instruction = "0x3C050870"
+reason = "arcade select gim (FUN_089EA4D0): table base -> 0x087004C0 (hi)"
+
+[[patches]]
+address = "0x089EA530"
+instruction = "0x24A504C0"
+reason = "arcade select gim (FUN_089EA4D0): table base -> 0x087004C0 (lo)"
+
+[[patches]]
+address = "0x08B55AF4"
+instruction = "0x3C070870"
+reason = "VS screen face-in names (FUN_08B558F0): table base -> 0x08700700 (hi)"
+
+[[patches]]
+address = "0x08B55B00"
+instruction = "0x24F60700"
+reason = "VS screen face-in names (FUN_08B558F0): table base -> 0x08700700 (lo)"
+
+[[patches]]
+address = "0x08A541F4"
+instruction = "0x3C050870"
+reason = "charId -> name text record: table base -> 0x08700580 (hi)"
+
+[[patches]]
+address = "0x08A541FC"
+instruction = "0x24A50580"
+reason = "charId -> name text record: table base -> 0x08700580 (lo)"
+# END ROSTER_MAX patches

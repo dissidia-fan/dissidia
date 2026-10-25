@@ -1,0 +1,30 @@
+[recompile]
+force_entries = ["0x089DD534", "0x089DD67C", "0x089DD6B4", "0x089DD8A0", "0x089DD8DC", "0x089DD8EC", "0x089DD954", "0x089DD9C0", "0x089DDA10", "0x089DDA60", "0x089DDA98", "0x089DDB8C", "0x089DDC54", "0x089DDD74", "0x089DDD90", "0x089DE668", "0x089DE748", "0x089DE910", "0x089DE94C", "0x089E0B0C", "0x089E0BDC", "0x089E0DFC", "0x089E0E18", "0x089E2E38"]
+
+[[recompile.force_mid_entries]]
+entry  = "0x089E1414"
+parent = "0x089E1378"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089E1468"
+parent = "0x089E1378"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089E14F4"
+parent = "0x089E1378"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089E1540"
+parent = "0x089E1378"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089E1594"
+parent = "0x089E1378"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089E15DC"
+parent = "0x089E1378"
+
+[[recompile.force_mid_entries]]
+entry  = "0x089E164C"
+parent = "0x089E1378"

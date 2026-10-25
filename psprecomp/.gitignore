@@ -1,0 +1,93 @@
+# Rust
+target/
+
+# C++ build
+runtime/build/
+runtime/build-debug/
+runtime/build-none/
+runtime/build-*/
+cmake-build-*/
+
+# External toolchain checkouts
+pspdev-gdb/
+
+# Generated recompiler output
+output/
+
+# Analysis artifacts (large generated JSON, not source)
+analysis.json
+analysis.ghidra_raw.json
+analysis.ghidra_raw.meta.json
+discovered_entries.json
+
+# Binary files
+*.bin
+*.BIN
+*.iso
+*.ISO
+*.elf
+*.prx
+BOOT.BIN
+
+# Disc content (extracted ISO, large)
+disc0
+
+# Test artifacts
+*.tga
+ge_test.tga
+
+# IDE
+.idea/
+.vscode/
+*.iml
+.DS_Store
+
+# Environment
+.env
+.env.*
+
+# Editor swap files
+*.swp
+*.swo
+*~
+
+# OS-specific
+Thumbs.db
+
+# Planning / agent state (not part of the public tree)
+.planning/
+.claude/
+*.log
+vtable_miss_addresses.txt
+
+# NID database is fetched locally, not committed
+data/
+
+# Issue-52 integration gate scratch outputs
+tmp-out/
+
+# Local work dir: build output, extracted game data (disc0, decrypted EBOOT), saves, installed mods.
+# Nothing from the game, and no installed mod, goes in the public tree.
+work/
+
+# Character mod folders stay local (rules in the root .gitignore, mods/ is at the repo root).
+games/dissidia/extra_abilities.json
+
+# Third-party mod ports, game artwork, screenshots, run traces
+games/dissidia/tools/rebalance_port/
+games/dissidia/steam/*.png
+trace.txt
+
+# Python caches
+__pycache__/
+
+# charmod build state (per machine)
+work/mods/readme_charmod_state.json
+
+# public branch: in-game screenshots, built add-on zip, scratch files
+games/dissidia/docs/images/*.png
+.rmtest
+
+# Python environment the tools set up on first run (tools/pydeps.py), and personal notes
+.venv/
+/*-readme.md

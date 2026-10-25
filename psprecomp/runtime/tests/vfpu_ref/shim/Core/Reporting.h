@@ -1,0 +1,10 @@
+#pragma once
+#define ERROR_LOG_REPORT(...) do {} while (0)
+#define ERROR_LOG_REPORT_ONCE(...) do {} while (0)
+#define ERROR_LOG(...) do {} while (0)
+#define WARN_LOG(...) do {} while (0)
+#define VERBOSE_LOG(...) do {} while (0)
+#define _dbg_assert_msg_(...) do {} while (0)
+#define _assert_msg_(...) do {} while (0)
+#define _dbg_assert_(...) do {} while (0)
+#define ERROR_LOG_REPORT_ONCE_X(...)

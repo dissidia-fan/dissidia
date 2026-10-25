@@ -1,0 +1,23 @@
+/* Lucide icons (lucide-static 0.460.0, ISC: LICENSE here), as CSS masks so they take the text colour:
+   <i class="ic ic-chevron-right"></i>, or var(--ic-NAME) in a mask. Data URIs, so they work from file:// too. */
+:root{
+  --ic-chevron-right:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m9 18 6-6-6-6' /%3E%3C/svg%3E");
+  --ic-chevron-down:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6' /%3E%3C/svg%3E");
+  --ic-play:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolygon points='6 3 20 12 6 21 6 3' /%3E%3C/svg%3E");
+  --ic-pause:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='14' y='4' width='4' height='16' rx='1' /%3E %3Crect x='6' y='4' width='4' height='16' rx='1' /%3E%3C/svg%3E");
+  --ic-x:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M18 6 6 18' /%3E %3Cpath d='m6 6 12 12' /%3E%3C/svg%3E");
+  --ic-plus:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12h14' /%3E %3Cpath d='M12 5v14' /%3E%3C/svg%3E");
+  --ic-circle-alert:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10' /%3E %3Cline x1='12' x2='12' y1='8' y2='12' /%3E %3Cline x1='12' x2='12.01' y1='16' y2='16' /%3E%3C/svg%3E");
+  --ic-circle-check:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10' /%3E %3Cpath d='m9 12 2 2 4-4' /%3E%3C/svg%3E");
+  --ic-external-link:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M15 3h6v6' /%3E %3Cpath d='M10 14 21 3' /%3E %3Cpath d='M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6' /%3E%3C/svg%3E");
+}
+.ic{display:inline-block;width:1em;height:1em;flex:0 0 auto;vertical-align:-.125em;background:currentColor;-webkit-mask:var(--ic) center/contain no-repeat;mask:var(--ic) center/contain no-repeat}
+.ic-chevron-right{--ic:var(--ic-chevron-right)}
+.ic-chevron-down{--ic:var(--ic-chevron-down)}
+.ic-play{--ic:var(--ic-play)}
+.ic-pause{--ic:var(--ic-pause)}
+.ic-x{--ic:var(--ic-x)}
+.ic-plus{--ic:var(--ic-plus)}
+.ic-circle-alert{--ic:var(--ic-circle-alert)}
+.ic-circle-check{--ic:var(--ic-circle-check)}
+.ic-external-link{--ic:var(--ic-external-link)}

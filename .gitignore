@@ -1,0 +1,19 @@
+.DS_Store
+.rmtest
+**/.rmtest
+
+# Character mod folders stay local; only the README and the template are public.
+/mods/*
+!/mods/README.md
+!/mods/_template/
+/blender/io_scene_dissidia/dfx/moves_*.py
+
+# Blender add-on: built zips (the public tree has no built add-on) and Python caches
+/blender/dist/
+/blender/io_scene_dissidia.zip
+__pycache__/
+
+/mods/**/*.bin
+/studio/**/*.bin
+*.swp
+*.swo
