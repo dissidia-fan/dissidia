@@ -335,8 +335,9 @@ reports. Most other `PSPRECOMP_*` variables in the source are developer diagnost
 * **Battle flickers / characters partly drawn, menus fine** (seen on the first Deck run, 2026-10-18; the
   fast and the legacy renderer both do it, `--ge-sync 1` fixes it but is slow). The renderer was
   developed on a software GL where GPU work completes immediately; the Deck's real driver runs it
-  asynchronously. Try these in Steam (Properties > Launch Options), one at a time, cheapest first, and note
-  which one makes battles clean:
+  asynchronously. `run.sh` now defaults to `--ge-sync flush` on a Steam Deck, which fixed it completely in a
+  test on a Deck LCD (2026-10-26); `--ge-sync off` goes back to no sync. If it still flickers, try these in
+  Steam (Properties > Launch Options), one at a time, cheapest first, and note which one makes battles clean:
   `--ge-sync 3` (wait for the GPU once per frame), `--ge-sync 2` (once per display list),
   `--ge-sync flush`, `--ge-sync 1` (after every batch: the known fix, slowest).
   These are plain flags (`play.sh` hands them to `run.sh`), so no `%command%` is needed. For a bug report add
