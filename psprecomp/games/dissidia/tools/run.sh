@@ -32,8 +32,9 @@
 #                            capped at 3. Steam Deck (1280x800): 3 (or 2 to save battery).
 #   --legacy-ge              PSPRECOMP_GE_FAST=0: use the legacy per-PRIM renderer (CPU skinning, one draw per PRIM)
 #                            instead of the default batched GPU-skinning path. Escape hatch only; it is slower.
-#   --ge-sync 1|2|3|flush    PSPRECOMP_GE_SYNC: wait for the GPU (1 per batch, 2 per display list, 3 per frame,
-#                            flush = glFlush per batch). For the Steam Deck battle flicker, see docs/steamdeck.md.
+#   --ge-sync 1|2|3|flush|off  PSPRECOMP_GE_SYNC: wait for the GPU (1 per batch, 2 per display list, 3 per frame,
+#                            flush = glFlush per batch, off = none). Default on a Steam Deck: flush (it fixes the
+#                            flicker there, see docs/steamdeck.md); elsewhere off.
 #   --gl-debug               PSPRECOMP_GL_DEBUG=1 PSPRECOMP_GL_STATS=2: driver messages and GL errors in the log
 #   --log FILE               also write the runtime's stderr log to FILE (default: <workdir>/last_run.log)
 #
@@ -69,7 +70,7 @@ die()  { echo "error: $*" >&2; exit 1; }
 warn() { echo "warning: $*" >&2; }
 
 PRESET="${PSPRECOMP_PRESET:-}"; INTSCALE=0; TEXF=""
-WORK=""; LEGACY_GE=0; SOFT=0; RSCALE=""; SCALE=""; WINSZ=""; FULL=0; STRETCH=0; FILTER=""; SWAP=0; PAD_DB=""; LOG=""
+GE_SYNC=""; WORK=""; LEGACY_GE=0; SOFT=0; RSCALE=""; SCALE=""; WINSZ=""; FULL=0; STRETCH=0; FILTER=""; SWAP=0; PAD_DB=""; LOG=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --retro)       PRESET=retro; shift ;;
@@ -90,15 +91,15 @@ while [ $# -gt 0 ]; do
     --texpack)     [ $# -ge 2 ] || die "--texpack needs a directory"; [ -d "$2" ] || die "--texpack: no directory $2"
                    export PSPRECOMP_TEXPACK="$(cd "$2" && pwd)"; shift 2 ;;   # absolute: the game runs from inside the work dir
     --tex-dump)    [ $# -ge 2 ] || die "--tex-dump needs a directory"; export PSPRECOMP_TEX_DUMP=1 PSPRECOMP_TEX_DUMP_DIR="$2"; shift 2 ;;
-    --ge-sync)     [ $# -ge 2 ] || die "--ge-sync needs 1|2|3|flush"; case "$2" in 1|2|3|flush) ;; *) die "--ge-sync must be 1, 2, 3 or flush" ;; esac
-                   export PSPRECOMP_GE_SYNC="$2"; shift 2 ;;
+    --ge-sync)     [ $# -ge 2 ] || die "--ge-sync needs 1|2|3|flush|off"; case "$2" in 1|2|3|flush|off) ;; *) die "--ge-sync must be 1, 2, 3, flush or off" ;; esac
+                   GE_SYNC="$2"; shift 2 ;;
     --gl-debug)    export PSPRECOMP_GL_DEBUG=1 PSPRECOMP_GL_STATS=2; shift ;;
     -h|--help)     sed -n '2,/^set -euo/{/^set -euo/!p}' "$0"; exit 0 ;;
     -*)            die "unknown option $1" ;;
     *)             [ -z "$WORK" ] || die "unexpected argument $1"; WORK="$1"; shift ;;
   esac
 done
-[ -n "$WORK" ] || die "usage: run.sh <workdir> [--retro|--crisp] [--software-gl] [--swap-ab] [--gamecontrollerdb FILE] [--log FILE] [--scale N] [--window WxH] [--fullscreen] [--stretch] [--filter MODE] [--texpack DIR] [--tex-dump DIR] [--ge-sync 1|2|3|flush] [--gl-debug]"
+[ -n "$WORK" ] || die "usage: run.sh <workdir> [--retro|--crisp] [--software-gl] [--swap-ab] [--gamecontrollerdb FILE] [--log FILE] [--scale N] [--window WxH] [--fullscreen] [--stretch] [--filter MODE] [--texpack DIR] [--tex-dump DIR] [--ge-sync 1|2|3|flush|off] [--gl-debug]"
 [ -d "$WORK" ] || die "workdir $WORK does not exist"
 case "$PRESET" in ""|none|retro|crisp) ;; *) die "unknown preset '$PRESET' (retro | crisp | none)" ;; esac
 case "$TEXF" in ""|nearest|linear|game) ;; *) die "--tex-filter must be nearest, linear or game" ;; esac
@@ -113,10 +114,10 @@ BIN="$WORK/build/psprecomp_runtime"
 [ -f "$WORK/disc0/PSP_GAME/SYSDIR/EBOOT.BIN" ] || die "disc0 not set up; run setup_from_iso.py first"
 [ -f "$WORK/disc0/PSP_GAME/USRDIR/DATA/PACKAGE.BIN" ] || die "disc0 is incomplete (no PACKAGE.BIN); re-run setup_from_iso.py"
 
-# Character mods: every folder in mods/ at the repo root (with a mod.json) is built into the mods dir before the game
+# Character mods: every folder in mods/ at the repo root (with a mod.json; not _template etc.) is built into the mods dir before the game
 # starts; a new folder is added to the roster (tools/charmod.py, mods/README.md). PSPRECOMP_CHARMOD=0 skips it.
 CHARMOD_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [ "${PSPRECOMP_CHARMOD:-1}" != 0 ] && ls "$CHARMOD_DIR"/../../../../mods/*/mod.json >/dev/null 2>&1; then
+if [ "${PSPRECOMP_CHARMOD:-1}" != 0 ] && ls "$CHARMOD_DIR"/../../../../mods/[!_.]*/mod.json >/dev/null 2>&1; then
   if command -v python3 >/dev/null; then
     mkdir -p "${PSPRECOMP_MODS:-$WORK/mods}"
     python3 "$CHARMOD_DIR/charmod.py" --mods "${PSPRECOMP_MODS:-$WORK/mods}" --disc "$WORK/disc0" build \
@@ -156,6 +157,12 @@ mkdir -p "$PSPRECOMP_MS0/PSP/SAVEDATA" "$PSPRECOMP_MS0/PSP/GAME"
 export PSPRECOMP_PAD_L2="${PSPRECOMP_PAD_L2:-R+CROSS}"      # L2 = dodge
 export PSPRECOMP_PAD_R2="${PSPRECOMP_PAD_R2:-R+TRIANGLE}"   # R2 = dash
 [ "$LEGACY_GE" = 0 ] || export PSPRECOMP_GE_FAST=0
+# GPU sync: the Deck's driver runs GL work asynchronously and battles flicker without it; flush fixes that at no
+# visible cost. An explicit --ge-sync or PSPRECOMP_GE_SYNC wins; "off" = no sync.
+if [ -z "$GE_SYNC" ] && [ -z "${PSPRECOMP_GE_SYNC:-}" ] && [ "$(cat /sys/devices/virtual/dmi/id/sys_vendor 2>/dev/null)" = Valve ]; then
+  GE_SYNC=flush
+fi
+case "$GE_SYNC" in "") ;; off) unset PSPRECOMP_GE_SYNC ;; *) export PSPRECOMP_GE_SYNC="$GE_SYNC" ;; esac
 [ -z "$SCALE" ] || export PSPRECOMP_SCALE="$SCALE"
 [ -z "$WINSZ" ] || export PSPRECOMP_WINDOW="$WINSZ"
 [ "$FULL" = 0 ] || export PSPRECOMP_FULLSCREEN=1

@@ -143,14 +143,14 @@ is not on the default `PATH` of Game Mode launches; `play.sh` adds it itself.
    the container, because `distrobox enter` does not forward everything. The important one is Steam Input's
    `SDL_GAMECONTROLLER_IGNORE_DEVICES`, which hides the Deck's raw controller so the game only sees Steam's
    virtual Xbox-style pad (otherwise it could open both),
-3. runs `distrobox enter dissidia -- run.sh <workdir> --retro --fullscreen "$@"` (with `--no-tty` when your
+3. runs `distrobox enter dissidia -- run.sh <workdir> --crisp --fullscreen "$@"` (with `--no-tty` when your
    distrobox has it; Steam gives the script no terminal).
 
-### Choosing the look: `--retro` (default) or `--crisp`
+### Choosing the look: `--crisp` (default) or `--retro`
 
 The game is a 2011 PSP title: 480x272, low-poly models, small textures. The two presets are one flag each:
 
-| | `--retro` (default in `play.sh`) | `--crisp` |
+| | `--retro` | `--crisp` (default in `play.sh`) |
 |---|---|---|
 | 3D resolution | 2x PSP = 960x544 | 3x PSP = 1440x816 |
 | Textures | nearest-neighbour (blocky, as drawn); texture packs and the upscaler are switched off | what the game asks for (mostly bilinear); texture packs stay enabled |
@@ -158,9 +158,9 @@ The game is a 2011 PSP title: 480x272, low-poly models, small textures. The two 
 | Aspect | 480:272 kept, never stretched | 480:272 kept |
 | Run.sh flags it stands for | `--render-scale 2 --tex-filter nearest --integer-scale` and `PSPRECOMP_TEX_REPLACE=0` | `--render-scale 3 --filter linear` |
 
-* Per run: `play.sh --crisp` (the last of `--retro`/`--crisp` wins). In Steam: Properties > Launch Options > `--crisp`.
-* Permanently: `deck_setup.sh <iso> --launcher-only --preset crisp`, or edit the `PRESET=` line at the top of
-  `play.sh`.
+* Per run: `play.sh --retro` (the last of `--retro`/`--crisp` wins). In Steam: Properties > Launch Options > `--retro`.
+* Permanently: `deck_setup.sh <iso> --launcher-only --preset retro`, or edit the `PRESET=` line at the top of
+  `play.sh`. `--update` keeps the look the launcher already has.
 * Mix and match: explicit flags beat presets, e.g. `play.sh --retro --render-scale 3` (retro textures at 3x), or
   `--retro --stretch` (fill the whole panel, distorts), or `--retro --tex-filter game`.
 * `--retro` draws the 3D at 2x resolution, so polygon edges are cleaner than on a PSP, while textures, HUD and
@@ -335,8 +335,9 @@ reports. Most other `PSPRECOMP_*` variables in the source are developer diagnost
 * **Battle flickers / characters partly drawn, menus fine** (seen on the first Deck run, 2026-10-18; the
   fast and the legacy renderer both do it, `--ge-sync 1` fixes it but is slow). The renderer was
   developed on a software GL where GPU work completes immediately; the Deck's real driver runs it
-  asynchronously. Try these in Steam (Properties > Launch Options), one at a time, cheapest first, and note
-  which one makes battles clean:
+  asynchronously. `run.sh` now defaults to `--ge-sync flush` on a Steam Deck, which fixed it completely in a
+  test on a Deck LCD (2026-10-26); `--ge-sync off` goes back to no sync. If it still flickers, try these in
+  Steam (Properties > Launch Options), one at a time, cheapest first, and note which one makes battles clean:
   `--ge-sync 3` (wait for the GPU once per frame), `--ge-sync 2` (once per display list),
   `--ge-sync flush`, `--ge-sync 1` (after every batch: the known fix, slowest).
   These are plain flags (`play.sh` hands them to `run.sh`), so no `%command%` is needed. For a bug report add

@@ -7,6 +7,7 @@ Put a move together in one place: watch the character play the animation, place 
 ## Opening it
 
 1. Open `studio/index.html` in **Chrome** (or Edge). Other browsers can read but not save; Save downloads the changed files instead.
+   Chrome from Flatpak (the Steam Deck's Discover store) can't see `~/dissidia` and loads a blank page. Give it that folder once, in Konsole, then restart Chrome: `flatpak override --user --filesystem=~/dissidia com.google.Chrome`. Install Blender from Flatpak and it needs the same: `flatpak override --user --filesystem=~/dissidia org.blender.Blender`.
 2. Top bar > **Locations > Set mods folder…** and pick the repo's `mods` folder. Chrome asks once whether the page may edit it.
 3. Optional: **Set game ISO…** adds the retail cast to the character list, read-only, for looking at and copying from. Change one and press *Save as mod* to get an editable copy in `mods/`.
 
