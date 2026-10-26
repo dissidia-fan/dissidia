@@ -13,7 +13,8 @@
 #                        (steam_shortcut.py: capsule, banner, hero, logo, icon; an earlier entry for this launcher is
 #                        renamed in place, keeping play time and Launch Options). Steam is closed for a moment and
 #                        started again if it is running. Desktop Mode only.
-#   --preset retro|crisp look baked into the launcher (default retro, see docs/steamdeck.md; --retro/--crisp work too)
+#   --preset retro|crisp look baked into the launcher (default: the one the existing launcher has, else crisp, which
+#                        fills the Deck's width; see docs/steamdeck.md; --retro/--crisp work too)
 #   --jobs N             parallel compile jobs (default 3, about 1.5 GB RAM each)
 #   --container NAME     default dissidia
 #   --image IMAGE        default docker.io/library/ubuntu:24.04 (fully qualified: SteamOS' podman has no
@@ -45,7 +46,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../../.." && pwd)"
 
 ISO=""; WORK=""; DRY=0; CHECK=0; INSTALL_DB=0; ADD_STEAM=0; JOBS=3; NAME=dissidia
-IMAGE=docker.io/library/ubuntu:24.04; PRESET=retro; OUTSIDE_HOME=0; REDO=""; LAUNCHER_ONLY=0; UPDATE=0
+IMAGE=docker.io/library/ubuntu:24.04; PRESET=""; OUTSIDE_HOME=0; REDO=""; LAUNCHER_ONLY=0; UPDATE=0
 ARGS=("$@")
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -79,7 +80,7 @@ if [ "$UPDATE" = 1 ]; then
   exec bash "$HERE/deck_setup.sh" "${REST[@]}"
 fi
 if [ "$LAUNCHER_ONLY" = 1 ] && [ -n "$ISO" ] && [ -z "$WORK" ]; then WORK="$ISO"; ISO=""; fi   # one argument = the workdir
-case "$PRESET" in retro|crisp) ;; *) die "--preset must be retro or crisp" ;; esac
+case "$PRESET" in ""|retro|crisp) ;; *) die "--preset must be retro or crisp" ;; esac
 case "$JOBS" in ''|*[!0-9]*|0) die "--jobs must be a positive integer" ;; esac
 [ -n "$ISO" ] || [ "$CHECK" = 1 ] || [ "$LAUNCHER_ONLY" = 1 ] || die "usage: deck_setup.sh <game.iso|game.cso> [workdir] [--check] [--install-distrobox] [--dry-run]"
 [ "$DRY" = 1 ] || [ "$CHECK" = 1 ] || [ "$LAUNCHER_ONLY" = 1 ] || [ "$(id -u)" != 0 ] || die "do not run this as root (containers are per-user)"
@@ -88,6 +89,11 @@ if [ -n "$ISO" ]; then
   [ ! -f "$ISO" ] || ISO="$(cd "$(dirname "$ISO")" && pwd)/$(basename "$ISO")"
 fi
 WORK="${WORK:-$HOME/dissidia/work}"
+# No --preset: keep the look of the launcher being rewritten (--update must not change it), else crisp.
+if [ -z "$PRESET" ]; then
+  [ ! -f "$WORK/play.sh" ] || PRESET="$(sed -n 's/^PRESET=--\(retro\|crisp\)$/\1/p' "$WORK/play.sh" | head -n1)"
+  PRESET="${PRESET:-crisp}"
+fi
 case "$WORK" in /*) ;; *) WORK="$PWD/$WORK" ;; esac
 case "$ISO$WORK$REPO" in *[[:space:]]*) die "paths containing spaces are not supported" ;; esac
 
@@ -348,7 +354,7 @@ LAUNCH="$WORK/play.sh"
 [ "$ADD_STEAM" = 0 ] || add_to_steam
 cat <<EOF
 
-Done. Play from Desktop Mode with:   $LAUNCH      (look: $PRESET; "$LAUNCH --crisp" for the other)
+Done. Play from Desktop Mode with:   $LAUNCH      (look: $PRESET; "$LAUNCH --retro" or "--crisp" for the other)
 Add it to Steam (Game Mode):         $0 --launcher-only --add-to-steam   (as "Dissidia Trēdecim", with artwork)
 Saves:                               $WORK/ms0/PSP/SAVEDATA   (back this folder up)
 EOF
