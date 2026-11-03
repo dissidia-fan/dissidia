@@ -61,6 +61,19 @@ def import_model(path):
     meshes = [o for o in new if o.type == 'MESH' and len(o.data.polygons)]
     if not meshes:
         raise RuntimeError('the file has no mesh')
+    # one character per file: two skeletons that each move meshes (a pack with both outfits, Cloud.blend's "Battle
+    # Outfit" and "Casual Outfit") would be joined into one body, side by side
+    drives = {}
+    for o in meshes:
+        a = o.find_armature() or (o.parent if o.parent is not None and o.parent.type == 'ARMATURE' else None)
+        if a is not None:
+            drives.setdefault(a.name, 0)
+            drives[a.name] += 1
+    if len(drives) > 1:
+        for o in new:
+            bpy.data.objects.remove(o, do_unlink=True)
+        raise RuntimeError('%s holds %d characters or outfits (%s): pick a file with one of them (export it on its own '
+                           'if it has no file of its own)' % (os.path.basename(path), len(drives), ', '.join(sorted(drives))))
     src_arm = max(arms, key=lambda a: len(a.data.bones)) if arms else None
     if src_arm is not None:                                    # the skinned meshes only, not props lying about
         rigged = [o for o in meshes if o.find_armature() == src_arm or (o.parent == src_arm and o.parent_type == 'BONE')]
@@ -208,6 +221,58 @@ def bone_map(src_arm):
 # keep them as separate meshes; at a few thousand triangles they only show as shards)
 DROP_PARTS = ('eyeshadow', 'eyewet', 'wet', 'tear', 'innermouth', 'mouthin', 'teeth', 'tooth', 'tongue', 'lash',
               'facehair', 'stubble', 'buzz')
+
+
+# a rip's levels of detail: Unity's "ModelRenderer_<part>_<level>" (Duellum) or a "...LOD<n>" / "..._lod<n>" name.
+# Only the most detailed level of each part is kept: the others are the same part again, cruder, on top of it.
+_LOD_NAME = (re.compile(r'^(?P<base>.*?_\d+)_(?P<lod>\d+)(\.\d+)?$'),
+             re.compile(r'^(?P<base>.*?)[_\-. ]?lod[_\-. ]?(?P<lod>\d+)(\.\d+)?$', re.I))
+# materials that aren't the character's look: drawn only for a game effect (a summon / Eikon aura shell, an
+# outline) or never (a shadow-casting proxy). Their faces go, whichever mesh holds them.
+_OVERLAY_MAT = re.compile(r'(^|[_\-. ])(smn|summon|aura|outline|shadowcaster(only)?|shadowonly)([_\-. ]|$)', re.I)
+
+
+def _lod0_only(meshes):
+    """-> (meshes kept, names dropped): of a part found at several levels of detail, the most detailed only.
+    A name pattern counts as levels only when the part has more than one of them and level 0 is among them."""
+    groups = {}
+    for o in meshes:
+        for rx in _LOD_NAME:
+            mm = rx.match(o.name)
+            if mm:
+                groups.setdefault((rx.pattern, mm.group('base').lower()), []).append((int(mm.group('lod')), o))
+                break
+    drop = set()
+    for (_, _), items in groups.items():
+        lods = {lv for lv, _ in items}
+        if len(lods) > 1 and 0 in lods:
+            drop |= {o for lv, o in items if lv != 0}
+    return [o for o in meshes if o not in drop], sorted(o.name for o in drop)
+
+
+def _drop_overlays(meshes):
+    """Faces drawn with an overlay material (_OVERLAY_MAT) go; a mesh left with none goes too.
+    -> (meshes kept, material names dropped)"""
+    import bmesh
+    keep, gone = [], set()
+    for o in meshes:
+        bad = {i for i, m in enumerate(o.data.materials) if m is not None and _OVERLAY_MAT.search(re.sub(r'\.\d+$', '', m.name))}
+        if not bad:
+            keep.append(o)
+            continue
+        gone |= {re.sub(r'\.\d+$', '', o.data.materials[i].name) for i in bad}
+        if all(p.material_index in bad for p in o.data.polygons):
+            continue
+        if o.data.users > 1:
+            o.data = o.data.copy()
+        bm = bmesh.new()
+        bm.from_mesh(o.data)
+        bmesh.ops.delete(bm, geom=[f for f in bm.faces if f.material_index in bad], context='FACES')
+        bmesh.ops.delete(bm, geom=[v for v in bm.verts if not v.link_faces], context='VERTS')
+        bm.to_mesh(o.data)
+        bm.free()
+        keep.append(o)
+    return keep, sorted(gone)
 
 
 def _part_words(o):
@@ -457,6 +522,128 @@ def _resolve(img, model_dir, mat_name=''):
     return False
 
 
+# ---- what kind of map a picture is. Rips often wire a normal or mask map into Base Colour (or nothing at all), so the
+# fitter checks what it is given: by the name's role suffix, which engines and rippers share (Duellum: _A albedo,
+# _N normal, _E emission; Unreal: _D/_BC, _N, _ORM; others spell them out), and, when the name says nothing, by its
+# pixels (a normal map is unmistakable: around (0.5, 0.5, 1), blue on top almost everywhere).
+COLOUR_ROLE = ('a', 'd', 'c', 'bc', 'col', 'color', 'colour', 'diff', 'diffuse', 'dif', 'albedo', 'alb', 'base',
+               'basecolor', 'basecolour', 'basemap', 'maintex', 'tex', 'texture', 'cm')
+NORMAL_ROLE = ('n', 'nm', 'nrm', 'nor', 'norm', 'normal', 'normals', 'normalmap', 'bump', 'nml')
+DATA_ROLE = ('e', 'm', 'r', 's', 'g', 'h', 'o', 'ao', 'orm', 'mra', 'rma', 'arm', 'rm', 'mr', 'mt', 'em', 'emi', 'emis',
+             'emission', 'emissive', 'glow', 'mask', 'msk', 'spec', 'specular', 'rough', 'roughness', 'metal',
+             'metallic', 'metalness', 'gloss', 'height', 'disp', 'displacement', 'opacity', 'alpha', 'op', 'sss',
+             'id', 'lm', 'ilm', 'sdf', 'shadow', 'toon', 'ramp', 'noise', 'curv', 'cavity', 'thick', 'thickness',
+             'detail', 'matcap', 'flow', 'aniso', 'wm', 'hm', 'sm')
+
+
+def _name_tokens(name):
+    """the words of a picture's file name, without its extension(s) or Blender's .001"""
+    t = _tokens(os.path.basename(name or ''))
+    while t and (t[-1].isdigit() and len(t) > 1 or t[-1] in ('png', 'jpg', 'jpeg', 'tga', 'bmp', 'dds', 'tif', 'tiff', 'webp', 'exr')):
+        t = t[:-1]
+    return t
+
+
+def picture_role(name):
+    """'colour' / 'normal' / 'data' from the name's last word (its suffix), else from any word that spells a data map
+    out (normal, rough, mask...); None when the name doesn't say"""
+    t = _name_tokens(name)
+    if not t:
+        return None
+    if t[-1] in NORMAL_ROLE:
+        return 'normal'
+    if t[-1] in DATA_ROLE:
+        return 'data'
+    if t[-1] in COLOUR_ROLE:
+        return 'colour'
+    if any(w.startswith(('norm', 'nrm')) for w in t):
+        return 'normal'
+    if any(w.startswith(NOT_COLOUR) and len(w) > 2 for w in t):
+        return 'data'
+    return None
+
+
+def looks_like_normal_map(img):
+    """the pixels of a tangent-space normal map: red and green about mid-grey everywhere (blue may be packed data)"""
+    try:
+        if not img.has_data:
+            img.pixels[0]
+        w, h = img.size
+        if not w or not h:
+            return False
+        c = img.copy()
+        c.scale(min(w, 64), min(h, 64))
+        px = np.empty(c.size[0] * c.size[1] * 4, np.float32)
+        c.pixels.foreach_get(px)
+        bpy.data.images.remove(c)
+    except Exception:
+        return False
+    px = px.reshape(-1, 4)
+    (r, g, b), (sr, sg, sb) = px[:, :3].mean(0), px[:, :3].std(0)
+    # the normal's X and Y (red, green) hover at 0.5 everywhere; blue holds Z or, packed, something else (Unity and
+    # Duellum reuse blue / alpha for masks), so it isn't asked. A flat grey picture isn't a normal map.
+    flat_grey = abs(b - r) < 0.06 and sb < 0.06
+    return abs(r - 0.5) < 0.08 and abs(g - 0.5) < 0.08 and sr < 0.12 and sg < 0.12 and not flat_grey
+
+
+def _strip_role(t):
+    return t[:-1] if t and t[-1] in COLOUR_ROLE + NORMAL_ROLE + DATA_ROLE else t
+
+
+def find_colour_map(names, model_dir, avoid=()):
+    """a colour map near the model for a picture known by these names (its file, then its material): the same name
+    with a colour suffix (skin_N -> skin_A, body_nrm -> body_d, hair_normal -> hair) first, then the closest name that
+    shares their words. Normal and data maps (by name or by pixels) never count. -> path or None"""
+    files = [q for q in _images_near(model_dir) if picture_role(q) not in ('normal', 'data') and q not in avoid]
+    best, score = None, 0
+    for i, n in enumerate(names):
+        base = _strip_role(_name_tokens(n))
+        if not base:
+            continue
+        for q in files:
+            ft = _name_tokens(q)
+            fb = _strip_role(ft)
+            if fb == base:
+                sc = 100 - i * 10 + (picture_role(q) == 'colour') * 5
+            else:
+                want = [t for t in base if not t.isdigit() and len(t) > 1]
+                hit = sum(1 for t in set(want) if t in ft)
+                if not want or hit < max(1, len(set(want)) - 1):
+                    continue
+                sc = 40 - i * 10 + hit * 3 + (picture_role(q) == 'colour') * 5 - abs(len(fb) - len(base))
+            if sc > score:
+                best, score = q, sc
+    return best
+
+
+def _as_colour(img, mat_name, model_dir, by_pixels=False):
+    """-> (the colour picture to use for this material, a note or None). img is what the material wires as its
+    colour; when that is a normal / data map (by name, or by_pixels once it is loaded) or nothing, its colour sibling
+    near the model is used; with none, no picture (the material's flat colour) rather than a normal map."""
+    names = ([img.filepath, img.name] if img is not None else []) + [mat_name]
+    if img is not None:
+        role = picture_role(img.filepath or img.name) or picture_role(img.name)
+        if role in (None, 'colour') and not (by_pixels and role is None and looks_like_normal_map(img)):
+            return img, None
+        what = 'a normal map' if role in ('normal', None) else 'a %s map' % role
+    elif not mat_name or _OVERLAY_MAT.search(mat_name):
+        return None, None
+    else:
+        what = 'no picture'
+    p = bpy.path.abspath(img.filepath) if img is not None and img.filepath else ''
+    q = find_colour_map([n for n in names if n], model_dir, avoid=(p,))
+    if q:
+        new = bpy.data.images.load(q, check_existing=True)
+        # its name says colour: trusted over the pixels (silver hair, grey cloth read like a normal map's)
+        if picture_role(q) == 'colour' or not looks_like_normal_map(new):
+            return new, '%s: %s wired as its colour, used %s' % (mat_name, what, os.path.basename(q))
+    if img is None:
+        return None, None
+    if role is None:                                    # only its pixels said so: without a sibling, trust the wiring
+        return img, None
+    return None, '%s: %s wired as its colour and no colour map found: flat colour' % (mat_name, what)
+
+
 def _save_png(img, path):
     """the picture's pixels as a PNG (a new image: a copy of one read from a file has no pixels of its own)"""
     w, h = img.size
@@ -486,12 +673,21 @@ def one_texture(mesh, size=512, model_dir=''):
         inside = uv.size == 0 or (uv.min() > -0.01 and uv.max() < 1.01)
     else:
         inside = False
+    notes = []
+    for mname, img in list(imgs.items()):                       # a normal / mask map wired as colour: its colour sibling
+        imgs[mname], why = _as_colour(img, mname, model_dir)
+        if why:
+            notes.append(why)
     missing = []
     for mname, img in list(imgs.items()):
         if img is not None and _resolve(img, model_dir, mname) is False:
             missing.append(mname); imgs[mname] = None                     # its flat colour, not an error
-    if missing:
-        used = {imgs.get(slot(p.material_index).name) if slot(p.material_index) else None for p in me.polygons} if mats else {None}
+        elif img is not None:                                   # loaded now: a nameless normal map shows by its pixels
+            imgs[mname], why = _as_colour(img, mname, model_dir, by_pixels=True)
+            if why:
+                notes.append(why)
+    one_texture.notes = notes
+    used = {imgs.get(slot(p.material_index).name) if slot(p.material_index) else None for p in me.polygons} if mats else {None}
     if len(used) == 1 and None not in used and inside:
         img = next(iter(used))
         while len(me.uv_layers) > 1:
@@ -517,13 +713,14 @@ def one_texture(mesh, size=512, model_dir=''):
         if k not in cell_of:
             cell_of[k] = len(firsts); firsts.append(m)
         cell_of[i] = cell_of[k]
-    g = 1
-    while g * g < len(firsts):
+    g = 1                                                        # columns; rows only as many as needed (5: 3 x 2),
+    while g * g < len(firsts):                                   # the cells stretched to fill the texture
         g += 1
-    cell = size // g
+    rows = -(-len(firsts) // g)
+    cw, ch = size // g, size // rows
     atlas = np.zeros((size, size, 4), np.float32)              # Blender order: row 0 = bottom
     for k, m in enumerate(firsts):
-        col, row = k % g, g - 1 - k // g                         # first picture top left
+        col, row = k % g, rows - 1 - k // g                      # first picture top left
         img = imgs.get(m.name) if m else None
         if img is not None and not img.has_data:
             try:
@@ -532,31 +729,31 @@ def one_texture(mesh, size=512, model_dir=''):
                 pass
         if img is not None and img.has_data:
             c = img.copy()
-            c.scale(cell, cell)
-            px = np.empty(cell * cell * 4, np.float32)
+            c.scale(cw, ch)
+            px = np.empty(cw * ch * 4, np.float32)
             c.pixels.foreach_get(px)
             bpy.data.images.remove(c)
-            block = px.reshape(cell, cell, 4)
+            block = px.reshape(ch, cw, 4)
         else:
             bsdf = next((n for n in m.node_tree.nodes if n.type == 'BSDF_PRINCIPLED'), None) if m and m.use_nodes else None
             rgba = list(bsdf.inputs['Base Color'].default_value) if bsdf else list(m.diffuse_color if m else (0.8, 0.8, 0.8, 1))
-            block = np.tile(np.array(rgba, np.float32), (cell, cell, 1))
-        atlas[row * cell:(row + 1) * cell, col * cell:(col + 1) * cell] = block
+            block = np.tile(np.array(rgba, np.float32), (ch, cw, 1))
+        atlas[row * ch:(row + 1) * ch, col * cw:(col + 1) * cw] = block
     if not me.uv_layers:
         me.uv_layers.new(name='UVMap')
     uvl = me.uv_layers[0]
     uv = np.empty(len(me.loops) * 2, np.float32)
     uvl.data.foreach_get('uv', uv)
     uv = uv.reshape(-1, 2)
-    inset = 1.0 / max(cell, 1)                                   # keep off the cell's edges (filtering)
+    inset = np.array([1.0 / max(cw, 1), 1.0 / max(ch, 1)])       # keep off the cell's edges (filtering)
     for poly in me.polygons:
         k = cell_of.get(min(poly.material_index, len(slots) - 1), 0)
-        col, row = k % g, g - 1 - k // g
+        col, row = k % g, rows - 1 - k // g
         ls = list(poly.loop_indices)
         q = uv[ls]
         q = q - np.floor(q.min(0))                               # tiled UVs: the face's own tile
         q = np.clip(q, inset, 1 - inset)
-        uv[ls] = (np.array([col, row]) + q) / g
+        uv[ls] = (np.array([col, row]) + q) / np.array([g, rows])
     uvl.data.foreach_set('uv', uv.reshape(-1))
     for l in [l for l in me.uv_layers if l != uvl]:
         me.uv_layers.remove(l)
@@ -606,6 +803,14 @@ def fit(context, arm, path, girth=1.0, max_tris=2500, tex_size=512, bake=True, p
             except LookupError as ex:
                 rep['skeleton'] = 'not used (%s): weighted automatically instead' % ex
                 bm = None
+        meshes, lods = _lod0_only(meshes)
+        if lods:
+            rep['lods'] = 'kept the most detailed level of each part; left out %d cruder copies' % len(lods)
+        meshes, overlays = _drop_overlays(meshes)
+        if overlays:
+            rep['overlays'] = 'left out effect / shadow-only materials: %s' % ', '.join(overlays)
+        if not meshes:
+            raise RuntimeError('nothing left once its levels of detail and effect overlays were taken out')
         meshes, dropped = _prune(meshes)
         if dropped:
             rep['left_out'] = '%d part%s (repeats, eye layers, inside the mouth, stubble)' % (len(dropped), '' if len(dropped) == 1 else 's')
@@ -622,6 +827,8 @@ def fit(context, arm, path, girth=1.0, max_tris=2500, tex_size=512, bake=True, p
         rep['source_tris'] = sum(len(p.vertices) - 2 for p in mesh.data.polygons)
         say('texture')
         tex_path, rep['texture'] = one_texture(mesh, max(256, tex_size), os.path.dirname(path))
+        if getattr(one_texture, 'notes', None):
+            rep['pictures'] = '; '.join(one_texture.notes)
         if bm:
             rep['skeleton'] = 'matched %d bones (%s)' % (len(bm), ', '.join('%s=%s' % kv for kv in sorted(bm.items()) if kv[0] in ('Hips', 'Head', 'LeftHand', 'LeftFoot')))
             # face the same way as the game skeleton, and its size (girth factors assume the game's size)
@@ -655,7 +862,7 @@ def fit(context, arm, path, girth=1.0, max_tris=2500, tex_size=512, bake=True, p
             say('weighting automatically')
             r = _auto_fit(context, arm, mesh, src_arm, tex_path, max_tris, tex_size, bake)
             rep.setdefault('skeleton', 'none in the file: weighted automatically')
-        rep.update({k: r[k] for k in ('tris_in', 'tris', 'verts') if k in r})
+        rep.update({k: r[k] for k in ('tris_in', 'tris', 'verts', 'lighting') if r.get(k)})
         rep['body'] = r.get('body')
     finally:
         for o in created:                                   # what the file brought that isn't the new body
@@ -678,7 +885,8 @@ def _maps(src_arm, arm, girth):
         P = lambda n: src_arm.matrix_world @ src_arm.data.bones[n].head_local
         G = lambda n: arm.matrix_world @ arm.data.bones[n].head_local
         maps = {}
-        an = Vector((0, P('Hips').y, P('LeftUpLeg').z)); ab = Vector((0, G('hip').y, G('l_femur').z))
+        # the column's foot: between the hips at the legs' height (a model need not stand on x = 0: rips often don't)
+        an = Vector((P('Hips').x, P('Hips').y, P('LeftUpLeg').z)); ab = Vector((G('hip').x, G('hip').y, G('l_femur').z))
         maps['Hips'] = FB._seg_map(an, P('Neck'), ab, G('neck'), girth)
         maps['Neck'] = maps['Hips']
         maps['Head'] = FB._rigid_map(P('Neck'), G('neck'), Matrix.Identity(4), girth)
@@ -783,7 +991,7 @@ def _skin_in_use(md, name, stem):
     from . import charmod_moves as CM
     _, G = CM.tools(md)
     cur = ((json.load(open(os.path.join(md, name, 'mod.json'))).get('body') or {}).get('skin') or '')
-    if cur in ('', 'manikin', 'as_is'):
+    if cur in ('', 'manikin', 'as_is', 'retail'):
         return None
     for f in (stem + '.skin', 'body.skin'):
         p = os.path.join(md, name, 'skins', cur, f)
@@ -804,13 +1012,14 @@ def save_skin(arm, skin, progress=None):
     iso = charmods.iso_path(bpy.context)
     tmp = tempfile.mkdtemp(prefix='dfx_own_skin_')
     ex_path = os.path.join(tmp, 'body.gmo')
+    out_dir = os.path.join(md, name, 'skins', skin)
+    os.makedirs(out_dir, exist_ok=True)
     say('exporting')
-    exporter.export_gmo(arm, ex_path, motions=False)
+    with _psp_size_textures(arm, os.path.join(out_dir, 'hd')):   # a bigger body picture: hd/<n>.png + a 512 one inside
+        exporter.export_gmo(arm, ex_path, motions=False)
     ex = open(ex_path, 'rb').read()
     from . import cape
     cape.sync_folder(arm, ex)                                # new bones (a cape) into the rigs first, + its physics
-    out_dir = os.path.join(md, name, 'skins', skin)
-    os.makedirs(out_dir, exist_ok=True)
     done, skipped, made = [], {}, {}
     for gp, ref in character_models(md, name) or [('obj/' + os.path.basename(arm['dfx_mod_rig']), arm['dfx_mod_rig'])]:
         stem = os.path.splitext(os.path.basename(gp))[0]
@@ -838,6 +1047,85 @@ def save_skin(arm, skin, progress=None):
     if not done:
         raise RuntimeError('no skin could be made: ' + '; '.join('%s: %s' % kv for kv in skipped.items()))
     return {'skin': skin, 'models': done, 'skipped': skipped}
+
+
+# what a body may have to run on a PSP (the PSP's bodies have 1,500 to 3,000 triangles): over it, the skin is recomp
+# only (skins/<skin>/skin.json "recomp_only": why; the Move Studio and charmod.py list show it). Textures never make it
+# recomp only: the model carries a 512 one (the PSP's largest) and a bigger picture goes to the texture pack (hd/).
+PSP_MAX_TRIS = 3000
+PSP_MAX_TEX = 512
+
+
+def psp_budget(tris, tex):
+    out = {}
+    if tris and tris > PSP_MAX_TRIS:
+        out['recomp_only'] = '%s triangles, the PSP budget is %s' % (format(tris, ','), format(PSP_MAX_TRIS, ','))
+    if tex and tex > PSP_MAX_TEX:
+        out['hd'] = '%d px texture in the native build (texture pack), %d in the model' % (tex, PSP_MAX_TEX)
+    return out
+
+
+class _psp_size_textures:
+    """While exporting: every body picture bigger than PSP_MAX_TEX is written full size to <hd_dir>/<n>.png (n: the
+    body's n-th texture, its material slots in order) and exported at PSP_MAX_TEX; restored afterwards. Old hd/ files
+    go, so a skin re-made at 512 leaves none."""
+    def __init__(self, arm, hd_dir):
+        self.arm, self.hd_dir, self.kept = arm, hd_dir, []
+
+    def __enter__(self):
+        import shutil
+        if os.path.isdir(self.hd_dir):
+            shutil.rmtree(self.hd_dir)
+        seen = []
+        bodies = sorted((o for o in self.arm.children if o.type == 'MESH' and not o.name.startswith('wep')),
+                        key=lambda o: (o.get('dfx_part_index', 0), o.name))
+        for o in bodies:
+            for ms in o.material_slots:
+                img = _slot_image(ms.material)
+                if img is not None and img not in seen and img.get('dfx_texture_index') is None:
+                    seen.append(img)                     # a picture new to the model (the rig's own keep theirs)
+        for n, img in enumerate(seen):
+            w, h = img.size
+            if max(w, h) <= PSP_MAX_TEX:
+                continue
+            os.makedirs(self.hd_dir, exist_ok=True)
+            hd = img.copy()
+            hd.filepath_raw = os.path.join(self.hd_dir, '%d.png' % n)
+            hd.file_format = 'PNG'
+            hd.save()
+            bpy.data.images.remove(hd)
+            px = np.empty(w * h * 4, np.float32)
+            img.pixels.foreach_get(px)
+            self.kept.append((img, w, h, px))
+            k = PSP_MAX_TEX / max(w, h)
+            img.scale(max(1, round(w * k)), max(1, round(h * k)))
+        return self
+
+    def __exit__(self, *exc):
+        for img, w, h, px in self.kept:
+            img.scale(w, h)
+            img.pixels.foreach_set(px)
+            img.update()
+        return False
+
+
+def _slot_image(mat):
+    if mat is None or not mat.use_nodes:
+        return None
+    for n in mat.node_tree.nodes:
+        if n.type == 'TEX_IMAGE' and n.image is not None:
+            return n.image
+    return None
+
+
+def write_skin_info(md, name, skin, rep):
+    """skins/<skin>/skin.json: what the skin is made of, and why it needs the recomp (if it does)"""
+    import json
+    info = {k: rep[k] for k in ('file', 'tris', 'texture', 'skeleton', 'recomp_only', 'hd') if rep.get(k)}
+    info['tex_size'] = rep.get('tex_size')
+    with open(os.path.join(md, name, 'skins', skin, 'skin.json'), 'w') as f:
+        json.dump({k: v for k, v in info.items() if v is not None}, f, indent=1, ensure_ascii=False)
+        f.write('\n')
 
 
 def bake_costume(arm, assist_rel, progress=None):
@@ -1036,11 +1324,11 @@ def save_weapons(arm, skin, slots, progress=None):
                 if os.path.isfile(p):
                     sk = G.skin_from_bytes(open(p, 'rb').read())
                 else:                                         # no skin yet: the body the game shows now
-                    cur = body.get('skin') or 'manikin'
+                    cur = body.get('skin') or ('retail' if m.get('kind') == 'retail' else 'manikin')
                     old = _skin_in_use(md, name, stem)
                     if old is not None:
                         sk = old
-                    elif cur == 'as_is' or not iso:
+                    elif cur in ('as_is', 'retail') or not iso:
                         sk = G.extract_skin(rig, 'the body as stored')
                     else:
                         src = body.get('manikin_from', 'obj/p_%s_zako.gmo' % (m.get('character') or {}).get('based_on', ''))
@@ -1098,13 +1386,19 @@ class DFX_OT_own_model(bpy.types.Operator, ImportHelper):
     skin: StringProperty(name='Skin name', description='Folder in skins/ (empty: the file\'s name)', default='')
     girth: FloatProperty(name='Bulk', default=1.0, min=0.6, max=1.8,
                          description='Thickness of the limbs, torso and head on the game skeleton (1 = the model\'s own)')
+    detail: EnumProperty(name='Detail', default='FULL', items=[
+        ('FULL', 'Full model', 'Every triangle kept; only the skeleton is fitted. Over the PSP budget the skin is marked recomp only'),
+        ('PSP', 'Reduced for the PSP', 'Cut down to the triangle count below, so it can run on a PSP')])
     max_tris: IntProperty(name='Triangles', default=2500, min=500, max=8000,
-                          description='At most this many triangles (the PSP\'s bodies have 1,500 to 3,000)')
+                          description='Reduced for the PSP: at most this many triangles (the PSP\'s bodies have 1,500 to 3,000)')
     hair_colour: FloatVectorProperty(name='Hair colour', subtype='COLOR_GAMMA', size=3, min=0, max=1, default=(0.35, 0.25, 0.18),
                                      description='Hair made of strands with no colour picture (ripped game models) is made solid, in this colour')
-    tex_size: EnumProperty(name='Texture', items=[('256', '256 x 256', ''), ('512', '512 x 512', '')], default='512')
+    tex_size: EnumProperty(name='Texture', items=[('256', '256 x 256', ''), ('512', '512 x 512', 'The PSP\'s largest'),
+                                                 ('1024', '1024 x 1024', 'HD: the model carries a 512 one, the native build draws this one (texture pack)'),
+                                                 ('2048', '2048 x 2048', 'HD: the model carries a 512 one, the native build draws this one (texture pack)')],
+                           default='2048')
     bake: BoolProperty(name='Painted lighting', default=True,
-                       description='Bake soft lighting into the texture, as the game\'s characters have (slower)')
+                       description='Bake soft lighting into the texture, as the game\'s characters have (slower). Skipped by itself when much of the texture is shared by mirrored or repeated parts')
     use_in_game: BoolProperty(name='Use it in the game', default=True,
                               description='mod.json: the build puts this body on the character')
     job: StringProperty(options={'HIDDEN'})
@@ -1127,7 +1421,9 @@ class DFX_OT_own_model(bpy.types.Operator, ImportHelper):
     def draw(self, context):
         L = self.layout
         L.label(text='Fitted onto this character\'s skeleton.')
-        for p in ('skin', 'girth', 'max_tris', 'tex_size', 'bake', 'hair_colour'):
+        for p in ('skin', 'detail', 'girth', 'max_tris', 'tex_size', 'bake', 'hair_colour'):
+            if p == 'max_tris' and self.detail == 'FULL':
+                continue
             L.prop(self, p)
         if not self.job:
             L.prop(self, 'use_in_game')
@@ -1145,7 +1441,7 @@ class DFX_OT_own_model(bpy.types.Operator, ImportHelper):
         wm = context.window_manager
         wm.progress_begin(0, 3)
         try:
-            rep = fit(context, arm, path, girth=self.girth, max_tris=self.max_tris, tex_size=int(self.tex_size),
+            rep = fit(context, arm, path, girth=self.girth, max_tris=self.max_tris if self.detail == 'PSP' else 0, tex_size=int(self.tex_size),
                       bake=self.bake, progress=say, hair_colour=tuple(self.hair_colour))
             wm.progress_update(2)
             arm['dfx_own_model'] = os.path.basename(path)
@@ -1156,6 +1452,9 @@ class DFX_OT_own_model(bpy.types.Operator, ImportHelper):
                 self.report({'INFO'}, 'Costume %s: %s' % (self.costume, ', '.join(res['files'])))
                 return {'FINISHED'}
             res = save_skin(arm, skin, progress=say)
+            rep['tex_size'] = int(self.tex_size)
+            rep.update(psp_budget(rep.get('tris'), int(self.tex_size)))
+            write_skin_info(arm['dfx_mod_dir'], arm['dfx_mod_name'], skin, rep)
             if self.use_in_game and not self.job:
                 use_skin(arm['dfx_mod_dir'], arm['dfx_mod_name'], skin, res['models'])
         except Exception as ex:
@@ -1168,6 +1467,8 @@ class DFX_OT_own_model(bpy.types.Operator, ImportHelper):
             wm.progress_end()
         rep.update(res)
         note = '%s: %s, %s tris, %s' % (skin, rep.get('skeleton', ''), rep.get('tris', '?'), rep.get('texture', ''))
+        if rep.get('recomp_only'):
+            note += '; recomp only (%s)' % rep['recomp_only']
         if res['skipped']:
             note += '; not for %s' % ', '.join(os.path.basename(k) for k in res['skipped'])
         _job(self.job, state='done', message=note, skin=skin, models=res['models'], report=rep)
@@ -1233,74 +1534,149 @@ class DFX_OT_own_weapon(bpy.types.Operator, ImportHelper):
             L.prop(self, 'use_in_game')
 
     def execute(self, context):
-        import json
         from .panel import active_arm
-        from . import charmod_moves as CM, tools_bl
-        arm = active_arm(context)
+        from . import tools_bl
         path = bpy.path.abspath(self.filepath)
-        fail = lambda msg: (_job(self.job, state='error', message=msg), self.report({'ERROR'}, 'Own weapon: %s' % msg), {'CANCELLED'})[2]
         if not os.path.isfile(path) or os.path.splitext(path)[1].lower() not in ('.fbx', '.glb', '.gltf', '.obj'):
-            return fail('Pick an FBX, glTF/GLB or OBJ file')
-        md, name = arm['dfx_mod_dir'], arm['dfx_mod_name']
-        say = lambda m: (_job(self.job, state='working', message=m), print('Dissidia own weapon:', m))
-        try:
-            _, G = CM.tools(md)
-            rig = open(os.path.join(md, name, arm['dfx_mod_rig']), 'rb').read()
-            slots, other = weapon_twins(G, rig, self.slot, md, name)
-            if other:
-                return fail('%s is drawn with the same picture as %s, which isn\'t a weapon, so it can\'t take its own model'
-                            % (self.slot, ', '.join(other[:3])))
-            for sl in slots:
-                ob = next((o for o in arm.children if o.type == 'MESH' and o.name.split('.')[0] == sl), None)
-                if ob is None:
-                    return fail('the character in Blender has no %s: import it again from the mods folder' % sl)
-                say('fitting %s' % sl)
-                tools_bl.replace_weapon_from_file(context, arm, ob, path, self.flip, self.keep_scale, max_tris=self.max_tris,
-                                                  length=self.length, grip_at_origin=self.grip_at_origin)
-                one_picture(ob, int(self.tex_size), os.path.dirname(path))
-            cur = ((json.load(open(os.path.join(md, name, 'mod.json'))).get('body') or {}).get('skin') or '')
-            skin = re.sub(r'[^A-Za-z0-9_.-]+', '-', self.skin.strip()).strip('-') or (
-                cur if cur not in ('', 'manikin', 'as_is') else 'own-weapons')
-            # the game stores positions inside the model's own range: a weapon that reaches past it is made a little
-            # smaller about the hand until it fits
-            obs = [next(o for o in arm.children if o.type == 'MESH' and o.name.split('.')[0] == sl) for sl in slots]
-            shrunk = 1.0
-            for _ in range(8):
-                try:
-                    res = save_weapons(arm, skin, slots, progress=say)
-                    # the fighter's models decide; an assist model whose range is laid out otherwise keeps its old weapon
-                    why = ' '.join(v for k, v in res['skipped'].items() if not re.search(r'_(a|w)\.gmo$', k))
-                except RuntimeError as ex:
-                    res, why = None, str(ex)
-                over = [float(x) for x in re.findall(r"outside the rig's range by ([0-9.]+)", why)]
-                if not over:                                       # every model (assists too) takes it
-                    if res is None:
-                        raise RuntimeError(why)
-                    break
-                k = 0.97 / (1.0 + max(over))
-                shrunk *= k
-                say('a little smaller to fit the model (%d%%)' % round(shrunk * 100))
-                for ob in obs:
-                    _scale_about_hand(arm, ob, k)
-            else:
-                raise RuntimeError('the weapon doesn\'t fit the model\'s range even at %d%% of its size' % round(shrunk * 100))
-            if self.use_in_game and not self.job:
-                use_skin(md, name, skin, res['models'])
-        except Exception as ex:
-            import traceback
-            traceback.print_exc()
-            return fail(str(ex))
-        note = '%s in %s%s' % (', '.join(slots), skin, ' (the same picture: they change together)' if len(slots) > 1 else '')
-        if shrunk < 0.995:
-            note += '; made %d%% of its size to fit the model' % round(shrunk * 100)
-        if res['skipped']:
-            note += '; %s keep%s the old weapon' % (', '.join(os.path.basename(k) for k in res['skipped']), 's' if len(res['skipped']) == 1 else '')
-        _job(self.job, state='done', message=note, skin=skin, models=res['models'], slots=slots)
-        self.report({'INFO'}, 'Own weapon: ' + note)
-        return {'FINISHED'}
+            return _weapon_fail(self, 'Pick an FBX, glTF/GLB or OBJ file')
+        fit = lambda arm, ob: tools_bl.replace_weapon_from_file(
+            context, arm, ob, path, self.flip, self.keep_scale, max_tris=self.max_tris, length=self.length,
+            grip_at_origin=self.grip_at_origin)
+        return place_weapon(self, context, active_arm(context), fit, os.path.dirname(path))
 
 
-classes = (DFX_OT_own_model, DFX_OT_own_weapon)
+def _weapon_fail(op, msg):
+    _job(op.job, state='error', message=msg)
+    op.report({'ERROR'}, 'Own weapon: %s' % msg)
+    return {'CANCELLED'}
+
+
+def place_weapon(op, context, arm, fit, src_dir):
+    """op.slot (and the slots drawn with the same picture) take the model fit(arm, slot object) puts in; saved into a
+    skin (op.skin, else the one the game uses, else own-weapons), made smaller about the hand if the model's range
+    needs it. Shared by the file and the scene operator."""
+    import json
+    from . import charmod_moves as CM
+    md, name = arm['dfx_mod_dir'], arm['dfx_mod_name']
+    say = lambda m: (_job(op.job, state='working', message=m), print('Dissidia own weapon:', m))
+    try:
+        _, G = CM.tools(md)
+        rig = open(os.path.join(md, name, arm['dfx_mod_rig']), 'rb').read()
+        slots, other = weapon_twins(G, rig, op.slot, md, name)
+        if other:
+            return _weapon_fail(op, '%s is drawn with the same picture as %s, which isn\'t a weapon, so it can\'t take its own model'
+                                % (op.slot, ', '.join(other[:3])))
+        for sl in slots:
+            ob = next((o for o in arm.children if o.type == 'MESH' and o.name.split('.')[0] == sl), None)
+            if ob is None:
+                return _weapon_fail(op, 'the character in Blender has no %s: import it again from the mods folder' % sl)
+            say('fitting %s' % sl)
+            fit(arm, ob)
+            one_picture(ob, int(op.tex_size), src_dir)
+        cur = ((json.load(open(os.path.join(md, name, 'mod.json'))).get('body') or {}).get('skin') or '')
+        skin = re.sub(r'[^A-Za-z0-9_.-]+', '-', op.skin.strip()).strip('-') or (
+            cur if cur not in ('', 'manikin', 'as_is', 'retail') else 'own-weapons')
+        # the game stores positions inside the model's own range: a weapon that reaches past it is made a little
+        # smaller about the hand until it fits
+        obs = [next(o for o in arm.children if o.type == 'MESH' and o.name.split('.')[0] == sl) for sl in slots]
+        shrunk = 1.0
+        for _ in range(8):
+            try:
+                res = save_weapons(arm, skin, slots, progress=say)
+                # the fighter's models decide; an assist model whose range is laid out otherwise keeps its old weapon
+                why = ' '.join(v for k, v in res['skipped'].items() if not re.search(r'_(a|w)\.gmo$', k))
+            except RuntimeError as ex:
+                res, why = None, str(ex)
+            over = [float(x) for x in re.findall(r"outside the rig's range by ([0-9.]+)", why)]
+            if not over:                                       # every model (assists too) takes it
+                if res is None:
+                    raise RuntimeError(why)
+                break
+            k = 0.97 / (1.0 + max(over))
+            shrunk *= k
+            say('a little smaller to fit the model (%d%%)' % round(shrunk * 100))
+            for ob in obs:
+                _scale_about_hand(arm, ob, k)
+        else:
+            raise RuntimeError('the weapon doesn\'t fit the model\'s range even at %d%% of its size' % round(shrunk * 100))
+        if op.use_in_game and not op.job:
+            use_skin(md, name, skin, res['models'])
+    except Exception as ex:
+        import traceback
+        traceback.print_exc()
+        return _weapon_fail(op, str(ex))
+    note = '%s in %s%s' % (', '.join(slots), skin, ' (the same picture: they change together)' if len(slots) > 1 else '')
+    if shrunk < 0.995:
+        note += '; made %d%% of its size to fit the model' % round(shrunk * 100)
+    if res['skipped']:
+        note += '; %s keep%s the old weapon' % (', '.join(os.path.basename(k) for k in res['skipped']), 's' if len(res['skipped']) == 1 else '')
+    _job(op.job, state='done', message=note, skin=skin, models=res['models'], slots=slots)
+    op.report({'INFO'}, 'Own weapon: ' + note)
+    return {'FINISHED'}
+
+
+def _scene_weapon_sources(context, arm):
+    """the selected meshes that aren't part of the character (its body, its weapons): the weapon model"""
+    part = set(arm.children)
+    return [o for o in context.selected_objects if o.type == 'MESH' and o not in part and o.parent not in part]
+
+
+class DFX_OT_own_weapon_scene(bpy.types.Operator):
+    """Make the selected object(s) one of this character's weapons: a sword already in the scene (one that came with
+    a ripped model, say) is lined up with the old weapon, hilt on the grip, given one picture, and saved into the
+    skin the game uses (or a new one). The selected objects stay as they are"""
+    bl_idname = 'dfx.own_weapon_scene'
+    bl_label = 'Use selected as weapon'
+    bl_options = {'REGISTER', 'UNDO'}
+    slot: StringProperty(name='Weapon', description='The weapon part it replaces (wep0, wep1...)')
+    skin: StringProperty(name='Skin', description='Folder in skins/ it goes into (empty: the one the game uses, else own-weapons)')
+    flip: BoolProperty(name='Flip direction', default=False, description='Use if it ends up held by the blade')
+    length: FloatProperty(name='Length', default=0.0, min=0.0, max=5.0, unit='LENGTH',
+                          description='Total length, pommel to tip. 0 = the old weapon\'s length')
+    keep_scale: BoolProperty(name='Keep model scale', default=False, description='Otherwise it is scaled to the old weapon\'s length')
+    grip_at_origin: BoolProperty(name='Grip at the model\'s origin', default=False,
+                                 description='Put the hand on the active object\'s origin (game rips are made that way) instead of the handle found from the shape')
+    max_tris: IntProperty(name='Triangles', default=600, min=50, max=3000, description='At most this many triangles')
+    tex_size: EnumProperty(name='Texture', items=[('128', '128 x 128', ''), ('256', '256 x 256', '')], default='256')
+    use_in_game: BoolProperty(name='Use it in the game', default=True, description='mod.json: the build puts this skin on the character')
+    job: StringProperty(options={'HIDDEN'})
+
+    @classmethod
+    def poll(cls, context):
+        from .panel import active_arm
+        a = active_arm(context)
+        return a is not None and 'dfx_mod_name' in a and bool(_scene_weapon_sources(context, a))
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self)
+
+    def draw(self, context):
+        from .panel import active_arm
+        L = self.layout
+        arm = active_arm(context)
+        src = _scene_weapon_sources(context, arm) if arm else []
+        L.label(text='Model: %s' % ', '.join(o.name for o in src[:3]) + (' +%d' % (len(src) - 3) if len(src) > 3 else ''))
+        L.prop(self, 'slot')
+        for p in ('flip', 'length', 'keep_scale', 'grip_at_origin', 'max_tris', 'tex_size', 'skin', 'use_in_game'):
+            L.prop(self, p)
+
+    def execute(self, context):
+        from .panel import active_arm
+        from . import tools_bl
+        arm = active_arm(context)
+        src = _scene_weapon_sources(context, arm)
+        if not src:
+            return _weapon_fail(self, 'select the weapon\'s mesh (not part of the character)')
+        if not self.slot:
+            return _weapon_fail(self, 'say which weapon it replaces (wep0, wep1...)')
+        root = context.active_object if context.active_object in src else src[0]
+        fit = lambda arm_, ob: tools_bl.replace_weapon_from_objects(
+            context, arm_, ob, src, root, self.flip, self.keep_scale, max_tris=self.max_tris, length=self.length,
+            grip_at_origin=self.grip_at_origin)
+        return place_weapon(self, context, arm, fit, bpy.path.abspath('//') or '')
+
+
+classes = (DFX_OT_own_model, DFX_OT_own_weapon, DFX_OT_own_weapon_scene)
 
 
 def register():

@@ -5,9 +5,10 @@
 // loose file under <mods>/ restyles them):
 //   menu/en/menu_lpk_label_gim_0.bin      entry 0  128x128 INDEX8  common UI sheet: dialog frame
 //                                                  corners, pointing hand, silver + royal-blue chevron
-//                                                  bars, the navy tab halves
+//                                                  bars, the navy tab halves, blue / white selector
+//                                                  triangles (settings menu values)
 //                                         entry 8  128x128 INDEX8  button/icon sheet: cross and
-//                                                  circle glyphs, d-pad glyphs
+//                                                  circle glyphs, d-pad glyphs (up/down/left/right lit)
 //   menu/menu_pk_label_gim_0.bin          entry 1  16x16 INDEX4    scanline texture
 //                                         entry 2  256x256 INDEX8  dark crescent ornament
 //                                         entry 11 256x256 INDEX8  white wing ornament
@@ -227,8 +228,14 @@ std::shared_ptr<const SdTheme> build_savedata_theme(const std::string& data_dir,
     t->corner[3] = spr(S, 25, 24, 17, 17);
     t->glyph_cross = spr(B, 109, 109, 16, 16);
     t->glyph_circle = spr(B, 73, 109, 16, 16);
-    t->dpad_up = spr(B, 72, 88, 17, 19);
-    t->dpad_down = spr(B, 89, 88, 17, 19);
+    t->dpad_up = spr(B, 72, 91, 17, 17);              // (cut tight: the sheet has stray texels at y 88-89)
+    t->dpad_down = spr(B, 90, 91, 17, 17);
+    t->dpad_left = spr(B, 108, 91, 17, 17);           // the same d-pad, left / right lit (settings menu hints)
+    t->dpad_right = spr(B, 0, 109, 17, 17);
+    t->arrow_left = spr(S, 55, 49, 7, 12);             // blue / white selector triangles (settings menu values)
+    t->arrow_left_hi = spr(S, 64, 49, 7, 12);
+    t->arrow_right = spr(S, 55, 63, 7, 12);
+    t->arrow_right_hi = spr(S, 64, 63, 7, 12);
 
     t->text = rgba(48, 50, 84);
     t->text_dim = rgba(98, 102, 140);

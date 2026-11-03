@@ -10,7 +10,19 @@ You need your own copy of the game as an `.iso` or `.cso`. The European PSN rele
 
 ### Steam Deck
 
-In Desktop Mode (Steam button > Power > Switch to Desktop), first put your game at `~/dissidia/game.iso` (a folder called `dissidia` in your home folder, the file renamed `game.iso`; from a USB stick or SD card, copy it across in Dolphin). Then open Konsole and run:
+No terminal needed. In Desktop Mode (Steam button > Power > Switch to Desktop):
+
+1. On GitHub (signed in; the repository is private), open `psprecomp/games/dissidia/tools/deck_gui.sh` and click **Download raw file**. It lands in your Downloads folder.
+2. In Dolphin, right-click it > Properties > Permissions > tick **Is executable**. Then double-click it and choose **Execute**.
+3. Follow the dialogs. It downloads the project into `~/dissidia/repo` (GitHub asks for your user name and an access token; you can let the Deck remember them), asks for your game file (`.iso` or `.cso`, from the Deck, an SD card or a USB stick; it is placed at `~/dissidia/game.iso`), builds the game with a progress bar and adds **Dissidia Trēdecim** to Steam.
+
+The first build takes a while (tens of minutes). Keep the Deck plugged in; it is kept awake until the build is done. If it stops part-way, choose Install again; finished steps are skipped.
+
+Then switch back to Game Mode and start **Dissidia Trēdecim** from your library.
+
+The tool leaves a **Dissidia Trēdecim Setup** icon on the desktop and in the application menu (Games). Double-click it to **Update** (latest code and mods, only what changed is rebuilt), change the look (Retro or Crisp), check the Deck is ready, or read the last log. If you already have `~/dissidia/repo` from before, the downloaded tool brings it up to date and carries on from there.
+
+Prefer the terminal? `deck_gui.sh` is a front end for `deck_setup.sh`; the same in Konsole:
 
 ```bash
 cd ~/dissidia
@@ -18,11 +30,7 @@ git clone https://github.com/dissidia-fan/dissidia repo
 repo/psprecomp/games/dissidia/tools/deck_setup.sh ~/dissidia/game.iso --install-distrobox --add-to-steam
 ```
 
-The last command does everything: build container, extract and decrypt the game, compile it, add **Dissidia Trēdecim** to Steam. It takes a while (tens of minutes). Keep the Deck plugged in and set screen dimming and sleep to "never" (System Settings > Power Management). If it stops part-way, run it again; finished steps are skipped.
-
-Then switch back to Game Mode and start **Dissidia Trēdecim** from your library.
-
-To update later: `~/dissidia/repo/psprecomp/games/dissidia/tools/deck_setup.sh ~/dissidia/game.iso --update`
+and to update: `~/dissidia/repo/psprecomp/games/dissidia/tools/deck_setup.sh ~/dissidia/game.iso --update`
 
 Controls, display options, troubleshooting: [docs/steamdeck.md](psprecomp/games/dissidia/docs/steamdeck.md).
 

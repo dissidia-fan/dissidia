@@ -1083,6 +1083,8 @@ static int g_ring_mode = 0;
 #endif
 static int g_sync_mode = 0;
 static bool g_sync_each = false;
+static std::atomic<bool> g_fx_live{true};     // settings menu Debug page: FX shaders on/off (this session)
+static std::atomic<bool> g_perf_hud{false};   // settings menu Debug page / PSPRECOMP_PERF_HUD=1
 static Stream g_s2d, g_s3d;
 // Ring size in vertices. 3D vertices are 68 bytes, 2D 28: 8.9 MB + 3.6 MB.
 // Sized for several frames of high-poly characters; small enough for an APU
@@ -1386,6 +1388,21 @@ void ge_draw_flush() { flush_batch(); }
 void ge_draw_list_end() { flush_batch(); if (g_sync_mode == 2) glFinish(); }
 void ge_draw_set_fast(bool on) { flush_batch(); g_fast_enabled = on; std::fprintf(stderr, "[DRAW] fast path %s (runtime)\n", on ? "on" : "OFF"); }
 
+int ge_draw_sync_mode() { return g_sync_mode; }
+void ge_draw_set_sync_mode(int mode) {
+    flush_batch();
+    g_sync_mode = (mode < 0 || mode > 4) ? 0 : mode;
+    g_sync_each = g_sync_mode == 1;
+    static const char* names[5] = {"off", "glFinish per batch", "glFinish per list", "glFinish per present", "glFlush per batch"};
+    std::fprintf(stderr, "[DRAW] GE sync mode %d (%s) (settings menu)\n", g_sync_mode, names[g_sync_mode]);
+}
+int ge_draw_ring_mode() { return g_ring_mode; }
+bool ge_draw_perf_overlay() { return g_perf_hud.load(); }
+void ge_draw_set_perf_overlay(bool on) {
+    g_perf_hud = on;
+    std::fprintf(stderr, "[DRAW] performance overlay %s\n", on ? "on" : "off");
+}
+
 static void setup_stream(Stream& s, size_t stride, bool is3d) {
     s.stride = stride;
     s.cap = RING_VERTS;
@@ -1480,10 +1497,22 @@ static unsigned fx_screen_copy(int* w, int* h) {
     return g_fx_screen_tex;
 }
 
+bool ge_draw_fx_available() {
+    if (g_fx_on < 0) g_fx_on = psp_fx_want_ids() ? 1 : 0;
+    return g_fx_on == 1;
+}
+bool ge_draw_fx_shaders() { return ge_draw_fx_available() && g_fx_live.load(); }
+void ge_draw_set_fx_shaders(bool on) {
+    flush_batch();
+    g_fx_live = on;
+    std::fprintf(stderr, "[FXSHADER] %s (settings menu)\n", on ? "on" : "off");
+}
+
 // After the uber pipeline of a new batch: swap in the override program when
 // the bound texture's pack id is in the manifest, then apply its blend/depth.
 static void fx_batch(const GeState& state, GLuint fbo_tex, const GeXform3D* g) {
     if (g_fx_on < 0) g_fx_on = psp_fx_want_ids() ? 1 : 0;
+    if (!g_fx_live.load(std::memory_order_relaxed)) return;
     if (!g_fx_on || !state.texture_enable || fbo_tex) return;
     const uint64_t id = ge_texture_bound_pack_id();
     if (!id) return;
@@ -1911,6 +1940,7 @@ void ge_draw_init() {
     g_ab = std::getenv("PSPRECOMP_GE_AB") != nullptr;
     if (g_ab) std::fprintf(stderr, "[AB] fast-vs-legacy dual rendering on (compare logged per present)\n");
     g_cpu_xform = std::getenv("PSPRECOMP_GE_CPU3D") != nullptr;
+    if (const char* ph = std::getenv("PSPRECOMP_PERF_HUD")) g_perf_hud = ph[0] && ph[0] != '0';
     g_nobatch = std::getenv("PSPRECOMP_GE_NOBATCH") != nullptr;
     if (const char* sm = std::getenv("PSPRECOMP_GE_SYNC")) {
         g_sync_mode = !std::strcmp(sm, "flush") ? 4 : std::atoi(sm);
@@ -2923,6 +2953,100 @@ static void present_dialog_overlay(const PresentRect& pr) {
     glPixelStorei(GL_UNPACK_ROW_LENGTH, prev_row_len);
 }
 
+// Performance overlay: page flips per second, average and worst time between
+// flips over the last half second, drawn as a small box in the top-left corner
+// of the picture. The text is rendered (FreeType, the dialog's font) only when
+// it changes; every present is then a single small blit.
+struct PerfHud {
+    std::chrono::steady_clock::time_point last{}, win0{};
+    int frames = 0;
+    double sum_ms = 0, worst_ms = 0;
+    std::string text;
+    bool dirty = false;
+};
+static PerfHud g_perf;
+
+static void perf_note_flip() {
+    using namespace std::chrono;
+    const auto now = steady_clock::now();
+    if (!g_perf_hud.load(std::memory_order_relaxed)) { g_perf.last = {}; return; }
+    if (g_perf.last.time_since_epoch().count() == 0) {   // first flip after turning it on / a pause
+        g_perf = PerfHud{};
+        g_perf.last = g_perf.win0 = now;
+        g_perf.text = "-- fps";
+        g_perf.dirty = true;
+        return;
+    }
+    const double ms = duration<double, std::milli>(now - g_perf.last).count();
+    g_perf.last = now;
+    if (ms > 1000.0) { g_perf.win0 = now; g_perf.frames = 0; g_perf.sum_ms = g_perf.worst_ms = 0; return; }   // paused
+    g_perf.frames++;
+    g_perf.sum_ms += ms;
+    g_perf.worst_ms = std::max(g_perf.worst_ms, ms);
+    const double win = duration<double, std::milli>(now - g_perf.win0).count();
+    if (win >= 500.0 && g_perf.frames > 0) {
+        char buf[96];
+        std::snprintf(buf, sizeof buf, "%.0f fps   %.1f ms   worst %.1f ms", g_perf.frames * 1000.0 / win,
+                      g_perf.sum_ms / g_perf.frames, g_perf.worst_ms);
+        g_perf.text = buf;
+        g_perf.dirty = true;
+        g_perf.win0 = now;
+        g_perf.frames = 0;
+        g_perf.sum_ms = g_perf.worst_ms = 0;
+    }
+}
+
+static void present_perf_hud(const PresentRect& pr) {
+    if (!g_perf_hud.load(std::memory_order_relaxed) || g_perf.text.empty()) return;
+    static GLuint tex = 0, fbo = 0;
+    static int tw = 0, th = 0, tscale = 0, alloc_w = 0, alloc_h = 0;
+    static std::vector<uint32_t> px;
+    const int scale = psp_sddialog::output_scale();
+    if (g_perf.dirty || scale != tscale || !tex) {
+        int w = 0, h = 0;
+        if (!psp_sddialog::render_hud_box(g_perf.text, scale, px, &w, &h) || w <= 0 || h <= 0) return;
+        GLint prev_tex = 0, prev_align = 4, prev_row_len = 0;
+        glGetIntegerv(GL_TEXTURE_BINDING_2D, &prev_tex);
+        glGetIntegerv(GL_UNPACK_ALIGNMENT, &prev_align);
+        glGetIntegerv(GL_UNPACK_ROW_LENGTH, &prev_row_len);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+        if (!tex) {
+            glGenTextures(1, &tex);
+            glBindTexture(GL_TEXTURE_2D, tex);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glGenFramebuffers(1, &fbo);
+        }
+        glBindTexture(GL_TEXTURE_2D, tex);
+        if (w > alloc_w || h > alloc_h) {   // grow only; the box is blitted from its corner
+            alloc_w = std::max(w, alloc_w); alloc_h = std::max(h, alloc_h);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, alloc_w, alloc_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+            glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+        }
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+        glBindTexture(GL_TEXTURE_2D, GLuint(prev_tex));
+        glPixelStorei(GL_UNPACK_ALIGNMENT, prev_align);
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, prev_row_len);
+        tw = w; th = h; tscale = scale;
+        g_perf.dirty = false;
+    }
+    const float sx = float(pr.x1 - pr.x0) / 480.f, sy = float(std::abs(pr.y1 - pr.y0)) / 272.f;
+    const int top = std::max(pr.y0, pr.y1), left = std::min(pr.x0, pr.x1);
+    const int x0 = left + int(std::lround(4.f * sx));
+    const int x1 = x0 + int(std::lround(float(tw) / float(tscale) * sx));
+    const int y_top = top - int(std::lround(4.f * sy));
+    const int y_bot = y_top - int(std::lround(float(th) / float(tscale) * sy));
+    const GLboolean sc = glIsEnabled(GL_SCISSOR_TEST);
+    if (sc) glDisable(GL_SCISSOR_TEST);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    // Canvas row 0 is the top; GL texture row 0 is the bottom => flip Y.
+    glBlitFramebuffer(0, 0, tw, th, x0, y_top, x1, y_bot, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+    if (sc) glEnable(GL_SCISSOR_TEST);
+}
+
 // PSPRECOMP_FRAME_DUMP=<dir>,<n>: write the next n presented frames (every
 // present_blit, including liveness-net presents) as <dir>/f_<k>.tga, with the
 // present reason in the log, to inspect frame-to-frame alternation. Capture
@@ -2998,6 +3122,8 @@ static void present_blit(GLuint fbo, const char* why = "flip") {
     }
     glBlitFramebuffer(0, 0, 480 * g_rs, 272 * g_rs, pr.x0, pr.y0, pr.x1, pr.y1,
                       GL_COLOR_BUFFER_BIT, pf);
+    if (!std::strcmp(why, "flip")) perf_note_flip();
+    if (std::strcmp(why, "menu") != 0) present_perf_hud(pr);
     present_dialog_overlay(pr);
     present_service_window_capture();
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -3060,7 +3186,7 @@ void ge_present_frame(
     (void)fb_stride;
     (void)fb_format;
     ge_draw_flush();
-    if (g_fx_on == 1) psp_fx_end_frame();
+    if (g_fx_on == 1 && g_fx_live.load(std::memory_order_relaxed)) psp_fx_end_frame();
     if (g_ab) ab_compare_all();
     if (g_dump_armed.exchange(false)) {
         std::string dir;
@@ -3165,6 +3291,96 @@ void ge_draw_present_if_stale(uint8_t* rdram) {
     GLuint fbo = front_fbo_id();
     if (fbo == 0) { g_present_dirty = false; return; }
     present_blit(fbo, "stale");
+}
+
+// ---- Settings menu support (psp_settings.cpp, main/GL thread) ----
+
+// Change the render scale live: every pool target gets new colour/depth storage
+// at the new size with its picture carried over (linear resample), keeping its
+// FBO object, so a target the game samples later (a captured background) is
+// not lost. Scratch copies are rebuilt lazily. Call while the game is paused
+// (no display list mid-way). Refused when the A/B shadow targets are on.
+bool ge_draw_set_render_scale(int n) {
+    GLint maxtex = 0;
+    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxtex);
+    n = n < 1 ? 1 : n > 8 ? 8 : n;
+    while (n > 1 && (480 * n > maxtex || 272 * n > maxtex)) n--;
+    if (n == g_rs) return true;
+    if (g_ab) return false;
+    flush_batch();
+    const int ow = 480 * g_rs, oh = 272 * g_rs, nw = 480 * n, nh = 272 * n;
+    const GLboolean sc = glIsEnabled(GL_SCISSOR_TEST);
+    if (sc) glDisable(GL_SCISSOR_TEST);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glDepthMask(GL_TRUE);
+    glStencilMask(0xFF);
+    GLuint tmp = 0;
+    glGenFramebuffers(1, &tmp);
+    int resized = 0;
+    for (int i = 0; i < GE_MAX_TARGETS; ++i) {
+        GeTarget& t = g_targets[i];
+        if (!t.fbo) continue;
+        GLuint tex = 0, rb = 0;
+        glGenTextures(1, &tex);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, nw, nh, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glBindFramebuffer(GL_FRAMEBUFFER, tmp);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, t.fbo);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, tmp);
+        glBlitFramebuffer(0, 0, ow, oh, 0, 0, nw, nh, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+        glGenRenderbuffers(1, &rb);
+        glBindRenderbuffer(GL_RENDERBUFFER, rb);
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, nw, nh);
+        glBindFramebuffer(GL_FRAMEBUFFER, t.fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, rb);
+        glClear(GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+        glDeleteTextures(1, &t.color_tex);
+        glDeleteRenderbuffers(1, &t.depth_rb);
+        t.color_tex = tex;
+        t.depth_rb = rb;
+        resized++;
+    }
+    glDeleteFramebuffers(1, &tmp);
+    if (g_fb_scratch_tex) {   // feedback_snapshot allocates at the current size once
+        glDeleteTextures(1, &g_fb_scratch_tex);
+        glDeleteFramebuffers(1, &g_fb_scratch_fbo);
+        g_fb_scratch_tex = g_fb_scratch_fbo = 0;
+    }
+    g_rs = n;
+    glLineWidth(float(g_rs));
+    glPointSize(float(g_rs));
+    while (glGetError() != GL_NO_ERROR) {}
+    if (sc) glEnable(GL_SCISSOR_TEST);
+    glBindFramebuffer(GL_FRAMEBUFFER, g_current_target >= 0 ? g_targets[g_current_target].fbo : 0);
+    glc::invalidate();
+    ge_texture_invalidate_bind_cache();
+    std::fprintf(stderr, "[DRAW] render scale %dx (targets %dx%d), %d target(s) resized\n", g_rs, nw, nh, resized);
+    return true;
+}
+
+// Present now (the game may be paused): the last game frame with the dialog /
+// menu overlay over it, or black under the overlay before the first frame.
+void ge_draw_present_overlay_now() {
+    if (GLuint fbo = front_fbo_id()) { present_blit(fbo, "menu"); return; }
+    SDL_Window* window = psp_get_sdl_window();
+    if (!window) return;
+    const PresentRect pr = present_layout(window);
+    psp_sddialog::set_output_scale(std::max({g_rs, (pr.x1 - pr.x0 + 479) / 480, 1}));
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    const GLboolean sc = glIsEnabled(GL_SCISSOR_TEST);
+    if (sc) glDisable(GL_SCISSOR_TEST);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    present_dialog_overlay(pr);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    SDL_GL_SwapWindow(window);
+    if (sc) glEnable(GL_SCISSOR_TEST);
+    glc::invalidate();
 }
 
 // ---- Debug socket accessors (issue #35) ----

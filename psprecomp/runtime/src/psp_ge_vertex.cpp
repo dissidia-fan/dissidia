@@ -921,3 +921,82 @@ bool ge_decode_vertices_gpu(
     }
     return true;
 }
+
+// ---- Spline patches ----
+
+namespace {
+
+// Knot vector k[0 .. n+3] of a cubic B-spline with n control points: uniform (i - 3), each "open" end clamped.
+void spline_knots(int n, int type, float* k) {
+    for (int i = 0; i < n + 4; i++) k[i] = static_cast<float>(i - 3);
+    if (type & 1) k[0] = k[1] = k[2] = 0.0f;
+    if (type & 2) k[n + 1] = k[n + 2] = k[n + 3] = static_cast<float>(n - 3);
+}
+
+// The four non-zero basis functions at t in [0, n-3] (The NURBS Book A2.1 / A2.2). Returns the index of the
+// control point N[0] weighs.
+int spline_basis(int n, const float* k, float t, float N[4]) {
+    int s = n - 1;                                   // t at the end belongs to the last span
+    for (int i = 3; i < n; i++)
+        if (t >= k[i] && t < k[i + 1]) { s = i; break; }
+    float left[4] = {}, right[4] = {};
+    N[0] = 1.0f;
+    for (int j = 1; j <= 3; j++) {
+        left[j] = t - k[s + 1 - j];
+        right[j] = k[s + j] - t;
+        float saved = 0.0f;
+        for (int r = 0; r < j; r++) {
+            const float d = right[r + 1] + left[j - r];
+            const float tmp = d != 0.0f ? N[r] / d : 0.0f;
+            N[r] = saved + right[r + 1] * tmp;
+            saved = left[j - r] * tmp;
+        }
+        N[j] = saved;
+    }
+    return s - 3;
+}
+
+}  // namespace
+
+bool ge_spline_tessellate(const std::vector<DecodedVertex>& cps, int ucount, int vcount, int utype, int vtype,
+                          int udiv, int vdiv, std::vector<DecodedVertex>& out, int* nu, int* nv) {
+    if (ucount < 4 || vcount < 4 || ucount > 255 || vcount > 255 || udiv < 1 || vdiv < 1) return false;
+    if (cps.size() < static_cast<size_t>(ucount) * static_cast<size_t>(vcount)) return false;
+    const int NU = (ucount - 3) * udiv + 1, NV = (vcount - 3) * vdiv + 1;
+    float ku[260], kv[260];
+    spline_knots(ucount, utype, ku);
+    spline_knots(vcount, vtype, kv);
+    std::vector<float> wu(4 * NU), wv(4 * NV);
+    std::vector<int> fu(NU), fv(NV);
+    for (int i = 0; i < NU; i++) fu[i] = spline_basis(ucount, ku, static_cast<float>(i) / udiv, &wu[4 * i]);
+    for (int i = 0; i < NV; i++) fv[i] = spline_basis(vcount, kv, static_cast<float>(i) / vdiv, &wv[4 * i]);
+    const DecodedVertex& c0 = cps[0];
+    out.resize(static_cast<size_t>(NU) * NV);
+    for (int iv = 0; iv < NV; iv++)
+        for (int iu = 0; iu < NU; iu++) {
+            float p[3] = {}, uv[2] = {}, col[4] = {}, nrm[3] = {};
+            for (int a = 0; a < 4; a++)
+                for (int b = 0; b < 4; b++) {
+                    const float w = wv[4 * iv + a] * wu[4 * iu + b];
+                    if (w == 0.0f) continue;
+                    const DecodedVertex& c = cps[static_cast<size_t>(fv[iv] + a) * ucount + (fu[iu] + b)];
+                    for (int e = 0; e < 3; e++) { p[e] += w * c.pos[e]; nrm[e] += w * c.normal[e]; }
+                    uv[0] += w * c.uv[0]; uv[1] += w * c.uv[1];
+                    for (int e = 0; e < 4; e++) col[e] += w * c.color[e];
+                }
+            DecodedVertex& o = out[static_cast<size_t>(iv) * NU + iu];
+            o = c0;
+            for (int e = 0; e < 3; e++) o.pos[e] = p[e];
+            o.w = 1.0f;
+            o.uv[0] = uv[0]; o.uv[1] = uv[1];
+            for (int e = 0; e < 4; e++) {
+                const float v = col[e] + 0.5f;
+                o.color[e] = static_cast<uint8_t>(v <= 0.0f ? 0.0f : v >= 255.0f ? 255.0f : v);
+            }
+            const float nl = std::sqrt(nrm[0] * nrm[0] + nrm[1] * nrm[1] + nrm[2] * nrm[2]);
+            for (int e = 0; e < 3; e++) o.normal[e] = nl > 0.0f ? nrm[e] / nl : c0.normal[e];
+        }
+    *nu = NU;
+    *nv = NV;
+    return true;
+}

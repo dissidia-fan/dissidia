@@ -57,6 +57,7 @@ The names in the left column are the ones used in the mod folders' `timelines/*.
 | `show_part_once` / `hide_part_once` | 0x010B / 0x010C | Draw / hide a part from this frame on | confirmed |
 | `bone_effect` | 0x042A | Effect on a bone while the range runs. `{slot 0–15, record (9999 = weapon trail, 8888 = other weapon/hand effects), record bit, scale}`. Spawns only if the bone's part is visible. | confirmed |
 | `effect` | 0x0219 | Plays an effect (FEPA record id) | confirmed |
+| `effect` (ranged) | 0x0219 | Not an effect: each tick moves him toward the target (its position + arg1 in height) by up to arg0 m (`FUN_08834E08`); the JSON field `effect` holds arg0, a float | strong |
 | `face_texture` | 0x0214 | Face texture pattern `{group, pattern}` for the range (groups 0/1 probably the eyes, 2 the mouth); goes back to default 1–2 ticks after | confirmed (group meaning strong) |
 | `pin_physics_bone` | 0x0227 | Hair/cloth spring bone follows the animation, at most arg1 degrees per tick (180 = snap) | strong |
 | `motion_camera` | 0x030C | Cinematic camera from the model's `camera_include` (arg1 = 0) / `camera2_include` (1) bone; arg0 = preset | confirmed |
@@ -159,12 +160,22 @@ The names in the left column are the ones used in the mod folders' `timelines/*.
 - **`face_texture` groups:** numbered per model (TexAnm block names); 0/1 = eyes, 2 = mouth for the fighters; Shantotto's group 3 needs her model.
 - **Push-apart masks:** at 0x089C8130/38/40 (not 0x089D8130). They are the battle-start "anchored" bit and world-map piece bits; in battle, `cant_be_pushed` is the only push setting a move has.
 
+### Settled 31 Oct 2026 ([open-questions/](archive/open-questions/))
+- **Abilities:** 0x136 / 0x41 / 0x40 are 'fnct' effect ids, not ablt ids: Evasion Boost, Precision Evasion, Precision Block.
+- **`timed_buff` 0x0B36:** args 1–6 add to physical / magic attack, defence and crit; 0 ticks, 7–10 glow colour and period.
+- **0x0051 = armor:** Brave hits don't interrupt the action (`FUN_0883A150` at 0x0883A380); HP hits still do. (Round-2 "no reader" was wrong.)
+- **0x0077:** read only by the CPU AI (`FUN_08A75D38` → `FUN_08A6D664`).
+- **0x0071:** hits cause no reaction and no Brave loss for self and partner; the attacker's on-hit extras are skipped.
+- **0x0225:** its +0x192 bit 0x20 is read by the stick-movement check `FUN_08B30544`: ground steering with turn / speed multipliers.
+- **Keyed 0x0037:** ends the foe's hang from hit reaction 19. **Keyed 0x0131:** adds to Brave (formula partly open).
+- **`camr`:** 10 presets of 0x38 bytes at +0x390 of battle.bin's `camr` (after a 6 × 0x94 tuning table); dumped in open-questions/projectiles-camera-props.md.
+- **atkp:** +0x14 is hit-stop (game at 15 % speed for N ticks), +0x0D is orbs on hit (probably EX Force), +0x06 a second contact-effect bit, +0x07 crit bonus; see open-questions/atkp.md.
+- Every unnamed event argument now has a meaning (open-questions/events.md); the Studio shows them as labels (tools/studio_ops.py ARG_NOTES) without changing the file format.
+
 ### Still open
-- Ability names for 0x136 / 0x41 / 0x40.
-- Which stats `timed_buff` changes.
-- Keyed 0x0037 (releases a hold state, weak), 0x0071, 0x0131's listener.
-- 0x0051 / 0x0077 (no reader found).
-- The `camr` preset values.
+- What sets attacker +0x384 bit 0x2000 (full freeze instead of 15 % hit-stop); whether the +0x10CA orb counter is EX Force.
+- The exact Brave formula of 0x0131 (actor+0x1094); what 0x0077 tells the CPU AI.
+- The meaning of the 6 × 0x94 `camr` tuning fields.
 
 ### Engine facts found on the way
 - **Actor fields:**
@@ -176,6 +187,7 @@ The names in the left column are the ones used in the mod folders' `timelines/*.
   - +0x5D4 = a summon's owner.
   - +0x1028/+0x1068 = the per-tick follow-up list (not a hit list).
 - **Script id ranges:** 400–469 = evade/guard (400/410/440/460 dodges, 470/471 block, state 0x15); 500–798 = hit reactions; 700/701/750/751 = blow-away.
+- **Shared scripts on a press:** some actions name a low script that is not in the character's `motion_map.json` (Sephiroth's Hell's Gate: action 62 `AIR_ABI_FINISH`, script 48; Lightning's spells, Gabranth's `AIR_NEAR_ABI` and others are the same). The actor never plays that id: the game's code picks the character's own script. Traced in the native build (`tools/script_trace.py`, 28 Oct 2026): Hell's Gate always starts **10060** (motion 059, the dive), then **10062** (061) when the dive hits, or **10061** (060, the action's second script at +0x10) when it reaches the ground. How the code gets from 48 to 10060 is not known yet. The Move Studio shows traced presses from `studio/traced.js`.
 - **vtable:** base 0x089C7C78; slot +0x150 = "can start attack", +0x158 = "can block".
 - **Manager modules:** 0x08AC9xxx = EX_REVENGE_MANAGER; `FUN_08B01B74` = ASSIST_MANAGER::Update.
 - **Effects:** an effect's lifetime is at fx+0xE4. Ground-effect queue at actor+0xD08 (2 per tick), processed by `FUN_0885436C`.

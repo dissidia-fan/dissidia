@@ -378,7 +378,7 @@ HIT_INFO = {
     'follow': 'ticks the target keeps following the attacker',
     'flags': 'bit 0x02 = HP attack (damage = your brave; power ignored), bit 0x01 = random power 1..power',
     'hit_effect_bit': 'contact effect: effect records whose mask has this bit play on hit',
-    'hitstop': 'probably hit-stop (not confirmed)',
+    'hitstop': 'orbs scattered on hit (x value/10, probably EX Force); NOT hit-stop: hit-stop is shake byte 0 (+0x14)',
 }
 
 

@@ -17,8 +17,13 @@
 #include "psp_fx_shader.h"
 #include "psp_tex_pack.h"
 
+#include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdio>
+#include <mutex>
+#include <utility>
+#include <vector>
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
@@ -46,6 +51,85 @@ bool g_built = false;
 bool g_active = false;
 int g_trace_left = 0;
 uint32_t g_index_capacity = dissidia::kIndexBufferBytes;   // raised by hooks_index.cpp once its hooks are installed
+
+// ---- Load trace -------------------------------------------------------------
+// Always on and cheap: the last 32 PACKAGE.BIN reads (time, offset, size, the index entry's crc, and the mod
+// asset when the read touched a loose file) are kept in a ring and printed when the game quits, so a load that
+// never finishes (e.g. a new character hanging on the loading screen) can be traced: quit from the settings menu
+// and the log ends with what the game read last. An override read that comes back short (the loose file is
+// smaller than the entry the game asked for) is logged when it happens. PSPRECOMP_LOAD_TRACE=0 turns it off.
+struct LoadRec {
+    int64_t t_ms = 0;
+    int64_t off = 0;
+    uint32_t size = 0, got = 0, crc = 0;
+    const dissidia::Override* ov = nullptr;
+    bool served = false;   // served (partly) from a loose file
+};
+std::mutex g_lt_mu;
+LoadRec g_lt[32];
+uint64_t g_lt_total = 0;
+int64_t g_lt_t0 = 0;
+bool g_lt_on = true;
+std::vector<std::pair<uint32_t, uint32_t>> g_by_sector;   // (sector, crc) of the patched index, by sector
+int g_short_logs = 0;
+
+int64_t lt_now_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+uint32_t crc_at(int64_t off) {   // the index entry whose sectors contain `off` (caller holds g_lt_mu)
+    if (g_by_sector.empty()) {
+        dissidia::PackageIndex idx;
+        std::string err;
+        const auto& raw = g_mods.patched_index();
+        if (raw.empty() || !idx.parse(raw.data(), raw.size(), &err)) return 0;
+        g_by_sector.reserve(idx.entries.size());
+        for (const auto& e : idx.entries) g_by_sector.emplace_back(e.sector, e.crc);
+        std::sort(g_by_sector.begin(), g_by_sector.end());
+    }
+    const uint32_t sec = uint32_t(off / dissidia::kSectorSize);
+    auto it = std::upper_bound(g_by_sector.begin(), g_by_sector.end(), std::make_pair(sec, 0xFFFFFFFFu));
+    if (it == g_by_sector.begin()) return 0;
+    return std::prev(it)->second;
+}
+const dissidia::Override* override_at(int64_t off, uint32_t size) {
+    for (const auto& o : g_mods.overrides())
+        if ((uint64_t)off < o.start + o.span && (uint64_t)off + size > o.start) return &o;
+    return nullptr;
+}
+void load_trace_note(int64_t off, uint32_t size, uint32_t got, bool served) {
+    if (!g_lt_on) return;
+    std::lock_guard<std::mutex> lk(g_lt_mu);
+    const int64_t t = lt_now_ms();
+    if (!g_lt_t0) g_lt_t0 = t;
+    LoadRec& r = g_lt[g_lt_total % 32];
+    r = LoadRec{};
+    r.t_ms = t; r.off = off; r.size = size; r.got = got; r.served = served;
+    r.crc = crc_at(off);
+    r.ov = served ? override_at(off, size) : nullptr;
+    g_lt_total++;
+    if (served && got < size && g_short_logs < 20) {
+        g_short_logs++;
+        std::fprintf(stderr, "[LOAD] short read from a mod file: asked %u B at 0x%llX, got %u B (%s)\n", size,
+                     (unsigned long long)off, got, r.ov ? r.ov->file.c_str() : "?");
+    }
+}
+void load_trace_dump() {
+    if (!g_lt_on) return;
+    std::lock_guard<std::mutex> lk(g_lt_mu);
+    if (!g_lt_total) return;
+    const int64_t now = lt_now_ms();
+    const uint64_t n = std::min<uint64_t>(g_lt_total, 32);
+    std::fprintf(stderr, "[LOAD] last %llu of %llu PACKAGE.BIN reads (newest last; the game quit %.1f s after the last one):\n",
+                 (unsigned long long)n, (unsigned long long)g_lt_total,
+                 (now - g_lt[(g_lt_total - 1) % 32].t_ms) / 1000.0);
+    for (uint64_t i = g_lt_total - n; i < g_lt_total; i++) {
+        const LoadRec& r = g_lt[i % 32];
+        std::fprintf(stderr, "[LOAD]   t=%8.2fs  off=0x%09llX  size=%8u  crc=%08X  %s%s\n", (r.t_ms - g_lt_t0) / 1000.0,
+                     (unsigned long long)r.off, r.size, r.crc,
+                     r.served ? (r.ov ? ("MOD " + r.ov->asset).c_str() : "MOD") : "retail",
+                     r.served && r.got < r.size ? "  SHORT" : "");
+    }
+}
 
 bool ends_with_nocase(const std::string& s, const char* suf) {
     size_t n = std::char_traits<char>::length(suf);
@@ -158,6 +242,7 @@ bool overlay_read(int tag, int host_fd, int64_t off, uint32_t size, uint8_t* des
                                   g_dbg_rdram ? (uint32_t)(dest - g_dbg_rdram) + 0x08000000u : 0u);
     if (pkg_trace && size >= 0x100000) psp_dump_func_ring("PKG-RING");
     bool hit = g_mods.read_package(off, size, dest, nread, base);
+    load_trace_note(off, size, hit ? *nread : size, hit);
     if (hit && g_trace_left > 0) {
         g_trace_left--;
         std::fprintf(stderr, "[MODS] read off=0x%llX size=%u -> %u B served via overrides dest=0x%08X\n",
@@ -183,6 +268,8 @@ uint32_t dissidia_package_index_bytes(const std::string& psp_info_path) {
 void dissidia_package_index_extend(bool on) { g_index_capacity = on ? dissidia::kIndexExtendedBytes : dissidia::kIndexBufferBytes; }
 
 void dissidia_install_mod_io() {
+    if (const char* e = std::getenv("PSPRECOMP_LOAD_TRACE")) g_lt_on = !(e[0] == '0');
+    if (g_lt_on) std::atexit(load_trace_dump);
     PspIoPolicy policy{};
     policy.classify_open = classify_open;
     policy.overlay_read = overlay_read;

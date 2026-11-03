@@ -2348,10 +2348,13 @@ static void hle_sceUtilityMsgDialogUpdate(
 // +0x0C unk, +0x10 inputtype, +0x14 lines, +0x18 unk, +0x1C u16* desc,
 // +0x20 u16* intext, +0x24 s32 outtextlength, +0x28 u16* outtext,
 // +0x2C s32 result, +0x30 s32 outtextlimit.
-// There is no keyboard UI: after InitStart the dialog reports INITIALIZE,
-// then RUNNING for OSK_RUNNING_TICKS Update/GetStatus polls (so the game's
-// own dialog handling runs), then completes with PSPRECOMP_OSK_TEXT, else
-// the initial text, else "PLAYER". Status machine = the shared one above.
+// After InitStart the dialog reports INITIALIZE, then RUNNING for
+// OSK_RUNNING_TICKS Update/GetStatus polls (so the game's own dialog handling
+// runs), then shows the on-screen keyboard (psp_sddialog::KeyboardDialog, drawn
+// over the game like the save list) until the player picks Done. Headless
+// (PSPRECOMP_OSK_TEXT set, or PSPRECOMP_OSK_AUTO=1, or PSPRECOMP_SAVEDATA_AUTO):
+// completes at once with PSPRECOMP_OSK_TEXT, else the initial text, else
+// "PLAYER". Status machine = the shared one above.
 static constexpr uint32_t OSK_DATACOUNT_OFFSET = 0x30;
 static constexpr uint32_t OSK_DATA_OFFSET = 0x34;
 static constexpr uint32_t OSKDATA_INTEXT_OFFSET = 0x20;
@@ -2367,6 +2370,21 @@ static constexpr int OSK_RUNNING_TICKS = 4;
 
 static UtilityDialogState g_osk_dialog;
 static int g_osk_ticks = 0;
+
+struct OskUi {
+    int stage = 0;               // 0 = not started, 1 = keyboard showing
+    psp_sddialog::KeyboardDialog dlg;
+    uint32_t pub_rev = 0;
+    int pub_scale = 0;
+    psp_sddialog::Canvas canvas;
+};
+static OskUi g_osk_ui;
+
+static bool osk_headless() {
+    const char* t = std::getenv("PSPRECOMP_OSK_TEXT");
+    const char* a = std::getenv("PSPRECOMP_OSK_AUTO");
+    return (t && *t) || (a && *a && std::strcmp(a, "0") != 0) || sd_auto_mode();
+}
 
 static bool osk_ptr_ok(uint32_t a) {
     return a >= 0x08000000u && a < 0x0C000000u;
@@ -2395,7 +2413,49 @@ static void osk_complete(UtilityDialogState& dlg, uint8_t* rdram) {
         }
         std::u16string out16;
         const char* env = std::getenv("PSPRECOMP_OSK_TEXT");
-        if (env && *env) {
+        // outtextlimit counts u16 units; keep room for the terminator.
+        size_t max_chars = limit > 1 ? static_cast<size_t>(limit) - 1 : 0;
+        if (limit <= 0) max_chars = 31;
+        if (!osk_headless()) {   // the on-screen keyboard
+            using namespace psp_sddialog;
+            if (g_osk_ui.stage == 0) {
+                std::u16string desc;
+                uint32_t dptr = psp_mem_read<uint32_t>(rdram, data + 0x1C);
+                if (osk_ptr_ok(dptr))
+                    for (int i = 0; i < 128; ++i) {
+                        uint16_t c = psp_mem_read<uint16_t>(rdram, dptr + i * 2);
+                        if (c == 0) break;
+                        desc.push_back(static_cast<char16_t>(c));
+                    }
+                bool confirm_cross = psp_mem_read<int32_t>(rdram, params + 8) == 1;   // common.buttonSwap
+                if (const char* e = std::getenv("PSPRECOMP_SAVEDATA_CONFIRM"))
+                    confirm_cross = std::strcmp(e, "circle") != 0;
+                g_osk_ui.dlg.begin(desc, in16, int(max_chars ? max_chars : 1), confirm_cross);
+                g_osk_ui.stage = 1;
+                g_osk_ui.pub_scale = 0;
+                osk_set_active(true);
+                fprintf(stderr, "[HLE] sceUtilityOsk: keyboard opened (max %zu chars)\n", max_chars);
+            }
+            int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
+            if (g_osk_ui.dlg.update(sd_pad_buttons(), now_ms) == Result::Running) {
+                const int scale = output_scale();
+                if (scale != g_osk_ui.pub_scale || g_osk_ui.dlg.revision() != g_osk_ui.pub_rev) {
+                    g_osk_ui.canvas = Canvas(scale);
+                    g_osk_ui.dlg.render(g_osk_ui.canvas);
+                    overlay_publish(g_osk_ui.canvas);
+                    g_osk_ui.pub_scale = scale;
+                    g_osk_ui.pub_rev = g_osk_ui.dlg.revision();
+                }
+                dlg.pending = true;   // keep reporting RUNNING until Done
+                return;
+            }
+            overlay_clear();
+            osk_set_active(false);
+            g_osk_ui.stage = 0;
+            out16 = g_osk_ui.dlg.text();
+            if (out16.empty()) out16 = in16.empty() ? u"PLAYER" : in16;
+        } else if (env && *env) {
             for (const char* p = env; *p; ++p)
                 out16.push_back(static_cast<char16_t>(
                     static_cast<unsigned char>(*p)));  // Latin-1/ASCII
@@ -2404,9 +2464,6 @@ static void osk_complete(UtilityDialogState& dlg, uint8_t* rdram) {
         } else {
             out16 = u"PLAYER";
         }
-        // outtextlimit counts u16 units; keep room for the terminator.
-        size_t max_chars = limit > 1 ? static_cast<size_t>(limit) - 1 : 0;
-        if (limit <= 0) max_chars = 31;
         if (out16.size() > max_chars) out16.resize(max_chars);
         result = (out16 == in16) ? OSK_RESULT_UNCHANGED : OSK_RESULT_CHANGED;
         if (osk_ptr_ok(outtext)) {
@@ -2450,6 +2507,11 @@ static void hle_sceUtilityOskShutdownStart(
     uint8_t* rdram, recomp_context* ctx
 ) {
     utility_dialog_shutdown_start(g_osk_dialog, ctx);
+    if (g_osk_ui.stage) {
+        psp_sddialog::overlay_clear();
+        psp_sddialog::osk_set_active(false);
+        g_osk_ui.stage = 0;
+    }
     (void)rdram;
 }
 

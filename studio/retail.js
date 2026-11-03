@@ -345,3 +345,20 @@ function retailAbilities(mainBin, langArc) {
   }
   return out;
 }
+
+/* equip-bonus names (request: "Can we use the bonus Name instead of the id?"). An attack's bonus is a system.bin 'fncs'
+   effect set (ablt +0x14); its help text (ablt +4 -> text/<lang>/mess_pk_customize_ability_0.bin entry 0) describes
+   it in the coloured lines that aren't the orange 'Additional Effect' line, e.g. "Minor \x10āﾁPhysical Shield\x1b
+   effect." -> "Minor Physical Shield". -> Map(set id -> name), from every retail attack that has a bonus. */
+function retailBonusNames(mainBin, helpPak) {
+  const pdv = DV(helpPak), off = pdv.getUint32(0x10, true), size = pdv.getUint32(0x14, true);
+  const helps = messRecords(helpPak.subarray(off, off + size));
+  const sys = arcRead(mpkNamed(mainBin)['system.bin']), ablt = sys.find((e) => e.tag === 'ablt').data, adv = DV(ablt), out = new Map();
+  for (let i = 0, n = adv.getUint32(8, true); i < n; i++) {
+    const r = 16 + 40 * i, set = adv.getInt16(r + 0x14, true); if (set < 0 || out.has(set) || ablt[r + 0x16] > 1) continue;   // attacks only (brave / HP)
+    const lines = (helps[adv.getUint16(r + 4, true)] || '').split('\n').filter((l) => l.includes('\x10') && !l.startsWith('\x10Łａ'));
+    const name = lines.map((l) => shownText(l).replace(/\s*effect\.?$/i, '').replace(/[.,]$/, '')).filter(Boolean).join(', ');
+    if (name) out.set(set, name);
+  }
+  return out;
+}

@@ -607,6 +607,18 @@ def load_names_and_texts(read, path=None, required=False):
     return load_ability_names(path), texts
 
 
+def after_id(v, char):
+    """An entry's "after": null = none; an ability id ("2201", 0x2201); or a key of the character's own name map
+    ("01", as the Move Studio writes it), which is (char << 8) | key."""
+    if v in (None, "", "none"):
+        return 0xFFFF
+    if isinstance(v, str):
+        t = v.strip().lower()
+        t = t[2:] if t.startswith("0x") else t
+        return (char << 8) | int(t, 16) if len(t) <= 2 else int(t, 16)
+    return int(v)
+
+
 def apply_ability_names(aents, chars, names, texts, log=print):
     """Point the 'ablt' records of every roster character that the name map lists at new name / help records (appended
     to `texts`). A record whose command id differs from the map's 'cmd' is left alone (the map was written for another
@@ -640,7 +652,7 @@ def apply_ability_names(aents, chars, names, texts, log=print):
                 r[ABLT_PHASE] = ABLT_PHASES[str(ent["phase"]).lower()]
             if "after" in ent:                      # prerequisite ability (+6): null = none, else an ability id
                 v = ent["after"]
-                struct.pack_into("<H", r, ABLT_AFTER, 0xFFFF if v in (None, "", "none") else int(str(v), 16) if isinstance(v, str) else int(v))
+                struct.pack_into("<H", r, ABLT_AFTER, after_id(v, char))
             if ent.get("cp") is not None:           # CP to equip (+0x0E); once mastered (+0x10) defaults to half, rounded down
                 cp = int(ent["cp"])
                 struct.pack_into("<hh", r, ABLT_CP, cp, int(ent["cp_mastered"]) if ent.get("cp_mastered") is not None else cp // 2)

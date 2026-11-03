@@ -75,3 +75,17 @@ bool ge_decode_vertices_gpu(
 /// sane and no game-module degenerate-matrix fallback is installed (such a
 /// fallback needs the CPU world-space position).
 bool ge_gpu_transform_ok(const GeState& state);
+
+// ---- Spline patches (GE cmd 0x06, sceGuDrawSpline) ----
+
+/// Tessellate a GE spline surface. `cps` holds ucount x vcount decoded control
+/// points, u fastest (as the GE reads them). Each direction is a cubic
+/// B-spline with knots i - 3; an "open" edge (type bit 0 = first, bit 1 =
+/// last; sceGu GU_OPEN_*) clamps that end so the surface reaches the edge row
+/// of control points. A direction with n points gives (n - 3) * div + 1
+/// vertices. Position, UV, colour and normal are blended with the same basis
+/// (PPSSPP SplineCommon). `out` gets nu x nv vertices, u fastest. Returns
+/// false (out untouched) for counts outside 4..255, a division < 1 or too few
+/// control points.
+bool ge_spline_tessellate(const std::vector<DecodedVertex>& cps, int ucount, int vcount, int utype, int vtype,
+                          int udiv, int vdiv, std::vector<DecodedVertex>& out, int* nu, int* nv);

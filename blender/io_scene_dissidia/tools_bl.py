@@ -792,8 +792,31 @@ def replace_weapon_from_file(context, arm, slot_ob, path, flip=False, keep_scale
         for o in new:
             bpy.data.objects.remove(o, do_unlink=True)
         raise RuntimeError('no mesh in that file')
-    # one mesh, in the imported root's space (origin = grip)
     root = next((o for o in new if o.parent is None), meshes[0])
+    return _fit_weapon(context, arm, slot_ob, meshes, root, flip, keep_scale, max_tex, max_tris, length, grip_at_origin,
+                       imported=new)
+
+
+def replace_weapon_from_objects(context, arm, slot_ob, obs, root=None, flip=False, keep_scale=False, max_tex=256,
+                                max_tris=1200, length=0.0, grip_at_origin=False):
+    """replace_weapon_from_file for meshes already in the scene (a weapon that came in another file, e.g. the
+    sword inside a ripped character's .blend). Works on copies: the objects, their materials and pictures stay as
+    they are. root: the object whose origin counts as the model's (grip_at_origin); default the active / first one."""
+    meshes = [o for o in obs if o.type == 'MESH' and len(o.data.polygons)]
+    if not meshes:
+        raise RuntimeError('select the weapon\'s mesh (one or more objects)')
+    return _fit_weapon(context, arm, slot_ob, meshes, root or meshes[0], flip, keep_scale, max_tex, max_tris, length,
+                       grip_at_origin, imported=None)
+
+
+def _fit_weapon(context, arm, slot_ob, meshes, root, flip, keep_scale, max_tex, max_tris, length, grip_at_origin,
+                imported=None):
+    """the meshes -> one mesh lined up with slot_ob's old weapon, in its place. imported: the objects a file brought
+    (removed afterwards with their materials); None: scene objects, left untouched (pictures are copied before
+    shrinking)."""
+    from .dfx import placeholders as ph
+    new = imported or []
+    # one mesh, in the root's space (origin = grip)
     inv_root = root.matrix_world.inverted()
     import bmesh
     bm = bmesh.new()
@@ -815,18 +838,21 @@ def replace_weapon_from_file(context, arm, slot_ob, path, flip=False, keep_scale
     _decimate(me, max_tris)
     for m in mats:
         img = _base_colour_image(m)                   # PSP materials are one texture: keep the colour map only
+        if img is not None and imported is None and max(img.size) > max_tex:
+            img = img.copy()                          # a scene object's picture: shrink a copy, not theirs
         me.materials.append(common.make_material(slot_ob.name + '_' + m.name[:20], img))
         if img is not None and max(img.size) > max_tex:
             k = max_tex / max(img.size)
             img.scale(max(8, int(img.size[0] * k)), max(8, int(img.size[1] * k)))
-    for o in new:
-        bpy.data.objects.remove(o, do_unlink=True)
-    keep = {_base_colour_image(m2) for m2 in me.materials}
-    for m in mats:                                    # the file's own materials and their extra maps
-        imgs = {n.image for n in (m.node_tree.nodes if m.node_tree else []) if n.type == 'TEX_IMAGE' and n.image}
-        bpy.data.materials.remove(m)
-        for img in imgs - keep:
-            bpy.data.images.remove(img)
+    if imported is not None:
+        for o in new:
+            bpy.data.objects.remove(o, do_unlink=True)
+        keep = {_base_colour_image(m2) for m2 in me.materials}
+        for m in mats:                                # the file's own materials and their extra maps
+            imgs = {n.image for n in (m.node_tree.nodes if m.node_tree else []) if n.type == 'TEX_IMAGE' and n.image}
+            bpy.data.materials.remove(m)
+            for img in imgs - keep:
+                bpy.data.images.remove(img)
     # line up with the slot
     hand = hand_bone_of(slot_ob)
     old = _slot_local(arm, slot_ob, hand)

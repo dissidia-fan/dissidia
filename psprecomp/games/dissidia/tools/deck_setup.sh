@@ -13,6 +13,8 @@
 #                        (steam_shortcut.py: capsule, banner, hero, logo, icon; an earlier entry for this launcher is
 #                        renamed in place, keeping play time and Launch Options). Steam is closed for a moment and
 #                        started again if it is running. Desktop Mode only.
+#   --close-steam        with --add-to-steam: close Steam for that moment without asking (for deck_gui.sh, which asks
+#                        in a dialog first; without a terminal the question could not be answered)
 #   --preset retro|crisp look baked into the launcher (default: the one the existing launcher has, else crisp, which
 #                        fills the Deck's width; see docs/steamdeck.md; --retro/--crisp work too)
 #   --jobs N             parallel compile jobs (default 3, about 1.5 GB RAM each)
@@ -27,8 +29,10 @@
 #                        then run as usual: the runtime is rebuilt incrementally and the launcher rewritten
 #   --allow-outside-home allow an ISO/workdir/checkout outside $HOME (the container may not see it)
 #
-# Mods: the checkout tracks the installed mods in psprecomp/work/mods. If <workdir>/mods does not exist, it is
-# created as a link to that folder, so a later --update brings new mods along with the code.
+# Mods: the checkout has the character mod folders (mods/); run.sh builds <workdir>/mods from them at every start,
+# so a later --update brings new mods along with the code. <workdir>/mods is not in git.
+#
+# No terminal? deck_gui.sh (next to this script) does all of this from dialogs: double-click it in Dolphin.
 #
 # Resumable: each slow step leaves a stamp in <workdir>/.deck_setup/; run the same command again after an
 # interruption and finished steps are skipped (the analysis/recompile steps skip themselves via
@@ -46,7 +50,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../../.." && pwd)"
 
 ISO=""; WORK=""; DRY=0; CHECK=0; INSTALL_DB=0; ADD_STEAM=0; JOBS=3; NAME=dissidia
-IMAGE=docker.io/library/ubuntu:24.04; PRESET=""; OUTSIDE_HOME=0; REDO=""; LAUNCHER_ONLY=0; UPDATE=0
+IMAGE=docker.io/library/ubuntu:24.04; PRESET=""; OUTSIDE_HOME=0; REDO=""; LAUNCHER_ONLY=0; UPDATE=0; CLOSE_STEAM=0
 ARGS=("$@")
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -54,6 +58,7 @@ while [ $# -gt 0 ]; do
     --dry-run) DRY=1; shift ;;
     --install-distrobox) INSTALL_DB=1; shift ;;
     --add-to-steam) ADD_STEAM=1; shift ;;
+    --close-steam) CLOSE_STEAM=1; shift ;;
     --launcher-only) LAUNCHER_ONLY=1; shift ;;
     --update) UPDATE=1; shift ;;
     --allow-outside-home) OUTSIDE_HOME=1; shift ;;
@@ -256,6 +261,7 @@ add_to_steam() {
   # The Steam entry ("Dissidia Trēdecim") and its library artwork; host python3, standard library only.
   local args=("$WORK/play.sh" --art "$HERE/../steam" --match-dir "$WORK" --match-dir "$(dirname "$REPO")")
   [ "$DRY" = 0 ] || args+=(--dry-run)
+  [ "$CLOSE_STEAM" = 0 ] || args+=(--yes)
   echo "+ python3 $HERE/steam_shortcut.py ${args[*]}"
   command -v python3 >/dev/null || { echo "python3 not found on the host; add $WORK/play.sh by hand, see docs/steamdeck.md." >&2; return 0; }
   python3 "$HERE/steam_shortcut.py" "${args[@]}" || echo "adding to Steam failed (above); see \"Add it to Steam\" in docs/steamdeck.md." >&2
@@ -332,14 +338,23 @@ fi
 # 5. analysis (shipped) + recompile + overlays + C++ build; every part resumes by itself
 inbox bash -c ". \"\$HOME/.cargo/env\" 2>/dev/null; exec \"$HERE/pipeline.sh\" \"$WORK\" --jobs $JOBS"
 
-# 6. mods: link <workdir>/mods to the checkout's tracked mods unless the workdir already has its own
-if [ -d "$REPO/work/mods" ]; then
-  if [ -L "$WORK/mods" ] || [ ! -e "$WORK/mods" ]; then
-    run ln -sfn "$REPO/work/mods" "$WORK/mods"
-  else
-    echo "mods: $WORK/mods is a folder of its own, left as it is. To use the repo's mods instead:" >&2
-    echo "      mv $WORK/mods $WORK/mods_old && ln -s $REPO/work/mods $WORK/mods" >&2
+# 6. mods: <workdir>/mods is the workdir's own folder; run.sh builds it from the checkout's mod folders at every start.
+#    A workdir set up while the checkout tracked psprecomp/work/mods has a link to it instead. That link becomes a real
+#    folder, filled from the last commit that tracked those files (this install's roster slots and menu ids), plus
+#    what git never tracked there (the build state, the texture dump).
+if [ -L "$WORK/mods" ]; then
+  OLD="$(readlink "$WORK/mods")"
+  TOP="$(git -C "$REPO" rev-parse --show-toplevel)"; PFX="$(git -C "$REPO" rev-parse --show-prefix)work/mods"
+  LAST="$(git -C "$TOP" log -1 --format=%H --diff-filter=D -- "$PFX/roster.txt" 2>/dev/null || true)"
+  run rm "$WORK/mods"
+  run mkdir -p "$WORK/mods"
+  if [ -n "$LAST" ]; then
+    echo "+ git archive $LAST^:$PFX | tar -x -C $WORK/mods"
+    [ "$DRY" = 1 ] || git -C "$TOP" archive --format=tar "$LAST^:$PFX" | tar -x -C "$WORK/mods"
   fi
+  [ ! -d "$OLD" ] || run cp -Rn "$OLD/." "$WORK/mods/"
+else
+  run mkdir -p "$WORK/mods"
 fi
 
 # 7. the tools' Python packages (numpy, Pillow, scipy at the versions in tools/requirements.txt, in tools/.venv):

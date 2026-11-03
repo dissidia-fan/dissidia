@@ -163,7 +163,7 @@ async function cpCopyMove(srcSpec, cmdId) {
       if (e.op === 'weapon_volume' && e.args) groups.add(e.args[0]);
       for (const k of ['projectile', 'alt_projectile']) if (e[k] !== undefined) { wantProj(e[k]); const a2 = e.args && e.args[0]; const pr = sMagiById.get(e[k]); if (pr && pr.origin === 6 && typeof a2 === 'number' && a2 > 0) fepas.add(a2); }
       for (const k of ['effect', 'alt_effect']) if (e[k] !== undefined) fepas.add(e[k]);
-      if (e.sound !== undefined && sBank && SndBank.slotOfCue(sBank, e.sound) >= 0) sounds.add(e.sound);
+      if (e.sound !== undefined && sBank && e.sound - edTlBase(sBank) >= 0 && e.sound - edTlBase(sBank) < sBank.slots.length) sounds.add(e.sound);
     }
   }
 
@@ -320,9 +320,10 @@ async function cpCopyMove(srcSpec, cmdId) {
         else return -1;
         SndBank.refresh(bank, di); slotMap.set(si, di); return di;
       };
-      for (const cue of sounds) { const di = copySlot(SndBank.slotOfCue(sBank, cue)); if (di >= 0) sndMap.set(cue, SndBank.cueOf(bank, di)); }
+      const sBase = edTlBase(sBank), slotOf = (cue) => (cue - sBase >= 0 && cue - sBase < sBank.slots.length ? cue - sBase : -1);   // timeline numbers (the assist's are -50000)
+      for (const cue of sounds) { const si = slotOf(cue), di = si >= 0 ? copySlot(si) : -1; if (di >= 0) sndMap.set(cue, edTlBase(bank) + di); }
       S.files[ps].bin = SndBank.bankToBytes(bank);
-      if (S.mod) { S.mod.sound_names = S.mod.sound_names || {}; for (const [a, b] of sndMap) S.mod.sound_names[String(b)] = `${moveName} (${src.label} ${a})`; }
+      if (S.mod) { S.mod.sound_names = S.mod.sound_names || {}; for (const [a, b] of sndMap) S.mod.sound_names[String(b - edTlBase(bank))] = `${moveName} (${src.label} ${a})`; }
       rep.copied.push(`${sndMap.size} sound${sndMap.size > 1 ? 's' : ''}`);
     } else if (sounds.size) rep.left.push('its sounds (this character has no sound bank)');
     // animations into every model of this moveset
@@ -462,8 +463,8 @@ function cpAfterUndo(u) {
 /* ---------------------------------------------------------------- duplicate an animation of this character
    A copy of motion `mi` is appended to every model of this moveset (same skeleton: the chunk is cloned as it is), with a
    copy of its event timeline (or an empty one), and optionally the selected press is pointed at the copy. Undo-able as
-   one edit. -> the new motion index, or -1 */
-async function dupMotion(mi, newName, withEvents, pointStep) {
+   one edit (quiet: no toast when it worked). -> the new motion index, or -1 */
+async function dupMotion(mi, newName, withEvents, pointStep, quiet) {
   if (S.readOnly) { readOnlyNote(); return -1; }
   if (!S.rig || S.rig.retail) { toast('Pick the mod character (not the retail original) to add animations to it.'); return -1; }
   const rigs = S.rigs.filter((r) => r.ms === S.rig.ms && !r.retail);
@@ -500,7 +501,7 @@ async function dupMotion(mi, newName, withEvents, pointStep) {
   S.tlPaths.push(msPath(fn)); markDirty([msPath(fn)]);
   cpRigChanged();
   setMotion(newIdx); runChecks(); renderAll();
-  toast(`${name} added as a copy of ${motionName(mi)}${srcPath ? ' with its events' : ' (empty timeline)'}${pointStep ? '; this press now plays it' : ''}. Edit the poses in Blender (Open in Blender), events here.`);
+  if (!quiet) toast(`${name} added as a copy of ${motionName(mi)}${srcPath ? ' with its events' : ' (empty timeline)'}${pointStep ? '; this press now plays it' : ''}. Edit the poses in Blender (Open in Blender), events here.`);
   return newIdx;
 }
 /* ---------------------------------------------------------------- UI: the New move panel's "Copy from…" */

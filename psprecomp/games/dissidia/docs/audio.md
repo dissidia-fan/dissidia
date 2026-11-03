@@ -121,13 +121,31 @@ libsndfile and its `libgha` submodule: `git clone --recursive`, `cmake ../src`);
 - Banks of 64 distinct tones were built for several codes and dropped in the mods directory. In a Quick Battle the tones were audible
   in the audio dump, and the `SetVoice` sizes matched the tone-bank slots exactly. A modified bank is therefore read, parsed and played
   by the unmodified runtime.
-- Limitation, not fixed: an extra character (slot >= 33, e.g. `viv100`) does not request its own `voice_p_<code>_00.scd`. `roster.cpp`
-  (`voiceslot_hook`, the code-string-table patch, the charinfo clone that copies `like`'s record including the +0x74 code) makes the
-  extra use `like`'s voice slot and bank, and `voice_load_p_<code>` has no entry for a new code. A replacement bank only takes effect
-  for an extra if it is installed under `like`'s own file name, which changes that character too. Giving extras their own bank needs a
-  runtime change (redirect the scd read to the extra's file and supply a VOLD entry through a repacked `voice_load_parameter.mpk`).
-  The second check on Vivi (`like` = Shantotto in the test setup) did not match retail gst100 slot sizes, so which retail bank an
-  extra ends up using was not pinned down; treat this as unconfirmed.
+- An extra character does not reuse `like`'s battle bank; before 28 Oct it loaded **none** (see the next section). `roster.cpp`
+  `voiceslot_hook` (`FUN_088A3C98`, called from the menu overlay only) still gives an extra `like`'s record in the 35-slot table
+  that `FUN_088A3A94` fills from `voice_load_parameter.mpk`, so menu-side voice (character select) stays `like`'s.
+
+### A character's own voice set (28 Oct)
+
+The fighter loader `FUN_08845230` (one call per battle object: gmo, then cosx, exex, objx, voice) builds the voice paths from
+the 8-byte code at chrp `+0x74` (`P_NOC100` for an extra, `roster_mainbin.py`): `voice/<L>/battle/voice_<code>_00.scd`
+(`voice_<code>_a_00.scd` for an assist object, objentry flag 8) and, for a non-assist, `voice/<L>/voice_load_<code>.bin` (VOLD;
+`prologus_voice_load_` in the prologue). It does so only when the object's costume has a `.cosx`: `FUN_08843460` keeps the cosx
+data at obj+8 and `0x08845778` skips the whole voice step when that is 0 (the cosx, 68 bytes, also holds the `_00` suffix).
+Retail fighters have `obj/p_<code>_{1p,2p,3p,zako}.cosx`; the extras had none, so the game read no voice bank for them
+(load trace of a Noctis battle: Noctis gmo, objx; Lightning gmo, cosx, exex, objx, `voice_p_gst130_00.scd`,
+`voice_load_p_gst130.bin`). Their voice events only played when the based-on character was in the same fight.
+
+`charmod.py build` (`voice_set`, list `new_character.VOICE_SET`) now gives every extra the based-on character's cosx files
+and voice banks under its own code, plus an **empty** VOLD (header, 0 records: the based-on character's would make it say
+that character's streamed `<abbr>_battle_NN.at3` lines; `FUN_088A3914` / `FUN_088A39D4` just copy the file and point at its
+records). A folder that lists its own file for any of these keeps it. The exex (EX-mode aura) is not added: it is not needed
+for the voice and would change how EX Mode looks.
+
+The bank keeps the based-on character's header id (Noctis: 18100) and its slots byte for byte; new lines are **appended**
+(Move Studio, *Browse voices…*). In a mirror match both banks register the same id, the shared cues resolve to identical clips
+and the appended cues (past the based-on bank's count) only fit the extra's bank, the same rule as the objx sound bank.
+Not yet heard in game (28 Oct).
 
 ### Slot roles (statistical, not per-action)
 

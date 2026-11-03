@@ -391,6 +391,20 @@ PspDebugReply psp_debug_handle_line(const char* line,
         ge_draw_set_fast(std::atoi(line + 2) != 0);
         return make_ok_empty();
     }
+    if (line[0] == 'F' && line[1] == 'F' && line[2] == ' ') {
+        // FF <ms> [x]: fast-forward for up to ms (clamped to 120 s; 0 stops it). The game's clock jumps from vblank
+        // to vblank instead of waiting, so it runs as fast as frames render (x > 1: at most x times real time): a
+        // quick drive to some screen
+        extern void psp_display_fast_forward(int64_t ms, int factor);
+        unsigned long ms = 0, x = 0;
+        const char* end = nullptr;
+        if (!parse_ulong(skip_spaces(line + 3), 10, &ms, &end)) return make_err("bad-duration");
+        if (*skip_spaces(end) != '\0' && (!parse_ulong(skip_spaces(end), 10, &x, nullptr) || x > 1000)) {
+            return make_err("bad-factor");
+        }
+        psp_display_fast_forward(static_cast<int64_t>(ms > 120000 ? 120000 : ms), static_cast<int>(x));
+        return make_ok_empty();
+    }
     if (line[0] == 'F' && line[1] == ' ') {
         // F <path>: dump per-function entry counts (needs PSPRECOMP_PC_TRACE=1)
         extern void psp_dump_func_counts(const char* path);

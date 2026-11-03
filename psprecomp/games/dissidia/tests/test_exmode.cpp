@@ -13,6 +13,9 @@ static std::vector<uint8_t> g_ram(0x08000000u);
 std::string dissidia_mods_dir() { return "/nonexistent"; }
 FuncPtr ovl_menu_lookup(uint32_t) { return nullptr; }
 FuncPtr ovl_battle_lookup(uint32_t) { return nullptr; }
+FuncPtr ovl_extra_lookup(uint32_t) { return nullptr; }
+int dissidia_frame_ticks() { return 2; }              // framerate.cpp (30 fps logic) is not linked into this host test
+float dissidia_own_clock_scale() { return 1.0f; }
 thread_local uint32_t g_func_ring[32];
 thread_local uint32_t g_func_ring_pos;
 void psp_dump_func_ring(const char*) {}
@@ -258,6 +261,29 @@ int main() {
     bone_post(BARTZ);
     CHECK(RF(bone_mat(157)) == 3.0f);
     // no tokens anywhere: no hooks
+    // ---- armiger= with fx draw bone -1 (2026-11-01: the activation pillar gave way to the NOC_EX_START effect): the ring
+    // works as before, no visibility entry is touched for the fx part and the floor / pillar bones keep their rest scale 0
+    g_entries.clear(); g_hooks.clear();
+    setenv("PSPRECOMP_ROSTER", "34 noc100 9 nm=Noctis exranged=2 armiger=157,158,159,73,-1,14 exarms=181,11,510", 1);
+    dissidia_roster_init(g_ram.data());
+    dissidia_roster_grid_install();
+    CHECK(g_hooks.count(0x0880EA20u));
+    {
+        const uint8_t vis2[12] = {64, 0, 0, 73, 1, 0xFF, 0xFF, 1, 0xFF, 0xFF, 1, 0xFF};   // 73 shown, two free entries
+        std::memcpy(R(VIS), vis2, sizeof vis2);
+        set_mat_identity(158, 0, 0.03f, 0, 0.0f);
+        set_mat_identity(159, 0, 1.15f, 0, 0.0f);
+        R(NOC + 0x5B2u)[0] = 0;
+        bone_post(NOC);                                          // outside EX: 73 hidden, the free entries untouched
+        CHECK(R(VIS + 3)[0] == 73 && R(VIS + 4)[0] == 0);
+        CHECK(R(VIS + 6)[0] == 0xFF && R(VIS + 7)[0] == 1 && R(VIS + 8)[0] == 0xFF && R(VIS + 9)[0] == 0xFF);
+        R(NOC + 0x5B2u)[0] = 4;
+        R(VIS + 4)[0] = 1; R(VIS + 5)[0] = 0xFF;                 // EX starts: the engine shows the ring
+        for (int i = 0; i < 6; i++) bone_post(NOC);
+        CHECK(R(VIS + 4)[0] == 1 && R(VIS + 5)[0] > 0);          // ring fading in
+        CHECK(rown(158, 0) == 0.0f && rown(159, 0) == 0.0f);     // no floor ring, no pillar
+        CHECK(R(VIS + 6)[0] == 14 && R(VIS + 9)[0] == 0xFF && R(VIS + 10)[0] == 1 && R(VIS + 11)[0] == 0xFF);   // body took the first free entry; the next is untouched
+    }
     g_entries.clear(); g_hooks.clear();
     setenv("PSPRECOMP_ROSTER", "34 noc100 9", 1);
     dissidia_roster_init(g_ram.data());

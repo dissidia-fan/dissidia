@@ -9,7 +9,9 @@ order the GMO exporter uses, so new Actions get their own event timelines.
 import json
 import re
 import struct
+import os
 import bpy
+from bpy_extras import anim_utils
 from bpy.app.handlers import persistent
 
 from .dfx.objx import Moveset, decode_events, encode_events, to_ticks, to_frame, hide_draw_bones
@@ -201,9 +203,35 @@ def part_states(d, tick, bone_of):
     return st
 
 
+_EX_PARTS = {}               # mod.json path -> (mtime, its body.ex_parts)
+
+
+def ex_parts(arm):
+    """mod.json body.ex_parts: the weapons the game draws in EX Mode only, in place of the others (retail Cloud's
+    wep1, the Ultima Weapon). The game swaps them in its own code, not the moveset, so the preview needs telling."""
+    import json
+    md, name = arm.get('dfx_mod_dir'), arm.get('dfx_mod_name')
+    if not md or not name:
+        return set()
+    p = os.path.join(md, name, 'mod.json')
+    try:
+        t = os.path.getmtime(p)
+    except OSError:
+        return set()
+    c = _EX_PARTS.get(p)
+    if c is None or c[0] != t:
+        try:
+            body = json.load(open(p)).get('body') or {}
+        except Exception:
+            body = {}
+        c = _EX_PARTS[p] = (t, set(body.get('ex_parts') or []))
+    return c[1]
+
+
 def update_visibility(scene, arm):
     if not has_moveset(arm) or not arm.get('dfx_wep_preview', True):
         return
+    exp, ex_on = ex_parts(arm), bool(arm.get('dfx_ex_preview'))
     act = arm.animation_data.action if arm.animation_data else None
     d = get_events(arm).get(action_key(act)) if act else None
     by_name = {ob.name: ob.get('dfx_draw_bone') for ob in arm.children if ob.type == 'MESH'}
@@ -216,6 +244,12 @@ def update_visibility(scene, arm):
             continue
         vis = ob.get('dfx_part_index') == 0 or (st.get(ob.get('dfx_draw_bone', -99), True)
                                                 and ob.get('dfx_draw_bone') not in ex_only)
+        part = ob.name.split('.')[0]
+        if vis and exp and ob.get('dfx_part_index') != 0:   # EX weapons: only in EX Mode, and then in the others' place
+            if part in exp:
+                vis = ex_on
+            elif ex_on and re.match(r'^wep\d+$', part):
+                vis = False
         if vis and ob.get('dfx_part_index') != 0:
             # effect parts are switched off by holding their bones at scale 0
             bones = [pb[g.name] for g in ob.vertex_groups if g.name in pb]
@@ -228,7 +262,48 @@ def update_visibility(scene, arm):
             pass
 
 
+_rest0 = {}                  # armature name -> bones whose game rest scale is 0
+
+
+def rest_scale0_bones(arm):
+    """Bones the game rests at scale 0: prop and effect bones (bow, flask, spell effects, warp dash) that only
+    their own motions scale up. Read once from the import template; bones the add-on added carry dfx_rest_scale0."""
+    names = _rest0.get(arm.name)
+    if names is None:
+        names = {b.name for b in arm.data.bones if b.get('dfx_rest_scale0')}
+        tpl = arm.get('dfx_template')
+        if tpl:
+            try:
+                from .dfx.gmo import Character, parse_bones
+                ch = Character.load(bytes(tpl))
+                ab = parse_bones(ch.anim_model) if ch.anim_model else ch.bones
+                names |= {ch.bones[i].name for i, b in enumerate(ab)
+                          if i < len(ch.bones) and max(abs(x) for x in b.scale) < 1e-6}
+            except Exception as e:
+                print('[dfx] rest scale 0 bones:', e)
+        names = _rest0[arm.name] = sorted(n for n in names if n in arm.pose.bones)
+    return names
+
+
+def pose_unkeyed_rest(arm, act):
+    """The game poses a bone the motion doesn't animate with its rest values; Blender keeps whatever the previous
+    action left there. Put rest-scale-0 bones the action doesn't key back to scale 0, so props such as the bow
+    don't float around in moves that never show them."""
+    keyed = set()
+    slot = act.slots[0] if act.slots else None
+    cb = anim_utils.action_get_channelbag_for_slot(act, slot) if slot else None
+    for fc in (cb.fcurves if cb else ()):
+        if fc.data_path.startswith('pose.bones["'):
+            keyed.add(fc.data_path.split('"')[1])
+    for nm in rest_scale0_bones(arm):
+        if nm not in keyed:
+            pb = arm.pose.bones[nm]
+            if tuple(pb.scale) != (0.0, 0.0, 0.0):
+                pb.scale = (0.0, 0.0, 0.0)
+
+
 _marker_action = {}          # armature name -> action whose markers are shown (kept out of ID data)
+_rest_action = {}            # armature name -> action whose unkeyed bones were last put at rest
 _pending = set()
 
 
@@ -246,6 +321,12 @@ def sync_scene(scene):
         if arm.type != 'ARMATURE' or not has_moveset(arm):
             continue
         act = arm.animation_data.action if arm.animation_data else None
+        if act is not None and _rest_action.get(arm.name) != act.name:
+            _rest_action[arm.name] = act.name
+            try:
+                pose_unkeyed_rest(arm, act)
+            except Exception as e:
+                print('[dfx] rest pose:', e)
         if arm.get('dfx_auto_markers', True) and act is not None and _marker_action.get(arm.name) != act.name:
             refresh_markers(scene, arm, act)
         update_visibility(scene, arm)

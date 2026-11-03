@@ -20,8 +20,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-// psp_debug_socket.cpp reaches into the GE, dispatcher and memory watch for its
-// V/T/F/M commands; the runtime provides these, the test links only the socket.
+// psp_debug_socket.cpp reaches into the GE, dispatcher, memory watch and display
+// for its V/T/F/M/FF commands; the runtime provides these, the test links only the socket.
 #include "psp_ge.h"
 const GeState& ge_get_state() { static GeState g{}; return g; }
 void ge_draw_dyn_trace(int) {}
@@ -30,6 +30,9 @@ void psp_mem_watch_set(uint32_t) {}
 void ge_draw_set_fast(bool) {}
 void ge_draw_set_stencil_mode(int) {}
 void ge_draw_dump_targets(const char*) {}
+static int64_t g_fast_forward_ms = -1;   // what FF last asked the display for
+static int g_fast_forward_factor = -1;
+void psp_display_fast_forward(int64_t ms, int factor) { g_fast_forward_ms = ms; g_fast_forward_factor = factor; }
 
 static int failures = 0;
 static int tests_run = 0;
@@ -189,6 +192,27 @@ static void test_buttons(uint8_t* rdram) {
     PspDebugReply r = psp_debug_handle_line("B 4000 250",
                                             rdram, TEST_RDRAM_SIZE);
     ASSERT_STR_EQ(r.header, "OK 0\n", "B replies OK 0");
+}
+
+static void test_fast_forward(uint8_t* rdram) {
+    PspDebugReply r = psp_debug_handle_line("FF 5000", rdram, TEST_RDRAM_SIZE);
+    ASSERT_STR_EQ(r.header, "OK 0\n", "FF replies OK 0");
+    ASSERT_TRUE(g_fast_forward_ms == 5000 && g_fast_forward_factor == 0, "FF passes its duration, no cap");
+    r = psp_debug_handle_line("FF 5000 4", rdram, TEST_RDRAM_SIZE);
+    ASSERT_STR_EQ(r.header, "OK 0\n", "FF with a speed cap replies OK 0");
+    ASSERT_TRUE(g_fast_forward_ms == 5000 && g_fast_forward_factor == 4, "FF passes its speed cap");
+    psp_debug_handle_line("FF 999999", rdram, TEST_RDRAM_SIZE);
+    ASSERT_TRUE(g_fast_forward_ms == 120000, "FF clamps to 120 s");
+    psp_debug_handle_line("FF 0", rdram, TEST_RDRAM_SIZE);
+    ASSERT_TRUE(g_fast_forward_ms == 0, "FF 0 stops it");
+    r = psp_debug_handle_line("FF soon", rdram, TEST_RDRAM_SIZE);
+    ASSERT_STR_EQ(r.header, "ERR bad-duration\n", "FF garbage duration");
+    r = psp_debug_handle_line("FF 5000 fast", rdram, TEST_RDRAM_SIZE);
+    ASSERT_STR_EQ(r.header, "ERR bad-factor\n", "FF garbage speed cap");
+    r = psp_debug_handle_line("FF 5000 5000", rdram, TEST_RDRAM_SIZE);
+    ASSERT_STR_EQ(r.header, "ERR bad-factor\n", "FF speed cap over 1000");
+    r = psp_debug_handle_line("F /tmp/x", rdram, TEST_RDRAM_SIZE);   // F (function counts) is still F
+    ASSERT_STR_EQ(r.header, "OK 0\n", "F still reaches the function-count dump");
 }
 
 static void test_screenshot_hooks(uint8_t* rdram) {
@@ -393,6 +417,7 @@ int main() {
     test_err_framing(rdram.data());
     test_write_read_roundtrip(rdram.data());
     test_buttons(rdram.data());
+    test_fast_forward(rdram.data());
     test_screenshot_hooks(rdram.data());
     test_info_json(rdram.data());
     test_concurrent_clients(rdram.data());

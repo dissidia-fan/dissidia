@@ -52,22 +52,20 @@ DEF_MODS = os.path.join(REPO, 'work', 'mods')
 DEF_DISC = os.path.join(REPO, 'work', 'disc0')
 FX_MANIFEST = 'fx_shaders/manifest.json'
 STATE = 'readme_charmod_state.json'   # in the mods dir; 'readme*' files are not served to the game
+RETAIL_BODY = 'retail'   # a retail mod's body.skin for the game's own body (no skin)
 RETAIL_STATE = 'readme_charmod_retail.json'   # {game path: mod folder} of the retail files "kind": "retail" mods replace
 MENU_KEYS = ('tile', 'art', 'artl', 'artr', 'name', 'logo', 'text')
 
-READ_ME = [
-    'One extra character. Edit this file and the folders next to it, then build:',
-    '    python3 games/dissidia/tools/charmod.py build <this folder\'s name>',
-    'character: who it is. name = what menus call it; slot = its roster slot; based_on = the retail character it is built on.',
-    'avatars: the menu / HUD pictures (PNG files in avatars/). Swap a picture, or make all of them from one big picture:',
-    '    charmod.py avatars <folder> --from-picture my_art.png      (charmod.py avatars <folder> draws a preview sheet)',
-    'body: the model\'s body. "manikin" = the based_on character\'s manikin, or a skin from skins/.',
-    'move_names: the in-game name and help text of each move (cmd = the move in moveset/p_<code>/moves.json).',
-    'Moves, timing and damage: moveset/p_<code>/ (damage: hits.json "power"; list them: charmod.py hits <folder>).',
-    'runtime_hooks: settings for the game runtime (roster.cpp: warp=, landact= ...). menu_ids: managed by the tools.',
-    'files: every other game file the character has (folder path, or {"like": ...} = the based_on character\'s file).',
-    'Full guide: mods/README.md',
-]
+# mod.json help text lives in mods/_template/mod.json only; a character's own mod.json is written without it
+HELP_KEYS = ('_read_me', '_template_info', '_info', '_example')
+
+
+def strip_help(o):
+    if isinstance(o, dict):
+        return {k: strip_help(v) for k, v in o.items() if k not in HELP_KEYS}
+    if isinstance(o, list):
+        return [strip_help(v) for v in o]
+    return o
 
 
 def rj(p):
@@ -75,12 +73,15 @@ def rj(p):
         return json.load(f)
 
 
-def rj_abilities():
+def read_abilities():
+    """extra_abilities.json, or {} before a build first writes it (the file is local, not in the public tree)."""
     return rj(ABILITIES) if os.path.exists(ABILITIES) else {}
 
 
 def wj(p, o):
     os.makedirs(os.path.dirname(p), exist_ok=True)
+    if os.path.basename(p) == 'mod.json' and os.path.basename(os.path.dirname(os.path.abspath(p))) != '_template':
+        o = strip_help(o)
     with open(p, 'w') as f:
         json.dump(o, f, indent=1, ensure_ascii=False)
         f.write('\n')
@@ -191,6 +192,19 @@ def split_roster(tokens):
     return menu, hooks, name
 
 
+def install_record(code, mods):
+    """(roster slot, {menu id key: id}) a game mods dir gave the extra character `code` when a build added it, or None.
+    The mods dir keeps them (readme_newchars.json, roster.txt), mod.json doesn't: they depend on which other characters
+    that mods dir has, so characters made by different people never have to agree on them."""
+    p = os.path.join(mods, 'readme_newchars.json')
+    for s, v in ((rj(p) if os.path.exists(p) else {}).get('slots') or {}).items():
+        if v.get('code') == code:                          # roster.txt: its line now; the manifest's: as it was added
+            line = next((l.split() for l in roster_lines(mods) if l.split()[:2] == [s, code]), None) \
+                or (v.get('roster_line') or '').split()
+            return int(s), split_roster(line[3:])[0]
+    return None
+
+
 # ---------------------------------------------------------------- build
 def mod_dirs(names):
     if not os.path.isdir(MODS_SRC):
@@ -213,10 +227,16 @@ def mod_dirs(names):
     return all_
 
 
-def load_mod(name):
+def load_mod(name, mods=None):
+    """mods/<name>/mod.json. Given a game mods dir, an extra character gets the roster slot and menu ids that mods dir
+    gave it (install_record), whatever an older mod.json says; one it hasn't added yet gets none. Never write such a
+    mod back to mod.json."""
     m = rj(os.path.join(MODS_SRC, name, 'mod.json'))
     if 'character' not in m:
         sys.exit('mods/%s/mod.json is in the old layout: run  charmod.py pull %s  to update it' % (name, name))
+    if mods is not None and not is_retail(m):
+        rec = install_record(ch(m)['code'], mods)
+        ch(m)['slot'], m['menu_ids'] = (rec[0], dict(rec[1])) if rec else (None, {})
     return m
 
 
@@ -297,21 +317,53 @@ def refresh_avatars(name, disc_path):
     return True
 
 
-def build_files(name, disc, skin_override=None):
-    """-> (mod, {game path: bytes}, [(menu id key, id, gim bytes)])"""
+def voice_set(c, disc, out):
+    """Give an extra character its own battle voice set: for every new_character.VOICE_SET file (the costumes' cosx, the
+    voice banks, the VOLD table) the folder doesn't supply, the based-on character's file under the character's code.
+    Without the cosx the game loads no voice bank for the fighter at all (docs/audio.md "A character's own voice set").
+    The VOLD table (voice_load_p_<code>.bin) is written empty: the based-on character's would make the new one say its
+    streamed battle lines (<abbr>_battle_NN.at3). The loader copies the file and points at its records (FUN_088A3914 /
+    FUN_088A39D4), so 0 records = none; a folder can still list its own."""
+    import new_character as nc
+    for t in nc.VOICE_SET:
+        for L in (nc.LANGS if '{L}' in t else ['']):
+            dst = t.format(L=L, c=c['code'])
+            if dst in out:
+                continue
+            data = disc.try_read(t.format(L=L, c=c['based_on']))
+            if data is not None and '/voice_load_' in dst:
+                data = data[:8] + bytes(8)             # "VOLD", version, 0 records
+            if data is not None:
+                out[dst] = data
+
+
+def build_files(name, disc, skin_override=None, mods=None):
+    """-> (mod, {game path: bytes}, [(menu id key, id, gim bytes)]); the menu ids are the ones mods gave it"""
     import charmod_avatars as AV
     root = os.path.join(MODS_SRC, name)
-    m = load_mod(name)
+    m = load_mod(name, mods)
     c = ch(m)
     out, cache = {}, {}
     if is_retail(m):
+        # body.skin: "retail" (the default) keeps the game's body; a skin name puts skins/<skin>/<rig>.skin on each model
+        # in body.models, whether the folder holds that model (models/) or it is the retail one read from the disc
+        body = m.get('body', {})
+        skin = body.get('skin', RETAIL_BODY) if skin_override in (None, 'manikin', 'as_is') else skin_override
+        skins = {}
         for gp, src in m['files'].items():
             if gp.startswith('_') or isinstance(src, dict):
                 continue
             p = os.path.join(root, src)
             data = CO.pack(p) if os.path.isdir(p) else read(p)
+            if gp in body.get('models', []):
+                data = apply_body(m, root, gp, data, skin, disc, skins)
+                out.update(skin_hd(root, skin, data))
             if data != disc.try_read(gp):                   # only what differs from the retail file replaces it
                 out[gp] = data
+        for gp in body.get('models', []):
+            if gp not in m['files'] and skin != RETAIL_BODY:
+                out[gp] = apply_body(m, root, gp, disc.read(gp), skin, disc, skins)
+                out.update(skin_hd(root, skin, out[gp]))
         return m, out, []
     body = m.get('body', {})
     skin = skin_override or body.get('skin', 'manikin')
@@ -328,7 +380,9 @@ def build_files(name, disc, skin_override=None):
             data = cache[src]
         if gp in body.get('models', []):
             data = apply_body(m, root, gp, data, skin, disc, skins)
+            out.update(skin_hd(root, skin, data))
         out[gp] = data
+    voice_set(c, disc, out)
     if m['files'].get('_auto'):                         # everything else: the based-on character's files
         import new_character as nc
         av_targets = {p for e in m.get('avatars', {}).values() if isinstance(e, dict) for p in e.get('_files', [])}
@@ -339,13 +393,33 @@ def build_files(name, disc, skin_override=None):
     tpl = AV.Templates(disc, c['based_on'], c['based_on_id'])
     av_files, pack = AV.build(root, m, tpl, disc)
     out.update(av_files)
-    entries = [(k, m['menu_ids'][k], d) for k, d in pack.items()]
+    entries = [(k, m['menu_ids'][k], d) for k, d in pack.items() if k in m.get('menu_ids', {})]
     return m, out, entries
+
+
+def skin_hd(root, skin, model):
+    """skins/<skin>/hd/<n>.png (Blender writes them for a body texture over the PSP's 512): the high resolution picture
+    of the skinned model's n-th body texture, installed as a texture-pack replacement (<mods>/textures/<id>.png, named
+    after the texpack_id of the game-size texture it stands in for). The native build draws it in that texture's place;
+    a stock game has no texture pack and draws the 512 one the model carries. -> {game path: png bytes}"""
+    d = os.path.join(root, 'skins', str(skin), 'hd')
+    if not skin or not os.path.isdir(d):
+        return {}
+    import charmod_gmo as G
+    import texpack_id as TP
+    mm, out = G.Model(model), {}
+    for n, t in enumerate(mm.slots()['body']['textures']):
+        p = os.path.join(d, '%d.png' % n)
+        if os.path.exists(p):
+            tid = TP.gim_id(mm.texture_image(t)[4:])[0]
+            out['textures/%016x.png' % tid] = read(p)
+    return out
 
 
 def apply_body(m, root, gp, rig, skin, disc, cache):
     import charmod_gmo as G
-    if skin in (None, 'as_is'):
+    import charmod_light as LT
+    if skin in (None, 'as_is', RETAIL_BODY):
         return rig
     key = (skin, hashlib.md5(rig).hexdigest())
     if key not in cache:
@@ -358,17 +432,29 @@ def apply_body(m, root, gp, rig, skin, disc, cache):
             cands = [os.path.join(d, stem + '.skin'), os.path.join(d, 'body.skin')]
             p = next((x for x in cands if os.path.exists(x)), None)
             if p is None:
-                sys.exit('skin %s has no %s.skin or body.skin' % (skin, stem))
+                # body.models gathers every model any of the character's skins covers (the Studio adds a skin's models
+                # when it is picked); a skin made for fewer of them leaves the rest as the folder has them
+                print('  skin %s has no %s.skin or body.skin: %s keeps its own body' % (skin, stem, gp))
+                return rig
             sk = G.skin_from_bytes(read(p))
         cache[key] = G.apply_skin(rig, sk)
+        if LT.settings(m.get('body')):                  # body.lighting: normals for the native build's live lighting
+            cache[key] = LT.light_model(cache[key], LT.settings(m.get('body')))
+    if LT.settings(m.get('body')):
+        lit = m.setdefault('_lit_ids', [])
+        lit += [i for i in LT.body_texture_ids(cache[key]) if i not in lit]
     return cache[key]
 
 
-def merge_fx(mods, mod_list):
+def merge_fx(mods, mod_list, built=()):
+    """fx_shaders/manifest.json with every mod's draws. built: the folder names this build made; their live-lighting
+    draws (lit/<folder>/...) are replaced by the ones this build made (none when body.lighting is off)."""
     p = os.path.join(mods, FX_MANIFEST)
-    if not any(m.get('fx_shaders') for m in mod_list):
-        return None
     man = rj(p) if os.path.exists(p) else {'version': 1, 'textures': {}, 'draws': []}
+    stale = [d for d in man.get('draws', []) if any(d.get('name', '').startswith('lit/%s/' % n) for n in built)]
+    if not any(m.get('fx_shaders') for m in mod_list) and not stale:
+        return None
+    man['draws'] = [d for d in man.get('draws', []) if d not in stale]
     for m in mod_list:
         fx = m.get('fx_shaders')
         if not fx:
@@ -382,13 +468,11 @@ def merge_fx(mods, mod_list):
 
 
 def registered(m, mods):
-    """The mods dir knows this character: its slot is in roster.txt and readme_newchars.json with this code."""
-    c = ch(m)
-    mf = os.path.join(mods, 'readme_newchars.json')
-    man = rj(mf) if os.path.exists(mf) else {'slots': {}}
-    s = man['slots'].get(str(c['slot']))
-    line = next((l.split() for l in roster_lines(mods) if l.split() and l.split()[0] == str(c['slot'])), None)
-    return bool(s and s.get('code') == c['code'] and line and line[1] == c['code'] and m.get('menu_ids'))
+    """The mods dir has this character in the game: its code has a slot in readme_newchars.json, that slot's line in
+    roster.txt, and menu ids (looked up by code: mod.json holds no slot)."""
+    code = ch(m)['code']
+    rec = install_record(code, mods)
+    return bool(rec and rec[1] and any(l.split()[:2] == [str(rec[0]), code] for l in roster_lines(mods)))
 
 
 # The Quick Battle / setup screens hold a fixed number of menu pictures: the shared pack (menu_pk_free_battle_gim_3,
@@ -425,7 +509,8 @@ def menu_pack_room(mods, disc):
 
 def register(name, m, mods, disc, taken):
     """Give a new character folder its place in the game (what new_character.py does): a roster slot, menu-pack ids for
-    its avatars, its name in the menu text, its main.bin records. Writes the slot / ids back into mod.json."""
+    its avatars, its name in the menu text, its main.bin records. The slot and ids stay in the mods dir (install_record);
+    m comes from load_mod(name, mods), so a character re-registered here keeps its slot."""
     import new_character as nc
     c = ch(m)
     root = os.path.join(MODS_SRC, name)
@@ -435,7 +520,7 @@ def register(name, m, mods, disc, taken):
     man0 = nc.load_manifest(mods)
     if not any(v.get('code') == c['code'] for v in man0['slots'].values()):    # a new slot (a re-run reuses its entries)
         need = MENU_ENTRIES_PER_CHARACTER
-        if not logo_own and (nc.retail_logo(c.get('series')) is not None or nc.shared_logo(man0, c['slot'], c.get('series'))):
+        if not logo_own and (nc.retail_logo(c.get('series')) is not None or nc.shared_logo(man0, c.get('slot'), c.get('series'))):
             need -= 1                                    # the game's own logo, or one shared with a character of its series
         free, total = menu_pack_room(mods, disc)
         if free < need:
@@ -452,12 +537,13 @@ def register(name, m, mods, disc, taken):
     for k, v in list(used.items()):
         if v == c['code']:
             del used[k]                                   # its own earlier slot (re-registering)
-    slot = c['slot']
-    if slot in used or slot in taken or not nc.check_slot(slot, rmax)[0]:
+    slot = c.get('slot')                                 # the one this mods dir gave it before, else the first free one
+    if slot is None or slot in used or slot in taken or not nc.check_slot(slot, rmax)[0]:
         free = [s for s in range(35, rmax) if s not in used and s not in taken and nc.check_slot(s, rmax)[0]]
         if not free:
             sys.exit('%s: no free roster slot (35..%d are all used)' % (name, rmax - 1))
-        print('  %s: slot %d is taken (%s), using slot %d' % (name, slot, used.get(slot) or 'another mod', free[0]))
+        if slot is not None:
+            print('  %s: slot %d is taken (%s), using slot %d' % (name, slot, used.get(slot) or 'another mod', free[0]))
         slot = free[0]
     pic = lambda rel: os.path.join(root, rel) if rel and os.path.exists(os.path.join(root, rel)) else None
     slidein = pic(gf.get('picture')) or pic((av.get('slidein') or {}).get('picture'))
@@ -485,11 +571,10 @@ def register(name, m, mods, disc, taken):
             state[rel] = hashlib.md5(read(p)).hexdigest()
     wj(st_p, state)
     menu, _, _ = split_roster(r['line'].split()[3:])
-    m['character']['slot'] = slot
-    m['character']['based_on_id'] = r['like_id']
-    m['menu_ids'] = dict({'_info': (m.get('menu_ids') or {}).get('_info', 'entry ids in the shared menu pack; set by the '
-                                    'build when the character is added; leave as they are')}, **menu)
-    wj(os.path.join(root, 'mod.json'), m)
+    raw = rj(os.path.join(root, 'mod.json'))             # who the character is, not where this mods dir put it
+    if raw['character'].get('based_on_id') != r['like_id']:
+        raw['character']['based_on_id'] = r['like_id']   # the based-on character's id: the disc's, the same everywhere
+        wj(os.path.join(root, 'mod.json'), raw)
     print('  %s: added to the game as slot %d (%s)' % (name, slot, ' '.join('%s=%s' % kv for kv in menu.items())))
     return slot
 
@@ -522,7 +607,7 @@ def drop_gone_characters(mods, names, disc):
 
 def cmd_build(a):
     """Build every folder in. A character that gets its roster slot in this run but whose files are then not installed
-    (the stale-file stop, an error) is taken out again: with a roster line and menu pictures but no obj/ files the
+    (an error) is taken out again: with a roster line and menu pictures but no obj/ files the
     game hangs on the loading screen when it is picked (Ramza, 25 Oct 2026)."""
     added = []                                          # (folder, slot) registered by this run
     try:
@@ -564,9 +649,19 @@ def _build(a, added):
         odd = check_mod_files(n)
         if odd:
             print('  %s: not used by the build (unknown kinds of file): %s' % (n, ', '.join(odd[:6]) + (' ...' if len(odd) > 6 else '')))
-    taken, skipped, todo = set(), set(), []
+    by_code = {}                                        # the code names a character's game files: one folder each
     for n in names:
         m = load_mod(n)
+        if not is_retail(m):
+            by_code.setdefault(ch(m)['code'], []).append(n)
+    dup = sorted((c_, ns) for c_, ns in by_code.items() if len(ns) > 1)
+    if dup:
+        sys.exit('these character folders share a code, which names their game files: %s. Give all but one a code of '
+                 'its own (character.code, and its moveset/p_<code>/ folder), or disable it ("enabled": false)'
+                 % '; '.join('%s: %s' % (c_, ', '.join(ns)) for c_, ns in dup))
+    taken, skipped, todo = set(), set(), []
+    for n in names:
+        m = load_mod(n, a.mods)
         if is_retail(m):
             continue
         if registered(m, a.mods) and not (logo_changes(m, a.mods) and not a.check):
@@ -576,7 +671,7 @@ def _build(a, added):
         else:
             todo.append((not registered(m, a.mods), n))
     for new, n in sorted(todo):                         # characters already in first (a logo they give up makes room)
-        s = register(n, load_mod(n), a.mods, disc, taken)
+        s = register(n, load_mod(n, a.mods), a.mods, disc, taken)
         if s is None:
             skipped.add(n)
         else:
@@ -589,11 +684,23 @@ def _build(a, added):
             m = load_mod(n)
             if not is_retail(m) and ch(m).get('based_on_id') is not None:
                 refresh_avatars(n, a.disc)
-    files, mod_list, entries, retail = {}, [], [], {}
+    files, mod_list, entries, retail, extras, fx_retail = {}, [], [], {}, [], []
     for n in names:
-        m, f, e = build_files(n, disc, a.skin)
+        m, f, e = build_files(n, disc, a.skin, a.mods)
         c = ch(m)
+        if not is_retail(m) and c['slot'] is None:      # --check, a character not in the game yet: nothing to compare
+            continue
+        if m.get('_lit_ids'):
+            import charmod_light as LT
+            fx = m.setdefault('fx_shaders', {})
+            fx['draws'] = [d for d in fx.get('draws', []) if not d.get('name', '').startswith('lit/')] + \
+                LT.fx_draws(n, m['_lit_ids'], LT.settings(m['body']))
+            files[LT.SHADER_GAME_PATH] = read(LT.SHADER_SRC)
+            print('%-10s live lighting on (native build): %d body texture%s' % (n, len(m['_lit_ids']),
+                                                                             '' if len(m['_lit_ids']) == 1 else 's'))
         if is_retail(m):
+            if m.get('fx_shaders'):
+                fx_retail.append(m)
             for gp in f:
                 if gp in retail:
                     sys.exit('%s and %s both change %s: keep one of them' % (retail[gp], n, gp))
@@ -603,10 +710,17 @@ def _build(a, added):
                                                                (': ' + ', '.join(sorted(f))) if f else ', the retail files stay'))
             continue
         mod_list.append(m)
-        files.update(f)
+        extras.append((c['slot'], n, f))
         entries += e
         print('%-10s %s (%s, slot %d): %d files, body %s' % (n, c['name'], c['code'], c['slot'], len(f),
                                                             a.skin or m.get('body', {}).get('skin', 'manikin')))
+    if extras:                                          # effect packages copied from the donor get ids of their own
+        import charmod_fep as FX
+        ours = {gp for _, _, f in extras for gp in f}
+        FX.give_own_ids([(n, f) for _, n, f in sorted(extras)], FX.retail_ids(a.disc, a.mods),
+                        also_taken=FX.installed_ids(a.mods, skip=ours))
+        for _, _, f in extras:
+            files.update(f)
     # retail files an earlier build replaced that no mod replaces now (folder deleted / disabled / back to retail):
     # taken out of the mods dir so the game reads the retail file again. Building some mods only drops their own.
     rs_p = os.path.join(a.mods, RETAIL_STATE)
@@ -615,10 +729,28 @@ def _build(a, added):
     if entries:
         files[AV.G3_PATH] = AV.write_pack(a.mods, disc.pkg, entries)
     files['roster.txt'] = merged_roster(a.mods, mod_list).encode()
-    fx = merge_fx(a.mods, mod_list)
+    # the Customization screens' pack: each extra character's strip / name plate / tile (charmod_avatars.CUST)
+    g3p = os.path.join(a.mods, AV.G3_PATH)
+    g3b = files.get(AV.G3_PATH) or (read(g3p) if os.path.exists(g3p) else None)
+    by_slot = {s: f for s, _, f in extras}
+    cust = {ch(m)['slot']: AV.customize_pictures(m, by_slot.get(ch(m)['slot'], {}), g3b, disc.pkg) for m in mod_list}
+    slots = [int(l.split()[0]) for l in files['roster.txt'].decode().splitlines()
+             if l.split() and l.split()[0].isdigit()]
+    cp = AV.write_customize_pack(a.mods, disc.pkg, cust, slots)
+    if cp is not None:
+        files[AV.CUST_PATH] = cp
+    elif os.path.exists(os.path.join(a.mods, AV.CUST_PATH)):     # no extra character left: the retail pack again
+        files[AV.CUST_PATH] = disc.pkg.read(AV.CUST)
+    fx = merge_fx(a.mods, mod_list + fx_retail, built=names)
     if fx is not None:
         files[FX_MANIFEST] = fx
-    abil = rj_abilities()
+    known = set()                                       # move names come only from the mod folders: entries of
+    for n in os.listdir(MODS_SRC) if os.path.isdir(MODS_SRC) else []:   # folders that are gone are dropped
+        try:
+            known.add(ch(rj(os.path.join(MODS_SRC, n, 'mod.json')))['code'])
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+    abil = {k: v for k, v in read_abilities().items() if k.startswith('_') or k in known}
     for m in mod_list:
         if m.get('move_names'):
             abil[ch(m)['code']] = {k: v for k, v in m['move_names'].items() if not k.startswith('_')}
@@ -639,7 +771,7 @@ def _build(a, added):
             if os.path.exists(os.path.join(a.mods, gp)):
                 bad += 1
                 print('  differs: %s (a build takes it out: %s is no longer changed by %s)' % (gp, gp, old_retail[gp]))
-        if rj_abilities() != json.loads(abil_bytes):
+        if read_abilities() != json.loads(abil_bytes):
             bad += 1
             print('  differs: extra_abilities.json (move names)')
         print('check: %d of %d files differ from %s' % (bad, len(files) + 1, a.mods) if bad else
@@ -651,25 +783,18 @@ def _build(a, added):
     stale = []
     for gp, d in sorted(files.items()):
         p = os.path.join(a.mods, gp)
-        if gp in ('roster.txt', FX_MANIFEST, AV.G3_PATH) or not os.path.exists(p) or same(p, d):
+        if gp in ('roster.txt', FX_MANIFEST, AV.G3_PATH, AV.CUST_PATH) or not os.path.exists(p) or same(p, d):
             continue
         if state.get(gp) != hashlib.md5(read(p)).hexdigest():
             stale.append(gp)
-    if stale and not a.force:
-        print('These installed files changed since the mod folder last saw them (another tool or session wrote them):')
-        for gp in stale:
-            print('   ', gp)
-        print('Bring them into the folder first:  charmod.py pull %s   (or build --force to overwrite them)' % ' '.join(names))
-        return 2
+    for gp in stale:                                    # the mod folders are the only source: an installed file some
+        print('  replaced %s (changed outside the build)' % gp)   # other tool wrote is overwritten, not kept
     changed = [gp for gp, d in sorted(files.items()) if write(os.path.join(a.mods, gp), d)]
     for gp, d in files.items():
         state[gp] = hashlib.md5(d).hexdigest()
     for gp in gone:
         p = os.path.join(a.mods, gp)
         if os.path.exists(p):
-            if state.get(gp) not in (None, hashlib.md5(read(p)).hexdigest()):
-                print('  kept %s: %s no longer changes it, but another tool wrote it since' % (gp, old_retail[gp]))
-                continue
             os.remove(p)
             print('  removed %s (the retail file is used again)' % gp)
         state.pop(gp, None)
@@ -679,7 +804,7 @@ def _build(a, added):
         wj(rs_p, keep)
     wj(st_p, state)
     roster_changed = 'roster.txt' in changed
-    if rj_abilities() != json.loads(abil_bytes):
+    if read_abilities() != json.loads(abil_bytes):
         write(ABILITIES, abil_bytes)
         roster_changed = True
         changed.append('extra_abilities.json')
@@ -721,13 +846,12 @@ def cmd_unpack(a):
     disc = Disc(a.disc)
     menu, hooks, nm = split_roster(tokens)
     name = slot_info.get('name') or (nm or a.name).replace('_', ' ')
-    m = {'_read_me': READ_ME,
-         'character': {'name': name, 'full_name': slot_info.get('full_name') or name, 'series': slot_info.get('series'),
-                       'code': code, 'slot': slot, 'based_on': like, 'based_on_id': like_id}}
-    test = dict(m, menu_ids=menu, runtime_hooks=hooks)
+    m = {'character': {'name': name, 'full_name': slot_info.get('full_name') or name, 'series': slot_info.get('series'),
+                       'code': code, 'based_on': like, 'based_on_id': like_id}}
+    test = dict(m, character=dict(m['character'], slot=slot), menu_ids=menu, runtime_hooks=hooks)   # mods dir state
     if roster_line(test) != ' '.join(line):
         sys.exit('cannot express the roster line in the new layout:\n  %s\n  %s' % (' '.join(line), roster_line(test)))
-    abil = rj_abilities()
+    abil = read_abilities()
     notes = {}
     for k, v in (abil.get(code) or {}).items():
         if isinstance(v, dict) and 'cmd' in v:
@@ -769,7 +893,6 @@ def cmd_unpack(a):
     m['body'] = None
     m['move_names'] = abil.get(code)
     m['runtime_hooks'] = hooks
-    m['menu_ids'] = dict({'_info': 'entry ids in the shared menu pack, set by new_character.py; leave as they are'}, **menu)
     m['files'] = {}
     rigs = {}
     for gp in paths:
@@ -805,9 +928,7 @@ def cmd_unpack(a):
             m['files'][gp] = 'files/' + gp
     # bodies: the rig is stored with the manikin body; a body of its own becomes a skin
     import charmod_gmo as G
-    body = {'_info': 'skin = "manikin" (the based_on character\'s manikin, read from your disc) or a folder in skins/. '
-                     'Change with: charmod.py body %s SKIN. models = the files the body goes on.' % a.name,
-            'skin': 'manikin', 'manikin_from': 'obj/p_%s_zako.gmo' % like, 'models': []}
+    body = {'skin': 'manikin', 'manikin_from': 'obj/p_%s_zako.gmo' % like, 'models': []}
     made_skin = False
     pb = prev.get('body') if prev and isinstance(prev.get('body'), dict) else {}
     wspec = pb.get('weapons')                            # weapons: the rig keeps the default ones, a skin the rest
@@ -845,8 +966,6 @@ def cmd_unpack(a):
         body['skin'] = a.skin_name
     if not body['models']:                               # nothing to swap: the models are used as they are
         body['skin'] = 'as_is'
-        body['_info'] = ('"as_is": the models are used as they are (this folder\'s models/, or the based-on character\'s). '
-                         'To give the character another body: charmod.py body %s --from-gmo model.gmo --as NAME' % a.name)
     m['body'] = body
     fx = os.path.join(a.mods, FX_MANIFEST)
     if a.fx_prefix and os.path.exists(fx):
@@ -938,17 +1057,16 @@ def cmd_new(a):
         sys.exit('--code: 1..6 lower case letters/digits starting with a letter, e.g. ter100')
     disc = Disc(a.disc)
     like_id, like = nc.resolve_like(disc.pkg, a.like)
-    # codes and slots already used: the roster, and every character folder
-    used_codes, used_slots = set(), set()
+    # codes already used: the roster, and every character folder (the slot is the build's to pick, per mods dir)
+    used_codes = set()
     for l in roster_lines(a.mods):
         f = l.split()
         if len(f) > 1 and f[0].isdigit():
-            used_slots.add(int(f[0])); used_codes.add(f[1])
+            used_codes.add(f[1])
     for d in os.listdir(MODS_SRC):
         p = os.path.join(MODS_SRC, d, 'mod.json')
         if os.path.exists(p) and not d.startswith('_'):
-            c_ = rj(p).get('character', {})
-            used_codes.add(c_.get('code')); used_slots.add(c_.get('slot'))
+            used_codes.add(rj(p).get('character', {}).get('code'))
     taken = lambda c_: c_ in used_codes or disc.try_read('obj/p_%s.objx' % c_) is not None
     if code and taken(code):
         sys.exit('code %s is already used; pick another with --code' % code)
@@ -957,16 +1075,12 @@ def cmd_new(a):
         code = next((base + str(n) for n in range(100, 1000) if not taken(base + str(n))), None)
         if code is None:
             sys.exit('no free code for %s; give one with --code' % name)
-    rmax = nc.max_slots(GAME)
-    slot = a.slot or next((s_ for s_ in range(35, rmax) if s_ not in used_slots), None)
-    if slot is None:
-        sys.exit('no free roster slot (35..%d)' % (rmax - 1))
     tpl_dir = os.path.join(MODS_SRC, '_template')
     m = rj(os.path.join(tpl_dir, 'mod.json'))
-    m.pop('_template_info', None)
+    m = strip_help(m)
     m['character'].update({'name': a.display or name.replace('-', ' ').title(), 'full_name': a.full_name or a.display
                            or name.replace('-', ' ').title(), 'series': a.series or 'FINAL FANTASY', 'code': code,
-                           'slot': slot, 'based_on': like, 'based_on_id': like_id})
+                           'based_on': like, 'based_on_id': like_id})
     tpl = AV.Templates(disc, like, like_id)
     m['avatars'] = dict(AV.skeleton(code, tpl), generated_from=m['avatars'].get('generated_from'))
     os.makedirs(root)
@@ -979,10 +1093,10 @@ def cmd_new(a):
     objx = disc.read('obj/p_%s.objx' % like)
     bones = G.Model(disc.read('obj/p_%s_1p.gmo' % like)).bone_names()
     CO.unpack(objx, os.path.join(root, 'moveset', 'p_' + code), None, bones)
-    m['files'] = {'_auto': True, '_info': m['files'].get('_info', ''), 'obj/p_%s.objx' % code: 'moveset/p_' + code}
+    m['files'] = {'_auto': True, 'obj/p_%s.objx' % code: 'moveset/p_' + code}
     wj(os.path.join(root, 'mod.json'), m)
-    print('made mods/%s: %s (code %s, slot %d), built on %s (charId %d)' % (name, m['character']['name'], code, slot,
-                                                                              like, like_id))
+    print('made mods/%s: %s (code %s), built on %s (charId %d); the build gives it a roster slot' % (
+        name, m['character']['name'], code, like, like_id))
     print('next: edit mods/%s/mod.json (name, series), add pictures (charmod.py avatars %s --from-picture art.png),'
           ' edit moves in mods/%s/moveset/p_%s/, then start the game (run.sh builds it in) or charmod.py build %s'
           % (name, name, name, code, name))
@@ -1058,6 +1172,7 @@ def cmd_body(a):
         import re
         src = read(a.from_gmo)
         code = ch(m)['code']
+        m.setdefault('body', {})
         models = m['body'].get('models') or [gp for gp in m['files']
                                              if re.match(r'^obj/p_%s_(1p|2p|3p|zako)\.gmo$' % code, gp)]
         disc = Disc(a.disc)
@@ -1077,19 +1192,27 @@ def cmd_body(a):
                           G.skin_to_bytes(sk))
         m['body']['models'] = models
         a.skin = a.as_
+    own = (RETAIL_BODY,) if is_retail(m) else ('manikin', 'as_is')     # the bodies that need no skin folder
     if not a.skin:
         sd = os.path.join(root, 'skins')
-        print('body: %s; skins: %s' % (m['body'].get('skin'), ', '.join(sorted(os.listdir(sd))) if os.path.isdir(sd) else 'none'))
+        print('body: %s; skins: %s' % (m.get('body', {}).get('skin', own[0]), ', '.join(sorted(os.listdir(sd))) if os.path.isdir(sd) else 'none'))
         return 0
-    if a.skin not in ('manikin', 'as_is') and not os.path.isdir(os.path.join(root, 'skins', a.skin)):
-        sys.exit('no skins/%s' % a.skin)
-    m['body']['skin'] = a.skin
+    if a.skin not in own and not os.path.isdir(os.path.join(root, 'skins', a.skin)):
+        sys.exit('no skins/%s%s' % (a.skin, ' (a retail character\'s own body is "%s")' % RETAIL_BODY if is_retail(m) else ''))
+    m.setdefault('body', {})['skin'] = a.skin
     wj(mp_, m)
     print('%s now uses body "%s"; run: charmod.py build %s' % (a.name, a.skin, a.name))
     return 0
 
 
 # ---------------------------------------------------------------- list / hits
+def skin_recomp_note(name, m):
+    """' (recomp only: why)' when the body skin in use is over the PSP budget (skins/<skin>/skin.json, Blender writes it)"""
+    p = os.path.join(MODS_SRC, name, 'skins', str(m.get('body', {}).get('skin')), 'skin.json')
+    why = rj(p).get('recomp_only') if os.path.exists(p) else None
+    return ' (recomp only: %s)' % why if why else ''
+
+
 def cmd_list(a):
     for n in mod_dirs([]):
         m = rj(os.path.join(MODS_SRC, n, 'mod.json'))
@@ -1098,12 +1221,14 @@ def cmd_list(a):
             continue
         c = ch(m)
         if is_retail(m):
-            print('%-10s %-10s %s retail character, changes %s' % (n, c['name'], c['code'], ', '.join(
-                k for k in m['files'] if not k.startswith('_'))))
+            print('%-10s %-10s %s retail character, body %s%s, changes %s' % (n, c['name'], c['code'],
+                  m.get('body', {}).get('skin', RETAIL_BODY), skin_recomp_note(n, m), ', '.join(k for k in m['files'] if not k.startswith('_'))))
             continue
         own = sum(not isinstance(v, dict) for v in m['files'].values())
-        print('%-10s %-10s %s slot %d, based on %s, body %s, %d own files, %d borrowed, %d avatars' % (
-            n, c['name'], c['code'], c['slot'], c['based_on'], m.get('body', {}).get('skin'), own, len(m['files']) - own,
+        rec = install_record(c['code'], a.mods)
+        print('%-10s %-10s %s %s, based on %s, body %s%s, %d own files, %d borrowed, %d avatars' % (
+            n, c['name'], c['code'], 'slot %d' % rec[0] if rec else 'not in the game yet', c['based_on'],
+            m.get('body', {}).get('skin'), skin_recomp_note(n, m), own, len(m['files']) - own,
             sum(1 for e in m.get('avatars', {}).values() if isinstance(e, dict) and 'shows' in e)))
     return 0
 
@@ -1148,7 +1273,7 @@ def main(argv):
     b.add_argument('names', nargs='*')
     b.add_argument('--check', action='store_true', help='compare with the mods dir, write nothing')
     b.add_argument('--skin', help='use this body for this build only (e.g. to compare)')
-    b.add_argument('--force', action='store_true', help='overwrite installed files changed by other tools')
+    b.add_argument('--force', action='store_true', help='no effect (kept for old commands): the build always overwrites installed files')
     av = sp.add_parser('avatars', help='list / preview / make the menu and HUD pictures')
     av.add_argument('name')
     av.add_argument('--from-picture', help='a big full-body picture: grid tile, slide-in, HUD, face strips, VS face are cut from it')
@@ -1175,7 +1300,6 @@ def main(argv):
     nw.add_argument('--display', help='name shown in menus (default: from the folder name)')
     nw.add_argument('--full-name', help='full name (VS screen, battle banner)')
     nw.add_argument('--series', help='e.g. "FINAL FANTASY VI"')
-    nw.add_argument('--slot', type=int, help='roster slot 35..42 (default: the first free one)')
     h = sp.add_parser('hits', help='every hit of every move')
     h.add_argument('name')
     h.add_argument('move', nargs='?')

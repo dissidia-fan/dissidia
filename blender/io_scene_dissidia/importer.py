@@ -40,11 +40,33 @@ def _bind_worlds(ch):
 
 
 def _normalised(m):
+    """Bind matrix with unit-length axes. An axis with no length (a bone whose rest scale is 0, e.g. a prop hidden
+    at rest whose mesh was deleted, so no skin bind fixes it) is rebuilt from the others, or the bone gets the
+    identity orientation when all three are zero, so the matrix stays invertible."""
     m = np.array(m, dtype=np.float64)
+    bad = []
     for k in range(3):
         n = np.linalg.norm(m[:3, k])
         if n > 1e-9:
             m[:3, k] /= n
+        else:
+            bad.append(k)
+    if len(bad) == 3:
+        m[:3, :3] = np.eye(3)
+    elif len(bad) == 2:
+        g = [k for k in range(3) if k not in bad][0]
+        a = m[:3, g]
+        t = np.eye(3)[int(np.argmin(np.abs(a)))]
+        u = np.cross(a, t); u /= np.linalg.norm(u)
+        v = np.cross(a, u)
+        cols = {g: a}
+        cols[(g + 1) % 3], cols[(g + 2) % 3] = u, v
+        for k in range(3):
+            m[:3, k] = cols[k]
+    elif len(bad) == 1:
+        k = bad[0]
+        m[:3, k] = np.cross(m[:3, (k + 1) % 3], m[:3, (k + 2) % 3])
+        m[:3, k] /= max(np.linalg.norm(m[:3, k]), 1e-12)
     return m
 
 

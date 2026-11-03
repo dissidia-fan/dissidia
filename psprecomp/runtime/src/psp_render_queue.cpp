@@ -240,13 +240,17 @@ void render_queue_process() {
 
         lock.lock();
 
-        // Update queue entries with results from processing
+        // Update queue entries with results from processing. A list that
+        // stalled at a stall address UpdateStallAddr moved meanwhile (it
+        // unstalled the entry while the lock was released) is not stalled:
+        // keeping the flag lost that unstall, and with no further update the
+        // list never ran again (every DrawSync timed out: 2 frames/s from boot).
         for (auto& processed : to_process) {
             for (auto& queued : g_ge_queue) {
                 if (queued.uid == processed.uid) {
                     queued.current_pc = processed.current_pc;
                     queued.processed = processed.processed;
-                    queued.stalled = processed.stalled;
+                    queued.stalled = processed.stalled && queued.stall_addr == processed.stall_addr;
                     queued.begun = true;
                     break;
                 }

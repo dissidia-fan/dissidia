@@ -26,6 +26,32 @@ GeViewportDepth ge_compute_viewport_depth(
 /// 480n x 272n; viewports are multiplied by n. Valid after ge_draw_init().
 int ge_draw_render_scale();
 
+/// Change the render scale live (settings menu): resizes every render target,
+/// keeping its picture. Main (GL) thread, game paused. False if refused.
+bool ge_draw_set_render_scale(int n);
+
+/// Settings menu, Debug page (main/GL thread, game paused; not saved).
+/// GPU sync mode, as PSPRECOMP_GE_SYNC: 0 off, 1 glFinish per batch, 2 per
+/// display list, 3 per present, 4 glFlush per batch.
+int ge_draw_sync_mode();
+void ge_draw_set_sync_mode(int mode);
+/// Vertex upload mode in use: 1 map, 0 sub (PSPRECOMP_GE_RING; changes at launch).
+int ge_draw_ring_mode();
+/// FX shader overrides: available = a manifest with usable entries was loaded
+/// at start (PSPRECOMP_FX_SHADERS=0 or no manifest -> false). The live switch
+/// only bypasses them; turning them back on needs no reload.
+bool ge_draw_fx_available();
+bool ge_draw_fx_shaders();
+void ge_draw_set_fx_shaders(bool on);
+/// Performance overlay: presented frames per second, average and worst frame
+/// time, in the top-left corner (PSPRECOMP_PERF_HUD=1 turns it on at start).
+bool ge_draw_perf_overlay();
+void ge_draw_set_perf_overlay(bool on);
+
+/// Present the last frame with the dialog/menu overlay now (game paused).
+/// Main (GL) thread.
+void ge_draw_present_overlay_now();
+
 /// Initialize the GE draw infrastructure: FBO, VAO/VBO, shader.
 /// Must be called after SDL/GL init and after ge_init()/ge_texture_init().
 void ge_draw_init();

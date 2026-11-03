@@ -215,7 +215,7 @@ function spRefresh() {
     spCollectFx(live, tl, tNow);
   }
   for (const k of [...SP.bodies.keys()]) if (!used.has(k)) SP.bodies.get(k).root.visible = false;
-  if (typeof FXP !== 'undefined' && FXP.dirty) { FXP.dirty = false; poseMotion(S.gmo, view, S.motion, S.frame); view.root.updateMatrixWorld(true); }
+  if (typeof FXP !== 'undefined' && FXP.dirty) { FXP.dirty = false; poseMotion(S.gmo, view, S.motion, S.frame); view.root.updateMatrixWorld(true); if (typeof dmApocNow === 'function') dmApocNow(); }
 }
 
 /* ---------------------------------------------------------------- the objects' effects (fx.js opts.extra) */

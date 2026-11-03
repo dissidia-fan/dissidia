@@ -31,27 +31,29 @@ function ckMore() {
   }
   // projectiles: their links, hits and pool
   for (const r of recs) {
-    for (const l of CP_LINKS) if (r[l] >= 0 && r[l] !== 0xFFFF && !projIds.has(r[l])) out.push({ level: 'err', text: `Projectile ${r.id}: ${l} points at ${r[l]}, which isn't in projectiles.json.` });
-    for (const k of ['atkp', 'atkp_reflected']) if (r[k] !== 0xFFFF && hitIds.size && !hitIds.has(r[k])) out.push({ level: 'err', text: `Projectile ${r.id}: ${k} ${r[k]} is not in hits.json.` });
-    if (S.fx && r.effect !== 0xFFFF && r.effect < 64 && !S.fx.fepa.some((x) => !x.trig && fxGroupHas(x, r.effect))) out.push({ level: 'warn', text: `Projectile ${r.id}: no effect placement is in its look group ${r.effect}, so it flies unseen.` });
+    for (const l of CP_LINKS) if (r[l] >= 0 && r[l] !== 0xFFFF && !projIds.has(r[l])) out.push({ level: 'err', proj: r.id, text: `Projectile ${r.id}: ${l} points at ${r[l]}, which isn't in projectiles.json.` });
+    for (const k of ['atkp', 'atkp_reflected']) if (r[k] !== 0xFFFF && hitIds.size && !hitIds.has(r[k])) out.push({ level: 'err', proj: r.id, text: `Projectile ${r.id}: ${k} ${r[k]} is not in hits.json.` });
+    if (S.fx && r.effect !== 0xFFFF && r.effect < 64 && !S.fx.fepa.some((x) => !x.trig && fxGroupHas(x, r.effect))) out.push({ level: 'warn', proj: r.id, text: `Projectile ${r.id}: no effect placement is in its look group ${r.effect}, so it flies unseen.` });
   }
   if (P && P.pool) {
     const n = P.pool.length;
-    if (n > 128) out.push({ level: 'err', text: `The projectile value pool has ${n} values; the game reads at most 128 (signed bytes).` });
-    else if (n > 120) out.push({ level: 'warn', text: `The projectile value pool is nearly full (${n} of 128 values). New distinct values may not fit.` });
+    const pj = recs.length ? recs[0].id : undefined;
+    if (n > 128) out.push({ level: 'err', proj: pj, text: `The projectile value pool has ${n} values; the game reads at most 128 (signed bytes).` });
+    else if (n > 120) out.push({ level: 'warn', proj: pj, text: `The projectile value pool is nearly full (${n} of 128 values). New distinct values may not fit.` });
   }
   // effects package
   if (S.effe && typeof fxuPkg === 'function') {
-    try { const pkg = fxuPkg(); if (pkg && fxeFreeGroup(pkg.fep) < 0) out.push({ level: 'info', text: 'The effect package is full (128 effects): copying or adding an effect needs room first (Effects tab > Remove unused…).' }); } catch (e) { /* unreadable */ }
+    try { const pkg = fxuPkg(); if (pkg && fxeFreeGroup(pkg.fep) < 0) out.push({ level: 'info', tab: 'fx', text: 'The effect package is full (128 effects): copying or adding an effect needs room first (Effects tab > Remove unused…).' }); } catch (e) { /* unreadable */ }
   }
   // abilities: a character's ability ids are (charId << 8) | key, and a save keeps 150 learned abilities
   const keys = Object.keys((S.mod && S.mod.move_names) || {}).filter((k) => /^[0-9A-F]+$/i.test(k));
   const bad = keys.filter((k) => parseInt(k, 16) > 0xFF);
-  if (bad.length) out.push({ level: 'err', text: `Ability key${bad.length > 1 ? 's' : ''} ${bad.join(', ')} ${bad.length > 1 ? 'are' : 'is'} above FF: a key is one byte of the ability id.` });
-  if (keys.length > 150) out.push({ level: 'err', text: `${keys.length} abilities: a save remembers at most 150 learned abilities per character.` });
-  for (const t of ckCharRecomp()) out.push({ level: 'info', text: 'Recomp only: ' + t });
-  for (const m of S.moves || []) { const hs = ckMoveHooks(m); if (hs.length) out.push({ level: 'info', text: `Recomp only: ${m.name} uses ${[...new Set(hs.map((h) => h.kind + '='))].join(', ')}; a stock game plays it without.` }); }
-  if (S.gmo && S.gmo.motions.length > 255) out.push({ level: 'warn', text: `${S.gmo.motions.length} animations in the model: retail ones have at most about 90; many more is untested.` });
+  const keyMove = (k) => { const i = (S.moves || []).findIndex((m) => m.info && String(m.info.key).toUpperCase() === k.toUpperCase()); return i < 0 ? undefined : i; };
+  if (bad.length) out.push({ level: 'err', move: keyMove(bad[0]), tab: 'moves', text: `Ability key${bad.length > 1 ? 's' : ''} ${bad.join(', ')} ${bad.length > 1 ? 'are' : 'is'} above FF: a key is one byte of the ability id.` });
+  if (keys.length > 150) out.push({ level: 'err', tab: 'moves', text: `${keys.length} abilities: a save remembers at most 150 learned abilities per character.` });
+  for (const t of ckCharRecomp()) out.push({ level: 'info', tab: 'char', text: 'Recomp only: ' + t });
+  (S.moves || []).forEach((m, mi) => { const hs = ckMoveHooks(m); if (hs.length) out.push({ level: 'info', move: mi, hook: true, text: `Recomp only: ${m.name} uses ${[...new Set(hs.map((h) => h.kind + '='))].join(', ')}; a stock game plays it without.` }); });
+  if (S.gmo && S.gmo.motions.length > 255) out.push({ level: 'warn', tab: 'anims', text: `${S.gmo.motions.length} animations in the model: retail ones have at most about 90; many more is untested.` });
   return out;
 }
 
@@ -125,8 +127,8 @@ function renderChangesPanel(I) {
 /* ---------------------------------------------------------------- what only the recomp does */
 // runtime_hooks are read by the native build's runtime (runtime/roster.cpp); a stock game (PSP, PPSSPP, a patched ISO)
 // ignores them, and an extra character needs the runtime's relocated tables (docs/roster.md).
-const CK_HOOK_INFO = { warp: 'homes its travel onto the foe', warpreach: 'homing reach', vtrack: 'eases to the foe\'s height', warpfx: 'thrown sword / warp wisps',
-  landact: 'starts an action at touchdown', hitact: 'starts an action when its projectile spawns', chainact: 'a chain window starts an action', pinspin: 'pinned spin',
+const CK_HOOK_INFO = { warp: 'homes its travel onto the foe', warpabove: 'teleports to just above the foe', warpreach: 'homing reach', vtrack: 'eases to the foe\'s height', warpfx: 'thrown sword / warp wisps',
+  landact: 'starts an action at touchdown', magipick: 'fires one projectile of a set (random / in turn)', hitact: 'starts an action when its projectile spawns', chainact: 'a chain window starts an action', charge: 'hold to charge, released by level', exaway: 'the EX ring gives way while a royal arm is in his hands', pinspin: 'pinned spin',
   apocarms: 'EX weapon parts and their shots', projblock: 'blocks projectiles', wdopen: 'warp dash links into press 1', hitcam: 'camera on the follow-up',
   dash: 'dash speed', exranged: 'EX Mode projectile immunity', armiger: 'EX-only weapon parts', exarms: 'EX arms', armtrail: 'trails on the EX weapons', warpdash: 'R+△ warp dash' };
 function ckHooks() {                              // [{kind, tok, motions, actions, magi, cmds}] of mod.json runtime_hooks
@@ -134,10 +136,12 @@ function ckHooks() {                              // [{kind, tok, motions, actio
   return (S.mod.runtime_hooks || []).filter((t) => typeof t === 'string' && t.includes('=')).map((tok) => {
     const kind = tok.slice(0, tok.indexOf('=')), f = tok.slice(kind.length + 1).split(','), n = (s) => String(s || '').split('/').map(Number).filter((x) => !isNaN(x));
     const h = { kind, tok, motions: [], actions: [], magi: [], cmds: [] };
-    if (['warp', 'warpreach', 'vtrack', 'warpfx', 'pinspin', 'apocarms', 'projblock'].includes(kind)) h.motions = n(f[0]);
+    if (['warp', 'warpabove', 'warpreach', 'vtrack', 'warpfx', 'pinspin', 'apocarms', 'projblock'].includes(kind)) h.motions = n(f[0]);
     else if (kind === 'landact') { h.actions = n(f[0]); h.motions = f.slice(1).map(Number); }
     else if (kind === 'hitact') { h.magi = n(f[0]); h.actions = n(f[1]); }
+    else if (kind === 'magipick') h.magi = [f[0], ...f.slice(2)].map(Number);
     else if (kind === 'chainact') h.actions = f.map(Number);
+    else if (kind === 'charge') { h.motions = n(f[0]); h.actions = f.slice(5).map(Number); }
     else if (kind === 'wdopen') h.cmds = f[0].split('/').map((x) => parseInt(x, 16));
     return h;
   });
@@ -147,20 +151,22 @@ function ckMoveHooks(m) {                         // the hooks a move relies on 
   const H = ckHooks(); if (!H.length) return [];
   const mot = new Set(m.steps.map((s) => s.motion)), act = new Set(m.steps.map((s) => s.action)), P = mvProjMap(), magi = new Set();
   for (const mo of mot) { const p = S.tlOfMotion.get(mo); if (!p) continue; for (const e of [...F(p).ranged, ...F(p).keyed]) if (e.projectile !== undefined) for (const x of mvProjChain(e.projectile, P)) magi.add(x); }
-  return H.filter((h) => h.motions.some((x) => mot.has(x)) || h.actions.some((x) => act.has(x)) || h.magi.some((x) => magi.has(x)) || h.cmds.includes(m.id) ||
+  return H.filter((h) => h.motions.some((x) => mot.has(x)) || h.actions.some((x) => act.has(x)) || h.magi.some((x) => magi.has(x)) ||
     (h.kind === 'landact' && h.motions.some((x) => mot.has(x))));
 }
 function ckRecompHTML(m) {                        // the move panel's note
-  const hs = ckMoveHooks(m); if (!hs.length) return '';
+  // wdopen= belongs to the R+△ warp dash (itself recomp-only): the move it links into plays in full on a stock game
+  const link = m && !m.burst && ckHooks().some((h) => h.kind === 'wdopen' && h.cmds.includes(m.id))
+    ? `<p class="note">With the recomp, the R+△ warp dash links into this move's first press (<span class="mono">wdopen=</span>). A stock game has no warp dash; the move itself plays as normal.</p>` : '';
+  const hs = ckMoveHooks(m); if (!hs.length) return link;
   const kinds = [...new Set(hs.map((h) => h.kind))];
-  return `<p class="note rt-note"><b>Needs the recomp:</b> in game this move uses ${kinds.map((k) => `<span class="mono">${k}=</span> (${esc(CK_HOOK_INFO[k] || 'runtime hook')})`).join(', ')}. A stock game (PSP, PPSSPP, a patched ISO) ignores runtime hooks, so there it plays the plain animation and events.</p>`;
+  return link + `<p class="note rt-note"><b>Needs the recomp:</b> in game this move uses ${kinds.map((k) => `<span class="mono">${k}=</span> (${esc(CK_HOOK_INFO[k] || 'runtime hook')})`).join(', ')}. A stock game (PSP, PPSSPP, a patched ISO) ignores runtime hooks, so there it plays the plain animation and events.</p>`;
 }
 function ckCharRecomp() {                         // why the character as a whole needs the recomp: [text]
   const out = [], m = S.mod || {};
   if (!S.modPath || m.kind === 'retail' || (S.rig && S.rig.retail)) return out;
-  const c = m.character || {};
-  out.push(`A new roster slot (${c.slot ?? '?'}): extra characters need the recomp's runtime (it moves the character, object and ability tables into bigger blocks and gives the character a save record of its own). A stock game can't add characters; change a retail one instead (open it from the ISO, Save as mod).`);
-  const own = ckHooks().filter((h) => !h.motions.length && !h.actions.length && !h.magi.length && !h.cmds.length);
+  out.push(`A roster slot of its own: extra characters need the recomp's runtime (it moves the character, object and ability tables into bigger blocks and gives the character a save record of its own). A stock game can't add characters; change a retail one instead (open it from the ISO, Save as mod).`);
+  const own = ckHooks().filter((h) => !h.motions.length && !h.actions.length && !h.magi.length);   // wdopen= counts here, with warpdash=
   if (own.length) out.push(`Character-wide runtime hooks: ${[...new Set(own.map((h) => h.kind))].map((k) => `${k}= (${CK_HOOK_INFO[k] || 'runtime hook'})`).join(', ')}.`);
   return out;
 }

@@ -17,3 +17,9 @@ __pycache__/
 /studio/**/*.bin
 *.swp
 *.swo
+
+# Character work areas (Noctis backups, FFXV tools, per-character scripts), stray game-data backups, local agent settings
+/forge/
+/tools/noctis/
+/_brat_backup_*
+/.claude/

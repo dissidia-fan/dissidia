@@ -336,6 +336,40 @@ def bake_lighting(body, size=512, samples=48):
     return L
 
 
+SHARED_UV_LIMIT = 0.10   # past this share of the used texture drawn by 2+ faces, lighting isn't painted into it
+
+
+def uv_shared_fraction(me, n=256):
+    """the share of the texture (UV map 0) that more than one face draws: mirrored arms, repeated hair strands. Lighting
+    painted into such a texture is the lighting of one of those places on all of them."""
+    if not me.uv_layers:
+        return 0.0
+    me.calc_loop_triangles()
+    uv = np.empty(len(me.loops) * 2, np.float32)
+    me.uv_layers[0].data.foreach_get('uv', uv)
+    uv = uv.reshape(-1, 2)
+    cnt = np.zeros((n, n), np.int32)
+    loops = np.empty(len(me.loop_triangles) * 3, np.int32)
+    me.loop_triangles.foreach_get('loops', loops)
+    for tri in loops.reshape(-1, 3):
+        P = np.clip(uv[tri], 0.0, 1.0) * n
+        x0, y0 = np.floor(P.min(0)).astype(int)
+        x1, y1 = np.ceil(P.max(0)).astype(int)
+        if x1 <= x0 or y1 <= y0:
+            continue
+        xs, ys = np.meshgrid(np.arange(x0, x1) + 0.5, np.arange(y0, y1) + 0.5)
+        a, b, c = P
+        d = (b[1] - c[1]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[1] - c[1])
+        if abs(d) < 1e-9:
+            continue
+        l1 = ((b[1] - c[1]) * (xs - c[0]) + (c[0] - b[0]) * (ys - c[1])) / d
+        l2 = ((c[1] - a[1]) * (xs - c[0]) + (a[0] - c[0]) * (ys - c[1])) / d
+        inside = (l1 >= 0) & (l2 >= 0) & (l1 + l2 <= 1)
+        np.add.at(cnt, (np.clip(ys[inside].astype(int), 0, n - 1), np.clip(xs[inside].astype(int), 0, n - 1)), 1)
+    used = int((cnt > 0).sum())
+    return float((cnt > 1).sum()) / used if used else 0.0
+
+
 def stylize(body, tex_path, size=512, bake=True, eyes=True):
     """Build the body texture: graded source texture times baked soft lighting. Returns the Blender image."""
     rgb = grade(_load_rgb(tex_path, size, eyes))
@@ -508,6 +542,11 @@ def fit_core(src_arm, src, arm, maps, weight_map, tex_path, max_tris=2500, tex_s
     col.data.foreach_set('color', np.ones(len(col.data) * 4, np.float32))
     if me.uv_layers:
         me.uv_layers[0].name = 'UVMap'
+    shared = uv_shared_fraction(me) if bake else 0.0
+    light_msg = None
+    if shared > SHARED_UV_LIMIT:                # mirrored / repeated parts: painted light would be one side's on both
+        bake = False
+        light_msg = 'lighting not painted: %d%% of the texture is drawn by several faces (mirrored or repeated parts)' % round(shared * 100)
     img = stylize(body, tex_path, tex_size, bake=bake, eyes=tweak_eye)
     mat = me.materials[0]
     tex = next((n for n in mat.node_tree.nodes if n.type == 'TEX_IMAGE'), None)
@@ -541,4 +580,4 @@ def fit_core(src_arm, src, arm, maps, weight_map, tex_path, max_tris=2500, tex_s
         tools_bl._ghost_objects(arm, body, ghost_set)
         ghosts = len([o for o in bpy.data.objects if o.name.startswith('warp_ghost')])
     return dict(tris_in=tris, tris=len(me.loop_triangles), verts=len(me.vertices), groups=sorted(vgs),
-                replaced=msg, ghosts=ghosts, body=body.name, eyes=eye_msg)
+                replaced=msg, ghosts=ghosts, body=body.name, eyes=eye_msg, lighting=light_msg)

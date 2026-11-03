@@ -680,6 +680,13 @@ Back it up together with `ms0/PSP/SAVEDATA`.
 * **Checked offline.** `tests/run_roster_hooks_test.sh` includes roster.cpp with fake stubs and a temporary ms0. It covers the
   ablt hook, the private records, and these sidecar cases: save then restart then load; stale and damaged sidecars; two slots;
   New Game; and the ignored cases (cancel, import, listing, failed save). Not yet run in game.
+* **To do (with the next new character): key the sidecar by character code, not charId.** Slots are per machine (each
+  install's `readme_newchars.json`; `work/mods` is not in git since 29 Oct 2026), so a save copied between the Mac and the
+  Deck can put an extra's record on whoever has that charId there. Plan: a `DSRSTR02` layout whose entries also carry the
+  6-character code (the 6 zero bytes after `like` fit it); on load, find the code's charId in this install's roster and keep
+  records of codes that are not installed for when they come back; `DSRSTR01` files still load by charId and are rewritten
+  as 02 at the next save. Add "same code, other slot" and "code not installed" cases to `run_roster_hooks_test.sh`, then
+  check it in game (save on one slot layout, load on another).
 
 ### The extras' own ability names and help texts, 19 Oct
 
@@ -769,7 +776,9 @@ with 34 or fewer tiles: the game's own layout runs.
 Each extra character's Abilities screen used to show the names of the character it was cloned from. The `ablt` records
 that `tools/roster_mainbin.py` copies for an extra kept the like's text ids. Now they point at text records of their own.
 
-* **Source:** `games/dissidia/extra_abilities.json`, a name map per roster code. Edit it there; the format is in its `_doc`.
+* **Source:** each mod's `move_names` in `mods/<name>/mod.json` (format: character-mods.md, *`move_names` fields*).
+  `charmod.py build` merges them into `games/dissidia/extra_abilities.json`, a name map per roster code; that file is
+  local (not in git) and rewritten by every build, so don't edit it.
 * **Applied by:** `tools/roster_mainbin.py` (and `tools/new_character.py`, which calls it) whenever they rebuild main.bin.
   `--names PATH` uses another map; `--names none` builds main.bin as before (byte-identical to the 19 Oct
   `db12385b...` file).
@@ -930,3 +939,32 @@ the flag and rebuild main.bin (`roster_mainbin.py <disc0> work/mods --first 33`)
 * Vivi's A Couple Attacks / Retribution and Noctis's six Bartz moves keep their like's names until they are re-made. Rename
   them with one JSON entry each.
 * The move-detail texts (help pack entry 1) and any battle-side ability text are unchanged.
+
+### Customization screens: an extra character's strip, plate and tile (30 Oct)
+
+Symptom: Noctis's Customization screen showed Warrior of Light's face strip in the header.
+
+* The screens draw from their own pack, `menu/menu_pk_customize_gim_0.bin` (146 entries, entity ids 0x0C00 + entry; the language
+  pack `menu/<lang>/menu_lpk_customize_gim_0.bin` fills the entries the first leaves empty, under the same ids). Three kinds of 33
+  pictures (charIds 1..33): face strip, entries 42..74 (byte for byte `p_<code>_face_in_name.gim`); name plate, lpk 9..41 (= the
+  Quick Battle name plate); grid tile, entries 75..107 (= the Quick Battle tile, free-battle g2 entry 12 + charId - 1).
+* Every binder picks `base + charId - 1` with base 0x0C2A (strip), 0x0C09 (plate), 0x0C4B (tile), from tables at 0x08B009FC,
+  0x08B04510 and 0x08AE4568 (menu overlay; note `work/OVL_MENU_APP.bin` is the ELF body without its 0x54-byte header, so
+  vaddr = 0x089DD4C0 + file offset for that file). Binders: FUN_08AE3B14 (charId a3: strip, plate), FUN_08AE10B8 (charId t0:
+  tile), FUN_08B03FF8 (charId a2: strip, plate), and the EBOOT's generic FUN_088D5638 (charId a0 and t3, table t0), which skips
+  ids >= 35. For charId 34 the sum lands on Warrior of Light's tile / strip; with nothing bound the header keeps the layout's
+  default (sheet 0x0E3C -> 0x0C2A, Warrior of Light's strip).
+* Fix: `charmod_avatars.write_customize_pack` (run by `charmod.py build`) appends each extra character's strip / plate / tile at
+  entry 146 + 3 * (charId - 33) + kind (0 strip, 1 plate, 2 tile; `by_crc/abb87f5c.bin`), and `roster.cpp` redirects the four
+  binders there (`cust_wrap`, `cust_bind2_hook`). Ids 0x0C92.. are used by no other menu pack. `PSPRECOMP_ROSTER_DEBUG=1` logs
+  each swap (`[ROSTER] customize ...`).
+
+### Setup panel: Noctis's portrait washed out (30 Oct, second cause)
+
+Wrapping 0x08AA6148 (the second player-side binder, 19 Oct) did not cure it. Both player-side binders (0x08AA44AC and
+0x08AA6148) also read a 10-byte record per charId at 0x08AA8864 (index charId - 1): the sprite frames the two portrait
+layers show (static: the same call, FUN_088D9F5C, picks the digits of numbers elsewhere) (+0/+4 for node S+168, +2/+6 for node S+172) and a value kept at S+7780. Records exist for charIds 1..32 only
+(24..31 repeat Warrior of Light's); charId 34 read the bytes after the table (frames 0x0001 / 0xFFFF / 0x0000 / 0x001B).
+The opponent-side binders don't read it, which is why Lightning on the right looked fine. Fix (`binder_wrap` in roster.cpp):
+the player-side binders run with the based-on character's charId (its record; Bartz for Noctis), and `setframe_hook`
+turns that character's portrait / plate entities (0x700B / 0x704E + charId) back into the extra character's.

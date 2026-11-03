@@ -12,7 +12,7 @@ One folder per character, holding everything it adds to the game as files you ca
 
 ```
 mods/<name>/
-  mod.json            name, series, slot, which body, move names, runtime settings
+  mod.json            name, series, code, which body, move names, runtime settings
   avatars/            every menu and HUD picture, as PNGs
   moveset/p_<code>/   the moves: commands, timelines, hits, projectiles (JSON)
   moveset/p_<code>_a/ the assist's moves
@@ -20,7 +20,7 @@ mods/<name>/
   skins/<skin>/       bodies and weapons that replace the default ones
 ```
 
-A folder with `"kind": "retail"` in its `mod.json` changes one of the game's own characters instead of adding one (the Move Studio's *Save as mod* makes those). A folder whose name starts with `_`, or whose `mod.json` has `"enabled": false`, is never built. `_template/` is the template.
+A folder with `"kind": "retail"` in its `mod.json` changes one of the game's own characters instead of adding one (the Move Studio's *Save as mod* makes those); its body can be swapped for your own model, and `"skin": "retail"` puts the game's back. A folder whose name starts with `_`, or whose `mod.json` has `"enabled": false`, is never built. `_template/` is the template.
 
 ## By hand
 
@@ -34,6 +34,8 @@ tools/charmod.py hits noctis             # every hit of every move
 ```
 
 `--like` is the retail character a new one starts from (`fiv100` Bartz, `eht100` Squall, `sev100` Cloud, `six100` Terra, `gst130` Lightning...). Its skeleton, animations, voice and moves are the starting point. Deleting a folder (or setting `"enabled": false` in its `mod.json`) takes the character out of the game at the next start.
+
+**Effects of a copied character.** A character made from a retail one starts with that character's effect packages, and the game plays only one package per id, so a copy that shares a battle with its donor (or follows one) can lose all its effects and projectile visuals. The build therefore gives the extra characters' packages ids of their own (`tools/charmod_fep.py`; the main package and its assist keep the game's assist = main + 2048 pairing). The folder keeps the donor's ids; only the installed files change, and the same roster gets the same ids every build.
 
 **How many fit.** The character select screens have room for 31 more pictures. A character takes 5 (grid tile, slide-in, its copy for the setup panel, name plate, logo), or 4 when its series is one the game already has a logo for (FINAL FANTASY I to XIII) or another added character of the same series has one to share. That is 6 to 7 characters. One that doesn't fit would push out pictures the screens need (the Enter Battle button went missing), so the build leaves it out and says so; delete or disable another to make room. A folder with a logo picture of its own (`avatars.generated_from.logo`, or its `logo` avatar marked `"_own": true`) keeps its own plate.
 

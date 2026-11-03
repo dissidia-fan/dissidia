@@ -36,7 +36,7 @@
   function apply() {
     const W = work.clientWidth, H = center.clientHeight;
     L.lw = Math.max(200, Math.min(L.lw, W * 0.45)); L.rw = Math.max(220, Math.min(L.rw, W * 0.45));
-    work.style.gridTemplateColumns = `${L.left ? '30px' : L.lw + 'px'} 10px minmax(0,1fr) 10px ${L.insp ? '30px' : L.rw + 'px'}`;
+    work.style.gridTemplateColumns = `${L.left ? '30px' : L.lw + 'px'} 0 minmax(0,1fr) 0 ${L.insp ? '30px' : L.rw + 'px'}`;
     let rows;
     if (L.vp && L.tl) rows = '30px 10px minmax(0,1fr)';
     else if (L.vp) rows = '30px 10px minmax(0,1fr)';
@@ -77,4 +77,27 @@
   sC.addEventListener('dblclick', () => { L.vp = L.tl = false; L.vh = null; apply(); save(); });
   new ResizeObserver(apply).observe(work);
   apply();
+})();
+
+/* the side panes' tabs: words when they fit on one line, icons when the pane is too narrow (2026-11-01: "swap
+   these with icons when the pane is not wide enough"); the words' width is measured once, with the words shown */
+(function tabIcons() {
+  document.querySelectorAll('.pane>h2>.tabs').forEach((tabs) => {
+    const h2 = tabs.parentElement, btns = [...tabs.querySelectorAll('button')];
+    btns.forEach((b) => { b.dataset.tip = b.getAttribute('title') || ''; });
+    let need = 0;
+    const fit = () => {
+      if (!h2.clientWidth) return;
+      if (!need) { tabs.classList.remove('icons'); tabs.style.flexWrap = 'nowrap'; need = tabs.scrollWidth; tabs.style.flexWrap = ''; }
+      const cs = getComputedStyle(h2), room = h2.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+      const icons = room < need;
+      tabs.classList.toggle('icons', icons);
+      btns.forEach((b) => {           // icons only: the name goes in the tooltip, before what the tab is for
+        const name = b.getAttribute('aria-label') || '', t = icons ? name + (b.dataset.tip ? ': ' + b.dataset.tip : '') : b.dataset.tip;
+        if (t) b.setAttribute('title', t); else b.removeAttribute('title');
+      });
+    };
+    new ResizeObserver(fit).observe(h2); fit();
+    if (document.fonts) document.fonts.ready.then(() => { need = 0; fit(); });   // the words' width with the real font
+  });
 })();
