@@ -1,6 +1,6 @@
-# Dissidia 012 Duodecim: native port and modding
+# Dissidia 012 Duodecim: native port and modding toolset
 
-Dissidia 012 Duodecim (PSP) running natively on the Steam Deck and Linux, no emulator, plus tools for adding new characters. The native build is called **Dissidia Trēdecim**.
+Dissidia 012 Duodecim (PSP) running natively on the Steam Deck and Linux, no emulator, plus modding tools for adding new characters, swapping character models and creating new effects and animations. The native build is called **Dissidia Trēdecim**.
 
 You need your own copy of the game as an `.iso` or `.cso`. The European PSN release (`ULES01505`) is the one it was built against; the US UMD (`ULUS10566`) works too.
 
