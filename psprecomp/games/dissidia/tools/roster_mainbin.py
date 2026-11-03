@@ -60,7 +60,7 @@ code the name map lists, the tool appends the new names and help texts to both t
 package has; this package has only 'en') and points that character's records at them; retail records keep their ids
 and bytes, and a map entry whose 'cmd' differs from the record's command id is skipped. An entry may also change the
 record's kind: "type" (brave / hp, +0x16), "phase" (ground / midair / follow-up, +0x17) and "after" (+6, the ability
-it follows up, null = none), and its cost: "cp" (CP to equip, +0x0E; "cp_mastered" +0x10, default half), "ap" (AP to
+it follows up: the character's own key, "01"; null = none), and its cost: "cp" (CP to equip, +0x0E; "cp_mastered" +0x10, default half), "ap" (AP to
 master, +0x12) and "bonus" (the equip bonus, +0x14: a system.bin 'fncs' effect-set id, null = none); "learn": N on an
 ability the like has moves it to level N of the 'chrl' row (set_learn_levels). An entry with "disabled": true takes the ability out of the kit but keeps its record
 (owner byte 0xFE, command -2: not listed, does nothing in battle; see disable_abilities). An entry with "copy" adds an ability the like does not have: a copy of the character's
@@ -607,16 +607,23 @@ def load_names_and_texts(read, path=None, required=False):
     return load_ability_names(path), texts
 
 
-def after_id(v, char):
-    """An entry's "after": null = none; an ability id ("2201", 0x2201); or a key of the character's own name map
-    ("01", as the Move Studio writes it), which is (char << 8) | key."""
+def after_id(v, char, log=None):
+    """An entry's "after": null = none, else always one of the character's own abilities, by its name-map key ("01",
+    as the Move Studio writes it; 1), which is (char << 8) | key. Never absolute: a mod's charId depends on the other
+    mods installed, so a full id ("2201") is read by its last two digits too (a log line says so when its charId part
+    is not this character's), and a follow-up stays on its brave attack whatever charId the character gets."""
     if v in (None, "", "none"):
         return 0xFFFF
     if isinstance(v, str):
         t = v.strip().lower()
-        t = t[2:] if t.startswith("0x") else t
-        return (char << 8) | int(t, 16) if len(t) <= 2 else int(t, 16)
-    return int(v)
+        n = int(t[2:] if t.startswith("0x") else t, 16)
+    else:
+        n = int(v)
+    if not 0 <= n <= 0xFFFF:
+        raise SystemExit("ablt: 'after' %r is not an ability key" % (v,))
+    if n > 0xFF and n >> 8 != char and log:
+        log("ablt names: 'after' %r is read as charId %d's own ability %04X (keys are per character)" % (v, char, (char << 8) | (n & 0xFF)))
+    return (char << 8) | (n & 0xFF)
 
 
 def apply_ability_names(aents, chars, names, texts, log=print):
@@ -650,9 +657,8 @@ def apply_ability_names(aents, chars, names, texts, log=print):
                 r[ABLT_TYPE] = ABLT_TYPES[str(ent["type"]).lower()]
             if "phase" in ent:                      # ground / midair / follow-up of the +6 ability (+0x17)
                 r[ABLT_PHASE] = ABLT_PHASES[str(ent["phase"]).lower()]
-            if "after" in ent:                      # prerequisite ability (+6): null = none, else an ability id
-                v = ent["after"]
-                struct.pack_into("<H", r, ABLT_AFTER, after_id(v, char))
+            if "after" in ent:                      # prerequisite ability (+6): null = none, else one of its own keys
+                struct.pack_into("<H", r, ABLT_AFTER, after_id(ent["after"], char, log))
             if ent.get("cp") is not None:           # CP to equip (+0x0E); once mastered (+0x10) defaults to half, rounded down
                 cp = int(ent["cp"])
                 struct.pack_into("<hh", r, ABLT_CP, cp, int(ent["cp_mastered"]) if ent.get("cp_mastered") is not None else cp // 2)

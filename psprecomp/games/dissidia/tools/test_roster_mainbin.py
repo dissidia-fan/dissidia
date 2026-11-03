@@ -285,6 +285,30 @@ def test_ability_kind():
     assert all(a_new[aid] == a_old[aid] for aid in a_new if aid >> 8 != 34)             # retail records untouched
 
 
+def test_after_is_own_key():
+    """'after' is never absolute: a key ("02", 2) or a full id ("2202", "0x2202") all name the character's own ability
+    02, so a follow-up stays on its brave attack when the character lands on another charId (a mod built at 34 and
+    installed next to another mod, so at 35); a full id of another charId is logged."""
+    assert R.after_id(None, 0x23) == 0xFFFF and R.after_id("none", 0x23) == 0xFFFF
+    for v in ("02", "0x02", 2, "2302", "0x2302"):
+        assert R.after_id(v, 0x23) == 0x2302, v
+    log = []
+    assert R.after_id("2202", 0x23, log.append) == 0x2302 and len(log) == 1 and "2302" in log[0], log
+    assert R.after_id("2302", 0x23, log.append) == 0x2302 and len(log) == 1          # its own charId: no line
+    try:
+        R.after_id("12345", 0x23)
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("an id over 0xFFFF must be refused")
+    base = main_bin()
+    m = {"noc100": {0x06: {"cmd": "0xAB", "after": "2202"}}}                       # written when Noctis was 34
+    for cid in (34, 35):
+        out = R.build(base, [(cid, "noc100", 9)], log=lambda *_: None, min_id=33, names=m, texts=R.AbilityTexts(text_package()))
+        r6 = ablt_records(tables(out)["ablt"])[(cid << 8) | 0x06]
+        assert struct.unpack_from("<H", r6, R.ABLT_AFTER)[0] == (cid << 8) | 0x02, cid
+
+
 def test_new_ability():
     """"copy" adds an ability of the character's own: Noctis's ground Warp-Strike style 0x2204 = a copy of 0x2207 with
     command 0x0B0, ground phase, learned at level 9 (a free id slot of the level-9 entry) and at level 2 (a new entry);
@@ -407,6 +431,6 @@ def test_ability_cost_and_learn():
 
 if __name__ == "__main__":
     for t in (test_level_table_round_trip, test_abilities, test_game_row_limit, test_mess_text_off4, test_ability_names,
-              test_ability_kind, test_new_ability, test_disabled_ability, test_ability_cost_and_learn):
+              test_ability_kind, test_after_is_own_key, test_new_ability, test_disabled_ability, test_ability_cost_and_learn):
         t()
         print("ok", t.__name__)
