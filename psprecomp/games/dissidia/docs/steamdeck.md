@@ -48,9 +48,7 @@ zenity is missing). Double-click it in Dolphin and choose Execute (Properties > 
 if it was downloaded on its own).
 
 * **First run.** If it is not inside a checkout (downloaded from GitHub on its own), it clones the project into
-  `~/dissidia/repo`, asking for the address (prefilled) and, for the private repository, your GitHub user name and an
-  access token in dialogs (git runs it as `GIT_ASKPASS`). "Remember" keeps the login in `~/.git-credentials` through
-  git's `store` helper, set for that checkout only; "Ask every time" leaves nothing behind. An existing
+  `~/dissidia/repo`, asking for the address (prefilled). An existing
   `~/dissidia/repo` that predates the tool is pulled first. Then it starts the copy inside the checkout.
 * **Icons.** Every start writes a "Dissidia Trēdecim Setup" launcher to the desktop and to
   `~/.local/share/applications` (Games), pointing at the checkout's copy, with the Steam icon.
