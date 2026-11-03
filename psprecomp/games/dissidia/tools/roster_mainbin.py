@@ -791,6 +791,63 @@ def set_learn_levels(aents, chars, names, log=print):
     return moved
 
 
+AMAS_ONE = 1                    # u16 at +2 of every retail attack 'amas' entry {u16 unlocks, 1, u16 needs, u16 0xFFFF}
+
+
+def sync_followup_unlocks(aents, chars, names, log=print):
+    """The 'amas' attack entries of each roster character follow its HP follow-ups. In retail every attack entry of
+    'amas' (34) is a follow-up unlocked by mastering an attack, almost always the one it follows up (+6): Bartz's Flare
+    0907 by Holy 0906, Rune Saber 010D by Ascension 0100. The Command Chart marks an attack that unlocks one with a
+    yellow diamond. A row copied from the like keeps the like's entries, so:
+      * an entry unlocking an ability that no longer follows anything up (+6 = 0xFFFF) is dropped. Noctis's 2307
+        Greatsword Down Strike (Bartz's Flare made a brave move of its own) was still unlocked by mastering Dagger Strike
+        2306, which showed the diamond;
+      * a name-map entry that makes an ability a follow-up ("after", or a "copy" whose record follows one up) gets the
+        entry "mastering its +6 unlocks it" (added, or the prerequisite of its entry replaced), so its brave attack shows
+        the diamond (Katana of the Warrior after Armiger Assault).
+    Support entries (0x40nn) and entries of retail follow-ups the map does not touch stay as they are (Onion Knight's
+    chains unlock by the previous follow-up). Returns {ability id: the attack that unlocks it, None = dropped}."""
+    by = {e[0]: e for e in aents}
+    blob = by["ablt"][2]
+    n = struct.unpack_from("<I", blob, 8)[0]
+    after = {struct.unpack_from("<H", blob, 16 + ABLT_REC * i)[0]: struct.unpack_from("<H", blob, 16 + ABLT_REC * i + ABLT_AFTER)[0]
+             for i in range(n)}
+    head, rows = parse_level_table(by["amas"][2], "amas")
+    done = {}
+    for char, code, _like in chars:
+        table = names.get((code or "").lower()) or {}
+        want = {}
+        for k, ent in table.items():
+            aid = (char << 8) | k
+            if ("after" in ent or "copy" in ent) and after.get(aid, 0xFFFF) != 0xFFFF:
+                want[aid] = after[aid]
+        w3, ents = rows.get(char, (0, []))
+        new = []
+        for e in ents:
+            aid, need = struct.unpack_from("<H", e, 0)[0], struct.unpack_from("<H", e, 4)[0]
+            if aid >> 8 == char and after.get(aid, 0xFFFF) == 0xFFFF:
+                done[aid] = None
+                log("amas: charId %d: %04X no longer follows anything up, no longer unlocked by mastering %04X" % (char, aid, need))
+                continue
+            if aid in want:
+                if need != want[aid]:
+                    e = bytearray(e)
+                    struct.pack_into("<H", e, 4, want[aid])
+                    done[aid] = want[aid]
+                    log("amas: charId %d: %04X unlocked by mastering %04X (was %04X)" % (char, aid, want[aid], need))
+                del want[aid]
+            new.append(bytes(e))
+        for aid, need in sorted(want.items()):
+            new.append(struct.pack("<4H", aid, AMAS_ONE, need, 0xFFFF))
+            done[aid] = need
+            log("amas: charId %d: %04X unlocked by mastering %04X (its brave attack shows the diamond)" % (char, aid, need))
+        if new != list(ents):
+            rows[char] = (w3, sorted(new, key=lambda e: struct.unpack_from("<H", e, 0)[0]))
+    if done:
+        by["amas"][2] = level_table_bytes(head, rows)
+    return done
+
+
 def disable_abilities(aents, chars, names, log=print):
     """Name-map entries with "disabled": true take an ability out of the character's kit (Star of the Rogue, 22 Oct
     2026, until its animation exists) while keeping its 'ablt' record, so that saves which learned or equipped it stay
@@ -983,6 +1040,8 @@ def build(data, chars, rmax=ROSTER_MAX, log=print, min_id=FIRST_NEW, objs=None, 
         apply_ability_names(aents, chars, names, texts, log)
     if names:
         set_learn_levels(aents, chars, names, log)
+    if names:                                    # after the kinds ("after") are set, before disabling drops entries
+        sync_followup_unlocks(aents, chars, names, log)
     if names:                                    # last: the naming above looks records up by owner and command
         disable_abilities(aents, chars, names, log)
     chrp[2] =bytes(chd[:4]) + struct.pack("<I", len(recs)) + b"".join(bytes(r) for r in recs)

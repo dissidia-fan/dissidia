@@ -78,7 +78,9 @@ Table and reasons: [roster.md](roster.md).
     lines ('Additional Effect: chase'), `{like}` = all of it; `{effect:X}` / `{effects:X}` = an orange
     'Additional Effect: X' / 'Effects: X' line.
 - Record kind, optional (left out, the based-on character's values stay): `type` brave / hp (+0x16), `phase` ground /
-  midair / follow-up (+0x17), `after` the ability it follows up (+6, `null` = none): always one of the character's own keys (`"01"`), never a full id, because a mod's charId depends on which other mods are installed. An old full id (`"2201"`) is read by its last two digits.
+  midair / follow-up (+0x17), `after` the ability it follows up (+6, `null` = none): always one of the character's own keys (`"01"`), never a full id, because a mod's charId depends on which other mods are installed. An old full id (`"2201"`) is read by its last two digits. A follow-up is also unlocked by mastering its `after` (system.bin `amas`, as every retail
+  HP follow-up is), which puts the yellow diamond on that attack in the Command Chart; an inherited `amas` entry for an
+  ability that no longer follows anything up is dropped (`roster_mainbin.sync_followup_unlocks`).
 - `copy`: `"0F"` ADDS an ability the based-on character does not have under this key: a copy of the character's record
   0F with `cmd` (required) as its command id; `learn`: N lists it in the character's `chrl` row at level N
   (`roster_mainbin.add_new_abilities`). Its move is the objx comb command `cmd` (battle looks the record's +12 up in the

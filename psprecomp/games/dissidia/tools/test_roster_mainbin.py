@@ -309,6 +309,28 @@ def test_after_is_own_key():
         assert struct.unpack_from("<H", r6, R.ABLT_AFTER)[0] == (cid << 8) | 0x02, cid
 
 
+def test_followup_unlocks():
+    """'amas' attack entries follow the follow-ups: Flare 0x2207 made a brave move of its own (after null) is no longer
+    unlocked by mastering 0x2206 (the stale entry showed a diamond on that attack); 0x220C made a follow-up of 0x2202
+    is unlocked by mastering 0x2202 (its diamond); the support entry and the like's row stay; the row stays sorted."""
+    base = main_bin()
+    plain = R.build(base, [(34, "noc100", 9)], log=lambda *_: None, min_id=33)
+    _h, rows = R.parse_level_table(tables(plain)["amas"], "amas")
+    assert rows[34][1] == [amas_entry(0x2207, 0x2206), amas_entry(0x4004, 0x4003)]          # copied from Bartz's
+    m = {"noc100": {0x07: {"cmd": "0xAC", "type": "brave", "phase": "midair", "after": None},
+                    0x0C: {"cmd": "0xA2", "type": "hp", "phase": "follow-up", "after": "02"}}}
+    log = []
+    out = R.build(base, [(34, "noc100", 9)], log=log.append, min_id=33, names=m, texts=R.AbilityTexts(text_package()))
+    _h, rows = R.parse_level_table(tables(out)["amas"], "amas")
+    assert rows[34][1] == [amas_entry(0x220C, 0x2202), amas_entry(0x4004, 0x4003)], [e.hex() for e in rows[34][1]]
+    assert rows[9][1] == AMAS[9] and rows[1][1] == AMAS[1]                                    # retail rows untouched
+    assert any("2207 no longer follows anything up" in line for line in log), log
+    # a name map that only renames keeps the copied entries as they are
+    out = R.build(base, [(34, "noc100", 9)], log=lambda *_: None, min_id=33, names={"noc100": {0x07: {"cmd": "0xAC", "name": "X"}}},
+                  texts=R.AbilityTexts(text_package()))
+    assert R.parse_level_table(tables(out)["amas"], "amas")[1][34][1] == [amas_entry(0x2207, 0x2206), amas_entry(0x4004, 0x4003)]
+
+
 def test_new_ability():
     """"copy" adds an ability of the character's own: Noctis's ground Warp-Strike style 0x2204 = a copy of 0x2207 with
     command 0x0B0, ground phase, learned at level 9 (a free id slot of the level-9 entry) and at level 2 (a new entry);
@@ -431,6 +453,6 @@ def test_ability_cost_and_learn():
 
 if __name__ == "__main__":
     for t in (test_level_table_round_trip, test_abilities, test_game_row_limit, test_mess_text_off4, test_ability_names,
-              test_ability_kind, test_after_is_own_key, test_new_ability, test_disabled_ability, test_ability_cost_and_learn):
+              test_ability_kind, test_after_is_own_key, test_followup_unlocks, test_new_ability, test_disabled_ability, test_ability_cost_and_learn):
         t()
         print("ok", t.__name__)
