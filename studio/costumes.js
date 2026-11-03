@@ -28,7 +28,7 @@ function costumePanel(I) {
   };
   I.innerHTML = `<div class="sec"><h3>Costumes</h3>
     <p class="note">The game has three more costume slots. Until you add one it shows the main model; added, it gets a model of its own, fitted in Blender from your file.</p>
-    <div class="cst-row cst-main"><div><b>Main</b><small>${esc(skinLabel(skinGameChoice()))}</small></div></div>
+    <div class="cst-row cst-main"><div><b>Main</b><small>${esc(typeof skinTitle === 'function' ? skinTitle(skinGameChoice()) : skinLabel(skinGameChoice()))}</small></div></div>
     ${CST_SLOTS.map(row).join('')}</div>`;
   I.querySelectorAll('[data-cst-add]').forEach((b) => b.onclick = () => cstStart(b.dataset.cstAdd, true));
   I.querySelectorAll('[data-cst-replace]').forEach((b) => b.onclick = () => cstStart(b.dataset.cstReplace, false));

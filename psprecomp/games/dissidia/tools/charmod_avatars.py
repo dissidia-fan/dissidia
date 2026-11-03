@@ -7,7 +7,8 @@ bytes the game had. An avatar whose picture is null uses the like's own picture.
 Two kinds of target:
   * per-character files   menu/<lang>/.../p_<code>_*.gim
   * the shared menu pack  by_crc/<G3>.bin: grid tile, slide-in art, name plate and logo of every extra character, at the
-                          entry ids in mod.json "menu_ids" (tile=, art=, artl=/artr=, name=, logo=)
+                          entry ids the mods dir gave it (tile=, art=, artl=/artr=, name=, logo=; m["menu_ids"] as
+                          charmod.load_mod(name, mods) fills it in: they are not in mod.json)
 """
 import hashlib
 import io
@@ -162,6 +163,75 @@ def write_pack(mods, disc_pkg, entries):
     return mp.build(base, blobs)
 
 
+# ---------------------------------------------------------------- the Customization screens' pack
+# The Customization screens show a character's face strip, name plate and grid tile from a pack of their own
+# (menu/menu_pk_customize_gim_0.bin, 146 entries, entity ids 0x0C00 + entry; the language pack menu_lpk_customize_gim_0
+# fills the entries this one leaves empty, under the same ids). The game picks base + charId - 1 from 33 pictures per
+# kind, so it has nothing for an extra character (it kept showing Warrior of Light's strip for Noctis). Each extra
+# character's three pictures are appended at entry 146 + 3 * (charId - 33) + kind (0 strip, 1 plate, 2 tile), where the
+# runtime (roster.cpp, cust_wrap / cust_bind2_hook) points those screens. The pictures are the same bytes the game uses
+# elsewhere: the strip is p_<code>_face_in_name.gim, the plate and tile are the Quick Battle name plate and grid tile.
+CUST = 'menu/menu_pk_customize_gim_0.bin'
+CUST_PATH = 'by_crc/%08x.bin' % pe.package_crc(CUST)
+CUST_RETAIL_ENTRIES = 146
+CUST_FIRST_NEW, CUST_ROSTER_MAX = 33, 43          # roster_max.h DISSIDIA_FIRST_NEW / DISSIDIA_ROSTER_MAX
+CUST_RETAIL0 = {0: (CUST, 42), 1: ('menu/en/menu_lpk_customize_gim_0.bin', 9), 2: (CUST, 75)}   # charId 1's entry per kind
+
+
+def cust_index(slot, kind):
+    return CUST_RETAIL_ENTRIES + 3 * (slot - CUST_FIRST_NEW) + kind
+
+
+def customize_pictures(m, files, g3_bytes, disc_pkg):
+    """-> [strip, plate, tile] gim bytes of an extra character: its built face strip and its Quick Battle plate / tile
+    (from the shared pack g3_bytes), else the based-on character's retail pictures."""
+    code, like = m['character']['code'], m['character'].get('based_on_id') or 9
+    strip = next((d for gp, d in sorted(files.items())
+                  if gp.endswith('/chara_face_in_name/p_%s_face_in_name.gim' % code)), None)
+    out = [strip, None, None]
+    ids = m.get('menu_ids', {})
+    if g3_bytes:
+        g3 = mp.parse(g3_bytes)
+        for kind, key in ((1, 'name'), (2, 'tile')):
+            if key in ids:
+                k = ids[key] + BASES[key] - g3['base']
+                if 0 <= k < len(g3['ents']) and g3['ents'][k][1]:
+                    out[kind] = mp.entry(g3, k)
+    for kind in range(3):
+        if out[kind] is None and 1 <= like <= 33:
+            path, first = CUST_RETAIL0[kind]
+            out[kind] = mp.entry(mp.parse(disc_pkg.read(path)), first + like - 1)
+    return out
+
+
+def write_customize_pack(mods, disc_pkg, chars, roster_slots):
+    """chars: {slot: [strip, plate, tile]} built now; roster_slots: every extra slot of roster.txt. Pictures of slots
+    not built now are kept, those of slots gone from the roster dropped. -> bytes, or None when no slot needs one."""
+    cur = os.path.join(mods, CUST_PATH)
+    base = mp.parse(disc_pkg.read(CUST))
+    pk = mp.parse(open(cur, 'rb').read()) if os.path.exists(cur) else base
+    blobs = [mp.entry(pk, k) for k in range(len(pk['ents']))]
+    blobs[:CUST_RETAIL_ENTRIES] = [mp.entry(base, k) for k in range(CUST_RETAIL_ENTRIES)]
+    keep = {s for s in roster_slots if CUST_FIRST_NEW <= s < CUST_ROSTER_MAX}
+    for k in range(CUST_RETAIL_ENTRIES, len(blobs)):
+        if (k - CUST_RETAIL_ENTRIES) // 3 + CUST_FIRST_NEW not in keep:
+            blobs[k] = b''
+    for slot, pics in chars.items():
+        if not CUST_FIRST_NEW <= slot < CUST_ROSTER_MAX:
+            print('  note: slot %d has no place in the Customization pack (slots %d..%d)' % (slot, CUST_FIRST_NEW, CUST_ROSTER_MAX - 1))
+            continue
+        for kind, d in enumerate(pics):
+            k = cust_index(slot, kind)
+            while len(blobs) <= k:
+                blobs.append(b'')
+            blobs[k] = d or b''
+    while len(blobs) > CUST_RETAIL_ENTRIES and not blobs[-1]:
+        blobs.pop()
+    if len(blobs) == CUST_RETAIL_ENTRIES:
+        return None
+    return mp.build(base, blobs)
+
+
 # ---------------------------------------------------------------- unpack (pictures from what is installed)
 def _keep(root, key, img, targets, encoded):
     """targets: {target: (installed bytes, template)}; keeps the installed bytes the encoder doesn't reproduce."""
@@ -181,12 +251,7 @@ def unpack(root, mods, code, like_code, menu_ids, installed, like_bytes, disc_pk
     """installed: {game path: bytes} of the character's installed files; like_bytes(path) -> retail bytes or None.
     Writes avatars/*.png, returns the mod.json 'avatars' section."""
     os.makedirs(os.path.join(root, 'avatars'), exist_ok=True)
-    av = {'_info': ('Pictures the menus and HUD show, in avatars/. Replace a PNG with your own picture (same size; other '
-                    'sizes are scaled to fit), then build. "picture": null = the based-on character\'s picture. '
-                    'Make them all from one big picture: charmod.py avatars <folder> --from-picture art.png. '
-                    'See them all: charmod.py avatars <folder> (draws avatars/_preview.png). "_files" / "_menu_ids" = where '
-                    'each picture goes in the game; "_keep" = the game\'s own bytes for a picture, used until you edit '
-                    'the PNG. Leave those as they are.')}
+    av = {}
     used = set()
     for key, shows, _ in FILE_AVATARS:
         paths = [p for p in file_targets(code)[key] if p in installed]
@@ -235,16 +300,14 @@ def unpack(root, mods, code, like_code, menu_ids, installed, like_bytes, disc_pk
             if kept:
                 av[k]['_keep'] = {'png_md5': hashlib.md5(img).hexdigest(), 'menu_ids': kept}
     rank = {k: i for i, k in enumerate(ORDER)}
-    keys = sorted((k for k in av if k != '_info'), key=lambda k: (rank.get(k.split('_')[0] if k not in rank else k, 99), k))
-    return dict([('_info', av['_info'])] + [(k, av[k]) for k in keys]), used
+    keys = sorted(av, key=lambda k: (rank.get(k.split('_')[0] if k not in rank else k, 99), k))
+    return {k: av[k] for k in keys}, used
 
 
 def source_from_args(args):
     """new_character.py options -> the 'generated_from' record (avatar names)."""
     inv = {v: k for k, v in CROPS.items()}
-    return {'_info': 'what the avatars were made from: picture (full body), optional portrait (head and shoulders), crop '
-                     'boxes x0,y0,x1,y1 in picture pixels per avatar. Change them and run: charmod.py avatars <folder> --redo',
-            'picture': args.get('slidein'), 'portrait': args.get('portrait'), 'logo': args.get('logo'),
+    return {'picture': args.get('slidein'), 'portrait': args.get('portrait'), 'logo': args.get('logo'),
             'crops': {inv[k]: v for k, v in args.items() if k in inv and v},
             'options': {k: args[k] for k in OPTIONS if args.get(k)}}
 
@@ -343,9 +406,7 @@ def preview(root, m, path):
 def skeleton(code, tpl):
     """The avatars section of a new character: every avatar the based-on character has, no pictures yet (null = the
     based-on character's picture until you add one)."""
-    av = {'_info': ('Pictures the menus and HUD show. "picture": null = the based-on character\'s picture. Add your own: put a '
-                    'PNG in avatars/ and set "picture" to it (size as listed), or make them all from one big picture with '
-                    'charmod.py avatars <folder> --from-picture art.png. charmod.py avatars <folder> draws avatars/_preview.png.')}
+    av = {}
     for key, shows, pats in FILE_AVATARS:
         fs = [p.format(L=L, c=code) for p in pats for L in ca.LANGS if tpl.file(p.format(L=L, c=code), code) is not None]
         if fs:
@@ -355,8 +416,8 @@ def skeleton(code, tpl):
         size = ge.decode(tpl.pack(ids[0])).size
         av[key] = {'picture': None, 'size': '%dx%d' % size, 'shows': shows, '_menu_ids': ids[:2] if key == 'slidein' else ids[:1]}
     rank = {k: i for i, k in enumerate(ORDER)}
-    keys = sorted((k for k in av if k != '_info'), key=lambda k: rank.get(k, 99))
-    return dict([('_info', av['_info'])] + [(k, av[k]) for k in keys])
+    keys = sorted(av, key=lambda k: rank.get(k, 99))
+    return {k: av[k] for k in keys}
 
 
 def placeholder_art(path, label='NEW'):

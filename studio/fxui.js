@@ -17,7 +17,7 @@ function fxuApply(bytes) {
   const magi = S.fx && S.fx.magi;
   S.effe.bytes = bytes;
   S.fx = loadEffects(bytes); if (S.fx) S.fx.magi = magi;
-  fxTexCache.clear(); fxGeoCache.clear();
+  fxTexCache.clear(); FXHD.map = null; fxGeoCache.clear();
   fxuDeriveEffects();
 }
 function fxuDeriveEffects() {                    // the effect pickers list what the package holds now
@@ -40,7 +40,7 @@ function fxuEdit(fn, keepSel) {
   S.undo.push([{ effe: before, dirty: wasDirty }]);
   const effeUndos = S.undo.filter((u) => u[0] && u[0].effe);
   if (effeUndos.length > 40) S.undo.splice(S.undo.indexOf(effeUndos[0]), 1);    // snapshots are whole packages (1–2 MB)
-  $('undoBtn').disabled = false;
+  undoPushed();
   S.effe.dirty = true;
   fxuApply(bytes);
   refreshStatus();
@@ -96,23 +96,72 @@ function fxuLeft(L) {
   const isMod = !(S.rig && S.rig.retail), org = isMod ? fxuOrigins() : null;
   if (isMod && !org && S.retailChars && S.retailChars.length && !FXU.retailP) fxuRetailIndex().then(() => { if (S.tab === 'fx') renderLeft(); if (S.fxEdit) renderInspector(); });
   const OL = { same: 'retail, unchanged', changed: 'retail, changed', new: 'new' };
-  let h = `<div class="fxu-top"><span class="note">${n} of 128 effects</span><span class="btnrow"><button type="button" id="fxuUnused" title="Remove the effects nothing plays (no event, projectile, hit, runtime hook or engine rule points at them), to make room">Remove unused…</button><button type="button" id="fxuNew" title="A new effect from a template: the simplest retail effect of the kind you pick, copied with its textures">+ New…</button><button type="button" id="fxuFrom" title="Copy an effect (with its textures, meshes and flipbooks) from this or another character">+ Copy…</button></span></div>`;
-  if (isMod && org) { const c = { same: 0, changed: 0, new: 0 }; org.forEach((o) => c[o.kind]++); h += `<p class="note fxu-legend"><span class="fxu-org same">${c.same} from ${esc((org.donor || 'retail').replace(/ \(assist\)$/, ''))} and others, unchanged</span> <span class="fxu-org changed">${c.changed} changed</span> <span class="fxu-org new">${c.new} new</span></p>`; }
+  let h = `<div class="fxu-top"><span class="note" id="fxuCount">${n} / 128 used</span><span class="btnrow"><button type="button" id="fxuUnused" title="Remove the effects nothing plays (no event, projectile, hit, runtime hook or engine rule points at them), to make room">Remove unused…</button><button type="button" id="fxuNew" title="A new effect from a template: the simplest retail effect of the kind you pick, copied with its textures">+ New…</button><button type="button" id="fxuFrom" title="Copy an effect (with its textures, meshes and flipbooks) from this or another character">+ Copy…</button></span></div>`;
+  // the legend's three kinds filter the list too (click one or more; the search narrows it further)
+  const ob = (k, label) => `<button type="button" class="fxu-org ${k}" data-org="${k}" aria-pressed="${!!(FXU.org && FXU.org.has(k))}" title="Show only these (click again to show all)">${label}</button>`;
+  if (isMod && org) { const c = { same: 0, changed: 0, new: 0 }; org.forEach((o) => c[o.kind]++); h += `<p class="note fxu-legend">${ob('same', `${c.same} from ${esc((org.donor || 'retail').replace(/ \(assist\)$/, ''))} and others, unchanged`)} ${ob('changed', `${c.changed} changed`)} ${ob('new', `${c.new} new`)}</p>`; }
   else if (isMod && S.retailChars && S.retailChars.length) h += '<p class="note">Comparing with the game\u2019s characters…</p>';
   else if (isMod) h += '<p class="note">Set the game ISO to see which effects come from retail characters.</p>';
   fep.names.forEach((nm, ni) => {
     const recs = fxuRecs(ni), use = fxuEffectUse(ni, uses), sel = S.fxEdit && S.fxEdit.ni === ni;
     const body = fxuBody(ni);
-    h += `<div class="anim-row fxu-row${sel ? ' sel' : ''}" data-ni="${ni}" title="${esc(nm.name)}${recs.length ? ' · event ids ' + recs.map((r) => r.id).join(', ') : ''}">
+    const q = [ni, nm.name, fxuShort(nm.name), ...recs.map((r) => 'id ' + r.id), org ? org[ni].kind + ' ' + org[ni].who : '', body && body.a & 2 ? 'keeps playing' : '', ...use, use.size ? '' : recs.length ? 'not used unused' : 'no placement'].join(' ').toLowerCase();
+    h += `<div class="anim-row fxu-row${sel ? ' sel' : ''}" data-ni="${ni}" data-q="${esc(q)}"${org ? ` data-org="${org[ni].kind}"` : ''} title="${esc(nm.name)}${recs.length ? ' · event ids ' + recs.map((r) => r.id).join(', ') : ''}">
       <span class="mono">${ni}</span><span>${esc(fxuShort(nm.name))}</span>
       <small>${org ? `<span class="fxu-org ${org[ni].kind}" title="${org[ni].kind === 'new' ? 'Not in any retail character' : 'From ' + esc(org[ni].who) + (org[ni].kind === 'same' ? ', exactly as in the game' : ', edited')}">${org[ni].kind === 'new' ? 'new' : esc(org[ni].who.replace(/ \(assist\)$/, '')) + (org[ni].kind === 'same' ? '' : ' · changed')}</span> ` : ''}${body && body.a & 2 ? 'keeps playing · ' : ''}${use.size ? esc([...use].slice(0, 2).join(', ')) + (use.size > 2 ? ' …' : '') : recs.length ? 'not used' : 'no placement'}</small></div>`;
   });
-  L.innerHTML = (typeof compLeftHTML === 'function' ? compLeftHTML() : '') + h;
+  // the search (2026-10-30: "Let's make the effects list searchable"): name, number, event id, animation, who it
+  // comes from, what plays it; every word must match. Kept across redraws (and its focus, while you type).
+  const typing = document.activeElement && document.activeElement.id === 'fxuQ', caret = typing ? document.activeElement.selectionStart : null;
+  const find = `<div class="fxu-find"><label class="tl-search" title="Every word must match: a name, an effect number, an event id (id 51), an animation (_657A), where it comes from (Bartz, new, changed) or what plays it (hits, not used)"><i class="ic ic-search" aria-hidden="true"></i><input type="search" id="fxuQ" placeholder="Search effects" aria-label="Search effects" autocomplete="off" spellcheck="false" value="${esc(FXU.q || '')}"></label></div>`;
+  L.innerHTML = find + (typeof compLeftHTML === 'function' ? compLeftHTML() : '') + h + '<p class="note fxu-none" id="fxuNone" hidden></p>';
   if (typeof compLeftWire === 'function') compLeftWire(L);
+  const qi = $('fxuQ');
+  qi.oninput = () => { FXU.q = qi.value; fxuFilter(L, n); };
+  qi.onkeydown = (e) => { if (e.key === 'Escape') { e.stopPropagation(); if (qi.value) { qi.value = ''; qi.oninput(); } else qi.blur(); } };
+  L.querySelectorAll('[data-org]:not(.fxu-row)').forEach((b) => b.onclick = () => {
+    const k = b.dataset.org; FXU.org = new Set(FXU.org || []); FXU.org.has(k) ? FXU.org.delete(k) : FXU.org.add(k); if (!FXU.org.size) FXU.org = null;
+    L.querySelectorAll('[data-org]:not(.fxu-row)').forEach((x) => x.setAttribute('aria-pressed', !!(FXU.org && FXU.org.has(x.dataset.org))));
+    fxuFilter(L, n);
+  });
+  fxuFilter(L, n);
+  if (typing) { qi.focus(); if (caret != null) qi.setSelectionRange(caret, caret); }
   L.querySelectorAll('.fxu-row').forEach((el) => el.onclick = () => fxuOpen(+el.dataset.ni));
   $('fxuFrom').onclick = (e) => fxuCopyMenu(e.currentTarget);
   if ($('fxuNew')) $('fxuNew').onclick = (e) => fxtMenu(e.currentTarget);
   if ($('fxuUnused')) { $('fxuUnused').hidden = !isMod; $('fxuUnused').onclick = () => ckRemoveUnused(); }
+}
+function fxuFilter(L, n) {                      // show the rows the search and the legend's kinds let through
+  // words; "id 51" is one term matching that event id exactly (not 510), "quoted words" one phrase
+  const words = ((FXU.q || '').toLowerCase().match(/id\s*\d+|"[^"]*"|\S+/g) || []).map((w) => w.replace(/"/g, '')).filter(Boolean)
+    .map((w) => /^id\s*\d+$/.test(w) ? new RegExp('\\bid ' + w.replace(/\D/g, '') + '\\b') : w), kinds = FXU.org;
+  let parts = 0, comps = 0;
+  L.querySelectorAll('[data-q]').forEach((r) => {
+    const isPart = r.classList.contains('fxu-row');
+    const ok = words.every((w) => (typeof w === 'string' ? r.dataset.q.includes(w) : w.test(r.dataset.q))) && (!kinds || !isPart || kinds.has(r.dataset.org));
+    r.hidden = !ok; if (ok) isPart ? parts++ : comps++;
+  });
+  const on = words.length || kinds;
+  const c = $('fxuCount'); if (c) c.textContent = on ? `${parts} match${parts === 1 ? '' : 'es'} · ${n} / 128 used` : `${n} / 128 used`;
+  // while searching, a section with nothing left loses its header too (the layered Effects, the Parts heading)
+  const cn = $('compNew'), ch = cn && cn.closest('.fxu-top'); if (ch) { ch.hidden = !!on && !comps; const e = ch.nextElementSibling; if (e && e.matches('p.note')) e.hidden = !!on; }
+  const ph = L.querySelector('.fxu-parts'); if (ph) ph.hidden = !!on && !parts;
+  const none = $('fxuNone'); if (none) { none.hidden = !(on && !parts && !comps); none.textContent = words.length ? `No effects match “${(FXU.q || '').trim()}”.` : 'No effects of that kind.'; }
+}
+/* the inspector on the Effects tab until an effect is picked (2026-11-01): the package as a whole */
+function fxuPkgInspector(I) {
+  const fep = S.fx.fep, n = fep.names.length, uses = fxuUses(), isMod = !(S.rig && S.rig.retail);
+  const unused = fep.names.filter((nm, ni) => !fxuEffectUse(ni, uses).size).length, org = isMod ? fxuOrigins() : null;
+  const c = { same: 0, changed: 0, new: 0 }; if (org) org.forEach((o) => c[o.kind]++);
+  const fact = (k, v, tip) => `<div class="field fact"><label>${k}</label><span${tip ? ` title="${esc(tip)}"` : ''}>${v}</span></div>`;
+  I.innerHTML = `<div class="sec" id="fxpSec"><h3>Effect package</h3>
+    <div class="row2">${fact('Effects', `${n} / 128${n >= 128 ? ' · full' : ''}`, 'A package holds at most 128 effects')}${fact('Not used', unused, 'No event, projectile, hit, runtime hook or engine rule plays them')}</div>
+    ${org ? `<div class="row3">${fact('New', c.new)}${fact('Changed', c.changed)}${fact('From retail', c.same)}</div>` : ''}
+    ${S.comps ? `<div class="row2">${fact('Layered effects', S.comps.length)}</div>` : ''}
+    <div class="btnrow">${isMod ? '<button type="button" id="fxpUnused">Remove unused…</button>' : ''}<button type="button" id="fxpNew">+ New…</button><button type="button" id="fxpFrom">+ Copy…</button></div></div>`;
+  if ($('fxpUnused')) $('fxpUnused').onclick = () => ckRemoveUnused();
+  $('fxpNew').onclick = (e) => fxtMenu(e.currentTarget);
+  $('fxpFrom').onclick = (e) => fxuCopyMenu(e.currentTarget);
 }
 function fxuOpen(ni) {
   const body = fxuBody(ni);
@@ -191,6 +240,7 @@ function fxuPlayhead() {
   const ph = $('playhead'), E = S.fxEdit; if (!E) return;
   if (ph) ph.style.left = (LABEL_W + E.t / 2 * PX()) + 'px';
   $('tlFrame').textContent = `frame ${(E.t / 2).toFixed(1)}`;
+  if (typeof phClip === 'function') phClip();
 }
 function fxuDrag(ev, el) {
   ev.preventDefault();
@@ -219,8 +269,10 @@ function fxuDrag(ev, el) {
 /* ------------------------------------------------------------------ inspector */
 function fxuInspector(I) {
   const E = S.fxEdit, fep = fxuFep(), b = fxuBody(), nm = fep.names[E.ni];
+  // the short name (NOC_ARM_SUMMON); the stored one (P0051_…_LEAF_0) is in Metadata and keeps its prefix and suffix
+  const full = nm ? nm.name : '', pre = (full.match(/^P\d+_/) || [''])[0], suf = (full.match(/_LEAF_\d+$/) || [''])[0];
   let h = `<div class="sec"><h3>Effect ${E.ni} <span class="btnrow"><button type="button" id="fxuBack" title="Back to the animation">✕</button></span></h3>
-    <div class="field"><label>Name</label><input type="text" id="fxuName" value="${esc(nm ? nm.name : '')}"></div>`;
+    <div class="field"><label>Name</label><input type="text" id="fxuName" value="${esc(fxuShort(full))}" title="${esc(full)}"></div>`;
   const org = !(S.rig && S.rig.retail) && fxuOrigins();
   if (org && org[E.ni]) h += `<p class="note"><span class="fxu-org ${org[E.ni].kind}">${org[E.ni].kind === 'new' ? 'New: not in any retail character' : (org[E.ni].kind === 'same' ? 'Unchanged from ' : 'Changed from ') + esc(org[E.ni].who)}</span></p>`;
   if (b) {
@@ -235,9 +287,10 @@ function fxuInspector(I) {
   if (piece) h += fxuNodeHTML(b, E.node);
   h += `<details class="sec fxu-det"${piece ? '' : ' open'}><summary>Where it plays</summary>${fxuPlacementsHTML()}</details>`;
   h += `<details class="sec fxu-det"${piece ? '' : ' open'}><summary>Textures</summary>${fxuResourcesHTML()}</details>`;
+  h += `<details class="sec fxu-det" id="fxuMeta"><summary>Metadata</summary><div class="fxu-inner"><p class="note mono meta-ids">${esc(full)}<br>effect ${E.ni}${fxuRecs(E.ni).length ? ' · event id' + (fxuRecs(E.ni).length > 1 ? 's ' : ' ') + fxuRecs(E.ni).map((r) => r.id).join(', ') : ''}</p></div></details>`;
   I.innerHTML = h;
   $('fxuBack').onclick = fxuClose;
-  $('fxuName').onchange = (e) => fxuEdit((pkg) => fxeRename(pkg.fep, E.ni, e.target.value.trim() || nm.name));
+  $('fxuName').onchange = (e) => { const v = e.target.value.trim(); fxuEdit((pkg) => fxeRename(pkg.fep, E.ni, v ? (/^P\d+_/.test(v) ? v : pre + v) + (suf && !/_LEAF_\d+$/.test(v) ? suf : '') : nm.name)); };
   if (b) {
     $('fxuDur').onchange = (e) => fxuEdit((pkg) => fxeSetAt(pkg.fep, b.off + 4, fxeI32b(Math.max(1, Math.round(+e.target.value * 2)))));
     $('fxuSus').onchange = (e) => fxuEdit((pkg) => fxeSetAt(pkg.fep, b.off, fxeI32b((b.a & ~2) | +e.target.value)));
@@ -281,7 +334,7 @@ function fxuPlacementsHTML() {
   h += `<div class="btnrow"><button type="button" id="fxuRecAdd">+ Placement</button>${r ? '<button type="button" id="fxuRecDel" class="danger">Delete placement</button>' : ''}</div></div>`;
   return h;
 }
-const fxuVecField = (lab, id, v, n) => `<div class="field"><label>${lab}</label><div class="row3">${(v || []).slice(0, n || 3).map((x, k) => `<input type="number" step="any" id="${id}${k}" value="${fxuNum(x)}">`).join('')}</div></div>`;
+const fxuVecField = (lab, id, v, n) => `<div class="field"><label>${lab}</label><div class="row3">${(v || []).slice(0, n || 3).map((x, k) => `<input type="number" step="any"${/°/.test(lab) ? '' : ' data-num="float"'} id="${id}${k}" value="${fxuNum(x)}">`).join('')}</div></div>`;   // sizes and offsets step in tenths (app.js numStep); angles in degrees
 function fxuWirePlacements() {
   const E = S.fxEdit, recs = fxuRecs(E.ni), r = recs[Math.min(E.rec || 0, recs.length - 1)];
   if ($('fxuRec')) $('fxuRec').onchange = (e) => { E.rec = +e.target.value; fxRefresh(); renderInspector(); };
@@ -428,7 +481,7 @@ function fxuFieldHTML(tr, s, f) {
   } else if (ty === 'anm' || ty === 'mdl' || ty === 'tex') {
     const kind = ty.toUpperCase(), cur = fxI(fep, at), list = fep.res[kind];
     ctl = `<select ${k}><option value="-1"${cur < 0 ? ' selected' : ''}>(none)</option>${list.map((r, i) => `<option value="${i}"${i === cur ? ' selected' : ''}>${kind} ${i}${r.size ? '' : ' (shared library)'} · ${(r.id >>> 0).toString(16)}</option>`).join('')}</select>`;
-    if (ty === 'anm' && cur >= 0) ctl += fxuAnmThumbHTML(cur);
+    if (ty === 'anm' && cur >= 0) ctl += fxuAnmThumbHTML(cur) + `<button type="button" class="mini" data-anmedit="${cur}" title="The flipbook's grid, the frames it plays and how long each shows">Edit flipbook…</button>`;
   }
   return `<div class="field"><label>${esc(lab)}</label>${ctl}</div>`;
 }
@@ -490,12 +543,124 @@ function fxuResourcesHTML() {
   const fi = fxInfo(S.fx, (fxuRecs(S.fxEdit.ni)[0] || {}).id);
   const ids = fxuEffectTexIds();
   return `<div class="fxu-inner">
-    <div class="fxu-texes">${ids.map((id) => { const loc = S.fx.fep.res.TEX.find((r) => r.id === id && r.size); return `<div class="fxu-tex" data-id="${id}"><span class="fxu-cv" data-id="${id}"></span><small class="mono">${(id >>> 0).toString(16)}${loc ? '' : ' · shared'}</small>
-      <span class="btnrow"><button type="button" data-rep="${id}" title="Replace this texture with an image (PNG, JPG…)">Replace…</button><button type="button" data-exp="${id}" title="Save as PNG">PNG</button></span></div>`; }).join('')}</div>
+    <div class="fxu-texes">${(() => { let o = 0, sh = 0; const nSh = ids.filter((id) => !S.fx.fep.res.TEX.find((r) => r.id === id && r.size)).length; return ids.map((id) => { const loc = S.fx.fep.res.TEX.find((r) => r.id === id && r.size), lbl = loc ? `Texture ${++o} · own` : 'Shared texture' + (nSh > 1 ? ' ' + ++sh : ''); return `<div class="fxu-tex" data-id="${id}"><span class="fxu-cv" data-id="${id}"></span><small title="${loc ? 'In this character\'s package' : 'In the game\'s shared effect library'} · id ${(id >>> 0).toString(16)}">${lbl}</small>
+      <span class="btnrow"><button type="button" data-rep="${id}" title="Replace this texture with an image (PNG, JPG…)">Replace…</button><button type="button" data-exp="${id}" title="Save as PNG">PNG</button></span></div>`; }).join(''); })()}</div>
     <p class="note">${fi && fi.missing ? 'Some shared pieces need the game ISO. ' : ''}Replacing a shared-library texture gives this effect its own copy; replacing one of the character's own changes every effect that uses it.</p>
+    ${fxuEffectAnms().map((i) => `<div class="bl-row"><span title="ANM ${i}">${esc(fxuAnmName(i))}</span><small>${esc(fxuAnmLine(i, true))}</small><button type="button" class="mini" data-anmedit="${i}" title="The flipbook's grid, the frames it plays and how long each shows">Edit flipbook…</button></div>`).join('')}
     <div class="btnrow"><button type="button" id="fxuNewAnm" title="An image becomes a texture and a flipbook (a grid of frames) that flipbook and particle pieces can use">+ Flipbook from an image…</button></div>
     <input type="file" id="fxuImg" accept="image/*" hidden></div>`;
 }
+/* the flipbooks this effect's pieces draw (flipbook and particle components) */
+function fxuEffectAnms() {
+  const fep = fxuFep(), b = fxuBody(), out = new Set(); if (!b) return [];
+  for (const n of b.nodes) if (n) for (const tr of n.tracks) for (const s of tr.segs) for (const [kd, fo, sz] of FXE_LINKS[tr.chan] || []) {
+    if (kd !== 'ANM') continue; const v = sz === 4 ? fxI(fep, s.o + fo) : fxS(fep, s.o + fo); if (v >= 0 && fep.res.ANM[v]) out.add(v);
+  }
+  return [...out].sort((x, y) => x - y);
+}
+function fxuAnmLine(i, short) {                  // short: without the frame count (the row's name has it)
+  const fep = fxuFep(), u8 = fxResource(fep, 'ANM', i), sh = fep.res.ANM[i].size ? '' : ' · shared library';
+  if (!u8) return 'needs the game ISO' + sh;
+  try { const a = decodeAnm(u8); return short ? `lasts ${a.total / 2} f${a.loop ? ', loops' : ''}${sh}` : `${a.clips.length} frame${a.clips.length === 1 ? '' : 's'}, ${a.total / 2} frames long${a.loop ? ', loops' : ''}${sh}`; } catch (e) { return sh.replace(/^ · /, ''); }
+}
+function fxuAnmName(i) {                          // "Flipbook (16 frames)"
+  const u8 = fxResource(fxuFep(), 'ANM', i); let n = null;
+  try { if (u8) n = decodeAnm(u8).clips.length; } catch (e) { /* unreadable: no count */ }
+  return n != null ? `Flipbook (${n} frame${n === 1 ? '' : 's'})` : 'Flipbook';
+}
+
+/* ---- flipbook editor: which part of its texture each frame shows (a grid, a run of its cells) and the timing.
+   Saving rebuilds the flipbook as a grid flipbook (fxeMakeAnm) with the same texture, size and offset. */
+const FXU_BLEND_OF = { 0x000A0600: 'add', 0x00070600: 'alpha', 0x000A0602: 'sub' };
+function fxuAnmGuess(a) {
+  const cells = [], parts = a.clips.map((_, k) => a.parts[(a.seqs[k] || a.seqs[0] || [0])[0]]).filter(Boolean);
+  let cols = 1, rows = 1;
+  const box = (p) => { const us = p.UV.filter((_, k) => k % 2 === 0), vs = p.UV.filter((_, k) => k % 2 === 1); return [Math.min(...us), Math.max(...us), Math.min(...vs), Math.max(...vs)]; };
+  if (parts.length && parts[0].UV.length >= 4) {
+    const [u0, u1, v0, v1] = box(parts[0]);
+    cols = Math.max(1, Math.min(64, Math.round(1 / Math.max(1e-3, u1 - u0)))); rows = Math.max(1, Math.min(64, Math.round(1 / Math.max(1e-3, v1 - v0))));
+    for (const p of parts) { const [a0, , b0] = box(p); cells.push(Math.round(b0 * rows) * cols + Math.round(a0 * cols)); }
+  }
+  const first = cells.length ? cells[0] : 0, dur = a.clips.length ? a.clips[0] : 2;
+  const simple = a.tex.length <= 1 && a.seqs.every((s) => s.length === 1) && a.clips.every((x) => x === dur) && cells.every((c, k) => c === first + k);
+  return { cols, rows, first, frames: Math.max(1, a.clips.length), dur, loop: a.loop, blend: FXU_BLEND_OF[(parts[0] || a.parts[0] || {}).word] || 'add', tex: a.tex[0], simple };
+}
+function fxuEditAnm(idx) {
+  const fep = fxuFep(), ref = fep.res.ANM[idx], u8 = fxResource(fep, 'ANM', idx);
+  if (!u8) { toast('This flipbook is in the shared library: it needs the game ISO.'); return; }
+  const a = decodeAnm(u8), g = fxuAnmGuess(a), tx = fxTexture(fep, g.tex), img = tx && tx.fxImg;
+  const users = S.fx.fep.names.filter((_, ni) => { const prev = S.fxEdit.ni; S.fxEdit.ni = ni; const has = fxuEffectAnms().includes(idx); S.fxEdit.ni = prev; return has; }).length;
+  const back = document.createElement('div'); back.className = 'modal-back';
+  const num = (id, label, v, min, step) => `<div class="field"><label for="${id}">${label}</label><input id="${id}" type="number" value="${v}" min="${min}" step="${step}"></div>`;
+  back.innerHTML = `<form class="modal ui-dlg fxu-anmdlg" role="dialog" aria-modal="true" aria-label="Flipbook" novalidate><h3>Flipbook ANM ${idx}</h3>
+    <p class="note">The texture is cut into a grid, read left to right, top to bottom; the flipbook plays a run of its cells. Click a cell to start there, Shift+click to end there.${ref.size ? '' : ' It is a shared-library flipbook: saving gives this effect its own copy.'}${ref.size && users > 1 ? ` It is used by ${users} effects: saving changes all of them.` : ''}</p>
+    ${g.simple ? '' : '<p class="warnline">This flipbook has its own frame layout (uneven timing or several quads per frame). Saving rebuilds it as a plain grid.</p>'}
+    <div class="fxu-anmview"><canvas id="anmSheet" title="Click: first frame · Shift+click: last frame"></canvas><div class="fxu-anmplay"><canvas id="anmPlay" width="112" height="112"></canvas><small id="anmNow" class="mono"></small></div></div>
+    <div class="row2">${num('anmCols', 'Frames across', g.cols, 1, 1)}${num('anmRows', 'Frames down', g.rows, 1, 1)}</div>
+    <div class="row2">${num('anmFirst', 'First frame', g.first + 1, 1, 1)}${num('anmLast', 'Last frame', g.first + g.frames, 1, 1)}</div>
+    <div class="row2">${num('anmDur', 'Each frame shows for (frames)', g.dur / 2, 0.5, 0.5)}<div class="field"><label for="anmBlend">Blend</label><select id="anmBlend">${[['add', 'Add (glow)'], ['alpha', 'Alpha (normal)'], ['sub', 'Subtract (dark)']].map(([v, l]) => `<option value="${v}"${v === g.blend ? ' selected' : ''}>${l}</option>`).join('')}</select></div></div>
+    <label class="chk"><input type="checkbox" id="anmLoop"${g.loop ? ' checked' : ''}> Loops (otherwise it plays once and is gone)</label>
+    <p class="note" id="anmSum"></p>
+    <div class="btnrow ui-dlg-btns"><button type="button" class="ui-cancel">Cancel</button><button type="submit" class="primary">Save flipbook</button></div></form>`;
+  document.body.appendChild(back);
+  const form = back.firstElementChild, $f = (id) => form.querySelector('#' + id);
+  const sheet = $f('anmSheet'), play = $f('anmPlay'), texCv = fxTexCanvas(fep, g.tex, 64);
+  const W = 260, H = img ? Math.max(40, Math.round(W * img.h / img.w)) : 130; sheet.width = W; sheet.height = H;
+  const st = () => {
+    const cols = Math.max(1, Math.min(64, parseInt($f('anmCols').value, 10) || 1)), rows = Math.max(1, Math.min(64, parseInt($f('anmRows').value, 10) || 1)), N = cols * rows;
+    const first = Math.max(0, Math.min(N - 1, (parseInt($f('anmFirst').value, 10) || 1) - 1)), last = Math.max(first, Math.min(N - 1, (parseInt($f('anmLast').value, 10) || 1) - 1));
+    return { cols, rows, first, n: last - first + 1, dur: Math.max(1, Math.round((parseFloat($f('anmDur').value) || 0.5) * 2)), loop: $f('anmLoop').checked, blend: $f('anmBlend').value };
+  };
+  const drawSheet = () => {
+    const s = st(), c = sheet.getContext('2d'); c.fillStyle = '#05060e'; c.fillRect(0, 0, W, H);
+    if (texCv) c.drawImage(texCv, 0, 0, W, H);
+    const cw = W / s.cols, ch = H / s.rows;
+    c.font = '10px ui-monospace, monospace'; c.textBaseline = 'top';
+    for (let k = 0; k < s.cols * s.rows; k++) {
+      const x = (k % s.cols) * cw, y = Math.floor(k / s.cols) * ch, on = k >= s.first && k < s.first + s.n;
+      if (!on) { c.fillStyle = 'rgba(5,6,14,.55)'; c.fillRect(x, y, cw, ch); }
+      c.strokeStyle = on ? 'rgba(140,200,255,.9)' : 'rgba(255,255,255,.18)'; c.lineWidth = 1; c.strokeRect(x + 0.5, y + 0.5, cw - 1, ch - 1);
+      if (cw > 14 && ch > 12) { c.fillStyle = on ? '#cfe6ff' : 'rgba(255,255,255,.35)'; c.fillText(String(k + 1), x + 2, y + 2); }
+    }
+  };
+  let t0 = performance.now(), raf = 0;
+  const tick = () => {
+    const s = st(), c = play.getContext('2d'), T = Math.floor((performance.now() - t0) / (1000 / 60)), total = s.n * s.dur;
+    let k = Math.floor(T / s.dur); const gap = 30;
+    if (s.loop) k %= s.n; else if (T >= total + gap) { t0 = performance.now(); k = 0; }
+    c.fillStyle = '#05060e'; c.fillRect(0, 0, 112, 112);
+    if (texCv && k < s.n) { const cell = s.first + k, sw = texCv.width / s.cols, sh = texCv.height / s.rows; c.drawImage(texCv, (cell % s.cols) * sw, Math.floor(cell / s.cols) * sh, sw, sh, 0, 0, 112, 112); }
+    $f('anmNow').textContent = k < s.n ? `frame ${s.first + k + 1}` : '(gone)';
+    raf = requestAnimationFrame(tick);
+  };
+  const sum = () => { const s = st(); $f('anmSum').textContent = `${s.n} frame${s.n === 1 ? '' : 's'} × ${s.dur / 2} = ${s.n * s.dur / 2} frames (${(s.n * s.dur / 60).toFixed(2)} s)${s.loop ? ', looping' : ''}. Pieces using it keep their own speed setting on top of this.`; };
+  const refresh = () => { drawSheet(); sum(); };
+  form.addEventListener('input', () => { t0 = performance.now(); refresh(); });
+  sheet.addEventListener('click', (e) => {
+    const s = st(), r = sheet.getBoundingClientRect(), x = (e.clientX - r.left) / r.width, y = (e.clientY - r.top) / r.height;
+    const k = Math.min(s.rows - 1, Math.floor(y * s.rows)) * s.cols + Math.min(s.cols - 1, Math.floor(x * s.cols)) + 1;
+    if (e.shiftKey) { $f('anmLast').value = Math.max(k, s.first + 1); } else { $f('anmFirst').value = k; if (k > s.first + s.n) $f('anmLast').value = k; }
+    t0 = performance.now(); refresh();
+  });
+  refresh(); raf = requestAnimationFrame(tick);
+  const prev = document.activeElement;
+  const done = () => { cancelAnimationFrame(raf); back.remove(); document.removeEventListener('keydown', onKey, true); if (prev && prev.focus) prev.focus(); };
+  const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); done(); } };
+  document.addEventListener('keydown', onKey, true);
+  back.addEventListener('pointerdown', (e) => { if (e.target === back) done(); });
+  form.querySelector('.ui-cancel').onclick = done;
+  form.onsubmit = (e) => {
+    e.preventDefault();
+    const s = st(), raw = fxeMakeAnm(g.tex, s.cols, s.rows, s.dur, s.loop, a.size[0], s.blend, s.n, s.first), dv = fxeDV(raw);
+    dv.setFloat32(0x44, a.size[1], true); dv.setFloat32(0x48, a.offset[0], true); dv.setFloat32(0x4C, a.offset[1], true);
+    done();
+    if (ref.size) fxuEdit((pkg) => fxeSetResBytes(pkg.fep, 'ANM', idx, raw), true);
+    else fxuEdit((pkg) => { const ni = fxeAddRes(pkg.fep, 'ANM', raw); fxeRelink(pkg.fep, pkg.fep.blockAt(fxuBody().off).b, 'ANM', idx, ni); }, true);
+  };
+  $f('anmCols').focus();
+}
+document.addEventListener('click', (e) => { const b = e.target.closest && e.target.closest('[data-anmedit]'); if (b) { e.preventDefault(); fxuEditAnm(+b.dataset.anmedit); } });
+
 function fxuEffectTexIds() {
   const fep = fxuFep(), b = fxuBody(), ids = new Set(); if (!b) return [];
   for (const n of b.nodes) {

@@ -252,8 +252,8 @@ def draw_selector(box, context):
         if m.get('kind') == 'retail':
             box.label(text='%s: changes the retail character (%s)' % (c.get('name', name), c.get('code', '?')), icon='USER')
         else:
-            box.label(text='%s, based on %s, slot %s' % (c.get('full_name') or c.get('name', name), c.get('based_on', '?'),
-                                                        c.get('slot', '?')), icon='USER')
+            box.label(text='%s, based on %s' % (c.get('full_name') or c.get('name', name), c.get('based_on', '?')),
+                      icon='USER')
         box.prop(wm, 'dfx_moves_rig', text='Rig')
         box.prop(wm, 'dfx_moves_skin', text='Body')
         row = box.row(align=True)

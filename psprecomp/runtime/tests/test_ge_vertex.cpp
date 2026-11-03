@@ -275,6 +275,75 @@ static void test_ndc_direct_w_reset() {
     ASSERT_NEAR(verts[0].pos[0], 0.25f, "NDC-direct x passthrough");
 }
 
+// ---- Spline patches (ge_spline_tessellate) ----
+// A Dissidia locus trail row: 4 control points (P, P, Q, Q) across, n rows along.
+static std::vector<DecodedVertex> trail_cps(int n) {
+    std::vector<DecodedVertex> c(static_cast<size_t>(4 * n));
+    for (int v = 0; v < n; v++)
+        for (int u = 0; u < 4; u++) {
+            DecodedVertex& d = c[static_cast<size_t>(v * 4 + u)];
+            d = DecodedVertex{};
+            d.pos[0] = u < 2 ? 0.0f : 1.0f;            // P at x 0, Q at x 1
+            d.pos[1] = static_cast<float>(v * v);      // rows bunch up: the curve is not just linear in v
+            d.pos[2] = 0.0f;
+            d.uv[0] = u < 2 ? 0.0f : 1.0f;
+            d.uv[1] = static_cast<float>(v) / (n - 1);
+            d.color[0] = d.color[1] = d.color[2] = 255;
+            d.color[3] = static_cast<uint8_t>(255 - 25 * v);
+            d.has_uv = d.has_color = true;
+        }
+    return c;
+}
+
+static void test_spline_open_edges_reach_end_rows() {
+    const int n = 10, div = 4;
+    std::vector<DecodedVertex> g;
+    int nu = 0, nv = 0;
+    tests_run++;
+    if (!ge_spline_tessellate(trail_cps(n), 4, n, 3, 3, 1, div, g, &nu, &nv)) { failures++; std::fprintf(stderr, "FAIL: spline tessellate refused\n"); return; }
+    ASSERT_NEAR(nu, 2, "spline: (4 - 3) * 1 + 1 points across");
+    ASSERT_NEAR(nv, (n - 3) * div + 1, "spline: (n - 3) * div + 1 rows");
+    ASSERT_NEAR(g[0].pos[0], 0.0f, "spline: first row starts at P");
+    ASSERT_NEAR(g[1].pos[0], 1.0f, "spline: first row ends at Q");
+    ASSERT_NEAR(g[0].pos[1], 0.0f, "spline: open first edge reaches row 0");
+    ASSERT_NEAR(g[static_cast<size_t>((nv - 1) * nu)].pos[1], 81.0f, "spline: open last edge reaches row n-1");
+    ASSERT_NEAR(g[static_cast<size_t>((nv - 1) * nu)].color[3], 255 - 25 * 9, "spline: colour reaches the last row");
+    ASSERT_NEAR(g[static_cast<size_t>((nv - 1) * nu + 1)].uv[1], 1.0f, "spline: uv reaches the last row");
+    for (int v = 0; v < nv; v++) {                      // every row is the straight segment P -> Q
+        ASSERT_NEAR(g[static_cast<size_t>(v * nu)].pos[0], 0.0f, "spline: row starts at x 0");
+        ASSERT_NEAR(g[static_cast<size_t>(v * nu + 1)].pos[0], 1.0f, "spline: row ends at x 1");
+    }
+}
+
+static void test_spline_uniform_edge_and_partition() {
+    const int n = 6;
+    std::vector<DecodedVertex> g;
+    int nu = 0, nv = 0;
+    ge_spline_tessellate(trail_cps(n), 4, n, 0, 0, 1, 2, g, &nu, &nv);
+    // uniform start: (P0 + 4 P1 + P2) / 6 of y = v^2 -> (0 + 4 + 4) / 6
+    ASSERT_NEAR(g[0].pos[1], 8.0f / 6.0f, "spline: uniform first edge = (P0 + 4P1 + P2) / 6");
+    // uniform end: (P3 + 4 P4 + P5) / 6 -> (9 + 64 + 25) / 6
+    ASSERT_NEAR(g[static_cast<size_t>((nv - 1) * nu)].pos[1], 98.0f / 6.0f, "spline: uniform last edge = (Pn-3 + 4Pn-2 + Pn-1) / 6");
+    // the weights sum to one everywhere (affine): a constant attribute stays constant
+    for (int v = 0; v < nv; v++) ASSERT_NEAR(g[static_cast<size_t>(v * nu)].color[0], 255.0f, "spline: weights sum to 1");
+}
+
+static void test_spline_bezier_case() {
+    // n = 4, both edges open: one cubic Bezier span; at t = 0.5 -> (P0 + 3P1 + 3P2 + P3) / 8 of y = v^2 -> (0+3+12+9)/8
+    std::vector<DecodedVertex> g;
+    int nu = 0, nv = 0;
+    ge_spline_tessellate(trail_cps(4), 4, 4, 3, 3, 1, 2, g, &nu, &nv);
+    ASSERT_NEAR(nv, 3, "spline n=4: 3 rows at div 2");
+    ASSERT_NEAR(g[static_cast<size_t>(1 * nu)].pos[1], 24.0f / 8.0f, "spline n=4 open/open = cubic Bezier at 0.5");
+}
+
+static void test_spline_rejects_bad_counts() {
+    std::vector<DecodedVertex> g;
+    int nu = 0, nv = 0;
+    tests_run++;
+    if (ge_spline_tessellate(trail_cps(3), 4, 3, 3, 3, 1, 4, g, &nu, &nv)) { failures++; std::fprintf(stderr, "FAIL: spline with 3 rows accepted\n"); }
+}
+
 int main() {
     test_through_textured_normalizes();
     test_through_untextured_unchanged();
@@ -284,6 +353,10 @@ int main() {
     test_tiny_prim_no_overtrigger();
     test_reused_vector_through_w_reset();
     test_ndc_direct_w_reset();
+    test_spline_open_edges_reach_end_rows();
+    test_spline_uniform_edge_and_partition();
+    test_spline_bezier_case();
+    test_spline_rejects_bad_counts();
 
     if (failures == 0) {
         std::printf("test_ge_vertex: %d/%d PASS\n", tests_run, tests_run);

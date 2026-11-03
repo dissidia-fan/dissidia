@@ -12,10 +12,12 @@
 //               material / part, depth writes and culling per material (A §4, B §3, C §3)
 //   drawn       ch10 flipbooks, ch11 meshes, ch20 meshes with scrolling UVs, ch21 particles (a deterministic replay
 //               of the game's emitter), ch105/106 weapon trails (B-spline ribbon), ch107 screen flash, ch110 zoom
-//               blur, ch101 shockwave ring, ch100/102 line sparks; ch18/151 child nodes; ch22–25/31–34/39 randomisers,
-//               ch19 gravity, ch29 face-velocity, ch61/62 flicker
+//               blur, ch111 screen shift, ch101 shockwave (refraction disc), ch95 points, ch100 streaks, ch102/103 lines;
+//               ch18/151 child nodes; ch22–25/31–34/39 randomisers, ch19 gravity, ch29 face-velocity, ch61/62 flicker
+//   cadence     the PSP updates every 2 ticks (dt 2): ch61 and the ch95/100/102/103 emitters step once per update, so
+//               the preview steps them every other tick (docs/archive/open-questions/fx.md §7)
 //   not exact   the game's random numbers are one global sequence, so the preview seeds its own per element; ch101's
-//               field split, ch18/151 child placement and ch100/102 spark layouts are partly guessed (F.md)
+//               lens mode (P+78) and depth bias (P+84), the ch18/151 parent link of world kinds (strong, fx.md §2)
 'use strict';
 const FXR = { resident: null };        // the resident library: {id: {kind, u8}} from main.bin
 const FX_D2R = Math.PI / 180;
@@ -337,7 +339,9 @@ function fxRandomOffsets(fep, node, rnd) {
   }
   return off;
 }
-/* ch61 flicker / pulse envelope (F §61), replayed from the element's start; ch62 multiplies its colour by it */
+/* ch61 flicker / pulse envelope (F §61), replayed from the element's start; ch62 multiplies its colour by it.
+   The game steps `mult += rate` once per update (every 2 ticks, timer += 0.5·dt) and zeroes the rate whenever stage 0 or
+   2 is entered (fx.md §7): per tick here that is rate × 0.5, timer + 0.5. */
 function fxEnvelope(fep, tr, steps, rnd) {
   const s = { mult: [1, 1, 1, 1], rate: [0, 0, 0, 0], timer: 0, stage: -1 };
   for (let f = 0; f < steps; f++) {
@@ -351,11 +355,12 @@ function fxEnvelope(fep, tr, steps, rnd) {
       if (toB || toA) {
         const T = toB ? p.B : p.A, J = toB ? p.jitB : p.jitA, on = toB ? p.jitBOn : p.jitAOn;
         for (let i = 0; i < 4; i++) { const tgt = Math.min(1, Math.max(0, T[i] + (on ? fxR(rnd, J[i]) : 0))); s.rate[i] = (tgt - s.mult[i]) / (p.ramp > 0 ? p.ramp : 1); }
-        if (st === 0 || st === 2) { for (let i = 0; i < 4; i++) s.mult[i] += s.rate[i]; s.rate.fill(0); }
+        if (st === 0 || st === 2) for (let i = 0; i < 4; i++) s.mult[i] += s.rate[i];   // a skipped ramp: one update's step
       }
+      if (st === 0 || st === 2) s.rate.fill(0);
       s.stage = st;
     }
-    for (let i = 0; i < 4; i++) s.mult[i] += s.rate[i];
+    for (let i = 0; i < 4; i++) s.mult[i] += s.rate[i] * 0.5;
     s.timer += 0.5; if (s.timer >= th[3]) s.timer = 0;
   }
   return s.mult;
@@ -482,15 +487,38 @@ function fxColour(m, C, lit2) {               // C: game colour bytes 0..255 (12
   u.A2.value = Math.min(255, 2 * Math.trunc(C[3])) / 255; u.lit2.value = lit2 == null ? 2 : lit2;
 }
 function fxTexture(fep, id) {
-  const key = id + '|' + (fep.res.TEX.find((r) => r.id === id && r.size) ? fep.idBase : 'lib');
+  const local = !!fep.res.TEX.find((r) => r.id === id && r.size), key = id + '|' + (local ? fep.idBase : 'lib');
   if (fxTexCache.has(key)) return fxTexCache.get(key);
   let tx = null;
   try {
     const u8 = fxResourceById(fep, 'TEX', id);
     if (u8) { const t = decodeTex(u8); tx = new THREE.DataTexture(t.rgba, t.w, t.h, THREE.RGBAFormat); tx.wrapS = tx.wrapT = THREE.RepeatWrapping; tx.magFilter = tx.minFilter = THREE.LinearFilter; tx.needsUpdate = true; tx.fxImg = t; }
-  } catch (e) { tx = null; }
+    if (tx && local && FXHD.on && typeof texpackId === 'function') { const hd = fxHdMap(), p = hd.size ? hd.get(texpackId(u8)) : null; if (p) fxHdLoad(tx, p); }
+  } catch (e) { tx = tx || null; }
   fxTexCache.set(key, tx);
   return tx;
+}
+/* texture-pack replacements: the native build draws <mods>/textures/<id>.png in place of the texture whose texpack id
+   (compshader.js texpackId) is <id>, at any size (render scale >= 2). A character ships them in its mod.json files
+   ("textures/<id>.png": "files/textures/<id>.png"); the preview draws them too, so it looks like the recomp, not the
+   PSP. tx.fxImg stays the game-size picture (UV offsets are in its pixels). FXHD.on = false: the PSP textures. */
+const FXHD = { on: true, map: null };
+function fxHdMap() {
+  if (FXHD.map) return FXHD.map;
+  FXHD.map = new Map();
+  const files = (typeof S !== 'undefined' && S.mod && S.mod.files) || {};
+  for (const [gp, src] of Object.entries(files)) { const m = /^textures\/([0-9a-f]{16})\.png$/.exec(gp); if (m && typeof src === 'string') FXHD.map.set(m[1], (S.charDir || '') + src); }
+  return FXHD.map;
+}
+async function fxHdLoad(tx, path) {
+  try {
+    const bm = await createImageBitmap(new Blob([await FS.read(path)], { type: 'image/png' }), { premultiplyAlpha: 'none', colorSpaceConversion: 'none' });
+    const c = document.createElement('canvas'); c.width = bm.width; c.height = bm.height;
+    const g = c.getContext('2d', { willReadFrequently: true }); g.drawImage(bm, 0, 0);
+    const d = g.getImageData(0, 0, bm.width, bm.height);
+    tx.dispose(); tx.image = { data: new Uint8Array(d.data.buffer), width: bm.width, height: bm.height }; tx.fxHd = path; tx.needsUpdate = true;
+    if (typeof fxRefresh === 'function') fxRefresh();
+  } catch (e) { console.warn('studio: HD texture', path, e); }
 }
 function fxGeo(P, UV, C, I) {
   const g = new THREE.BufferGeometry();
@@ -599,7 +627,7 @@ function fxDrawAnm(ctx, key, fep, idx, clip, W, C, bias) {
 /* One element = a node started by the spawn schedule (or by a ch18 / ch151 parent), `age` effect frames ago. */
 function fxElement(I, node, born, age, extra) {
   const fep = I.fep, nt = nodeTime(node, age, I.sustained, I.stop - born);
-  const el = { I, fep, node, born, age, g: nt.g, looping: nt.looping, seed: fxHash(I.seed, node.index, born, extra ? extra.n : 0), posOff: extra ? extra.posOff : null, frozen: extra ? extra.frozen : null, depth: extra ? extra.depth : 0 };
+  const el = { I, fep, node, born, age, g: nt.g, looping: nt.looping, seed: fxHash(I.seed, node.index, born, extra ? extra.n : 0), posOff: extra ? extra.posOff : null, posVel: extra ? extra.posVel : null, posAcc: extra ? extra.posAcc : null, parent: extra ? extra.parent : null, frozen: extra ? extra.frozen : null, depth: extra ? extra.depth : 0 };
   el.expired = !el.looping && Math.floor(el.g) >= node.duration;
   el.off = fxRandomOffsets(fep, node, fxRng(el.seed ^ 0x5bd1e995));
   return el;
@@ -636,8 +664,14 @@ function fxElMat(el, t14, g) {
     const vv = fxVal(el, t29.deps[0], g);
     if (vv) { const [vx, vy, vz] = vv.vel; r = r.slice(); r[0] += Math.atan2(-vz, -vy) / FX_D2R; r[2] += Math.atan2(vx, Math.hypot(vy, vz)) / FX_D2R; }
   }
-  if (el.posOff) p = [p[0] + el.posOff[0], p[1] + el.posOff[1], p[2] + el.posOff[2]];
-  return fxElMatrix(p, r, s, order);
+  if (el.posOff) p = [0, 1, 2].map((k) => p[k] + el.posOff[k] + (el.posVel ? el.posVel[k] * g + el.posAcc[k] * g * g / 2 : 0));
+  const M = fxElMatrix(p, r, s, order), pa = el.parent;
+  if (!pa) return M;
+  const P = fxElMat(pa.el, pa.t14, fxElTime(pa.el, pa.dBorn + g));     // the spawner's E at the same moment (FUN_08946D88)
+  if (pa.mode === 3) return P.multiply(M);
+  const t = fxPos(M).applyMatrix4(P);
+  if (pa.mode === 4) return fxNormAxes(fxRot3(P)).multiply(fxRot3(M)).setPosition(t);
+  return M.setPosition(t);                                           // mode 0: the position through P
 }
 const fxCh14 = (el, tr) => { for (const d of tr.deps) { const x = el.node.tracks[d]; if (x && x.chan === 14) return d; } return el.node.byChan.has(14) ? el.node.byChan.get(14).index : null; };
 const fxColDep = (el, tr) => { for (const d of tr.deps) { const x = el.node.tracks[d]; if (x && x.chan >= 15 && x.chan <= 17) return d; } return null; };
@@ -699,10 +733,17 @@ function fxChildren(ctx, el, tr, key) {
   const { fep, node } = el, body = el.I.body, rnd = fxRng(el.seed ^ (0x18 + tr.index)), spawns = [];
   let acc = 0, lastSeg = null;
   const steps = Math.floor(el.age);
+  // one child (fx.md §2): J = jitter P+4 per axis; kind 1 adds the linked position track (dep 0); vel / acc = P+8 / P+12
+  // along normalize(J), added to the child's position rate / acceleration
+  const place = (o, r, ni, g) => {
+    const J = [fxR(rnd, fxF(fep, o + 4)), fxR(rnd, fxF(fep, o + 4)), fxR(rnd, fxF(fep, o + 4))], L = Math.hypot(...J), d = L > 0 ? J.map((x) => x / L) : [0, 0, 0];
+    const cn = body.nodes[ni], pv = cn && cn.kind === 1 && tr.deps.length ? fxVal(el, tr.deps[0], g) : null, p0 = pv ? pv.v : [0, 0, 0];
+    return { r, ni, off: J.map((x, k) => p0[k] + x), vel: d.map((x) => x * fxF(fep, o + 8)), acc: d.map((x) => x * fxF(fep, o + 12)) };
+  };
   for (let r = 0; r <= steps; r++) {
     const g = fxElTime(el, r); if (!(el.node.flags & 2) && Math.floor(g) >= node.duration) break;
     const sg = fxSeg(tr, Math.floor(g)); if (!sg) break;
-    const o = sg.o, at = () => { const pv = tr.deps.length ? fxVal(el, tr.deps[0], g) : null; return pv ? pv.v : [0, 0, 0]; };
+    const o = sg.o;
     if (tr.chan === 18) {
       const rate = fxF(fep, o), ni = fxS(fep, o + 16); if (ni < 0 || fxS(fep, o + 20) < 0) continue;
       acc += rate * 0.5;
@@ -710,22 +751,30 @@ function fxChildren(ctx, el, tr, key) {
         const n = Math.trunc(acc); acc = acc - n - rate * fxH(fep, o + 18);
         for (let i = 0; i < n; i++) {
           if (fxB(fep, o + 23) < 100 && Math.trunc(rnd() * 100) >= fxB(fep, o + 23)) continue;
-          const j = fxF(fep, o + 4), p = at();
-          spawns.push({ r, ni, off: [p[0] + fxR(rnd, j), p[1] + fxR(rnd, j), p[2] + fxR(rnd, j)] });
+          spawns.push(place(o, r, fxS(fep, o + 16), g));
         }
       }
     } else {                                                         // 151: at the start and at every new segment
       if (sg === lastSeg) continue; lastSeg = sg;
       const ni = fxS(fep, o + 16); if (ni < 0 || (ni & 0x1000) || fxS(fep, o + 18) < 0) continue;
-      const n = Math.floor(fxF(fep, o)), j = fxF(fep, o + 4), p = at();
-      for (let i = 0; i < n; i++) spawns.push({ r, ni, off: [p[0] + fxR(rnd, j), p[1] + fxR(rnd, j), p[2] + fxR(rnd, j)] });
+      const n = Math.floor(fxF(fep, o));
+      for (let i = 0; i < n; i++) spawns.push(place(o, r, ni, g));
     }
   }
+  // after creation (element+24 = the spawner): live parent modes 0 / 3 / 4 follow the spawner's matrix E every frame
+  // (fxElMat); world kinds 2 / 6–8 freeze at the spawner's base · E at the spawn, kind 2 keeping only the translation.
+  // A kind-255 spawner has no matrix (only its base counts).
+  const t14p = node.byChan.has(14) ? node.byChan.get(14).index : null, hasE = node.kind !== 255;
   spawns.slice(-48).forEach((s, si) => {
     const cn = body.nodes[s.ni]; if (!cn || cn === node) return;
-    const world = [2, 6, 7, 8, 9].includes(cn.kind);
     const born = el.born + s.r, age = el.age - s.r;
-    const ch = fxElement(el.I, cn, born, age, { n: si + 1, posOff: s.off, frozen: world ? el.I.place(el.I.t0 + born) : null, depth: el.depth + 1 });
+    let frozen = null;
+    if ([2, 6, 7, 8].includes(cn.kind)) {
+      frozen = fxElBase(el, fxElTick(el, s.r)).clone(); if (hasE) frozen.multiply(fxElMat(el, t14p, fxElTime(el, s.r)));
+      if (cn.kind === 2) { const t = fxPos(frozen); frozen = fxM().setPosition(t); }
+    }
+    const parent = hasE && [0, 3, 4].includes(cn.kind) ? { el, t14: t14p, mode: cn.kind, dBorn: s.r } : null;
+    const ch = fxElement(el.I, cn, born, age, { n: si + 1, posOff: s.off, posVel: s.vel, posAcc: s.acc, parent, frozen, depth: el.depth + 1 });
     if (ch.expired && !(cn.flags & 1) && !cn.byChan.has(21)) return;
     fxDrawElement(ctx, ch, `${key}|c${tr.index}.${si}`);
   });
@@ -958,16 +1007,50 @@ function fxZoomBlur(ctx, el, tr, sg) {                      // ch110: the frame 
   }
   FXV.post.push({ kind: 'zoom', c: [Math.min(1, Math.max(0, cx)), Math.min(1, Math.max(0, cy))], k: 2 * s / 480, rgba: C, blend: fxB(fep, o + 17), passes: Math.max(1, Math.min(4, fxB(fep, o + 19))) });
 }
-function fxShockwave(ctx, el, tr, sg, key) {                // ch101: refraction ring sampling the frame (field split guessed, F §101)
-  const { fep } = el, o = sg.o, tau = el.g - sg.es;
-  const R = fxF(fep, o + 12) + fxF(fep, o + 28) * tau + fxF(fep, o + 44) * tau * tau / 2;
-  if (!(R > 0)) return;
-  const C = fxElColour(el, fxColDep(el, tr)).map((c, i) => Math.min(255, c * el.I.colour[i])); if (C[3] <= 0) return;
-  const W = fxElWorld(el, fxCh14(el, tr), el.age), pos = fxPos(W);
-  const e = W.elements, sc = Math.max(Math.hypot(e[0], e[1], e[2]), 1e-4);
-  FXV.post.push({ kind: 'ring', pos, r: R * sc * el.I.iscale[0], inner: Math.max(0, Math.min(0.99, fxF(fep, o + 68))), aIn: fxF(fep, o + 60) / 128, aOut: fxF(fep, o + 64) / 128,
-    seg: Math.max(8, fxB(fep, o + 83) * 2), rgba: C, blend: fxB(fep, o + 79) });
-  ctx.approx.add('shockwave');
+/* ch101 (type 58, docs/archive/open-questions/fx.md §1): a disc of N = P+83 segments, outer radius 0.5 and inner P+68 in
+   the element's z = 0 plane, drawn through the element matrix (scale 1, ch14 billboard) like the line components. It
+   samples the frame copy: with P+77 (every retail block) the vertex at p shows the frame at the projection of B·p (B =
+   P+12, the refraction scale); P+78 = lens UVs (view-turned direction, strong); else P+76 = the points shifted by A pixels.
+   Only one of A / B animates (P+76 wins). Fan (centre + inner circle) at colour alpha, then the annulus with
+   alpha P+60/128 inner, P+64/128 outer. The vertices are projected here and the 'ring' pass draws them in NDC. */
+function fxShockwave(ctx, el, tr, sg, key) {
+  const { fep } = el, o = sg.o, tau = el.g - sg.es, N = fxB(fep, o + 83); if (N < 3) return;
+  const m76 = fxB(fep, o + 76), m77 = fxB(fep, o + 77), m78 = fxB(fep, o + 78);
+  const Bs = fxF(fep, o + 12) + (!m76 && m77 ? fxF(fep, o + 28) * tau + fxF(fep, o + 44) * tau * tau / 2 : 0);
+  const A = m76 ? [0, 1].map((k) => fxF(fep, o + 4 * k) + fxF(fep, o + 16 + 4 * k) * tau + fxF(fep, o + 32 + 4 * k) * tau * tau / 2) : [0, 0];
+  const C = fxElColour(el, fxColDep(el, tr)).map((c, i) => Math.min(255, Math.max(0, c * el.I.colour[i]))); if (C[3] <= 0) return;
+  const W = fxPrimWorld(ctx, el, tr), cam = ctx.cam, in68 = fxF(fep, o + 68);
+  cam.updateMatrixWorld(); const VP = cam.projectionMatrix.clone().multiply(cam.matrixWorldInverse), MVP = VP.clone().multiply(W);
+  const clip = (p) => new THREE.Vector4(p[0], p[1], p[2], 1).applyMatrix4(MVP);
+  const ndc = (q) => [q.x / q.w, q.y / q.w];
+  const sat = (x) => Math.min(1, Math.max(0, x)), scr = (q) => [sat((q.x / q.w + 1) / 2), sat((q.y / q.w + 1) / 2)];   // GL v up = the PSP's (1 − y)/2
+  const outer = [], inner = [];
+  for (let i = 1; i <= N; i++) { const t = (i - 1) * 2 * Math.PI / N; outer.push([0.5 * Math.sin(t), -0.5 * Math.cos(t), 0]); }   // Rz(θ)·(0, −0.5, 0)
+  for (const p of outer) inner.push(p.map((x) => x * in68));
+  const c0 = clip([0, 0, 0]); if (!(c0.w > 0)) return;
+  const qo = outer.map(clip), qi = inner.map(clip); if (qo.some((q) => !(q.w > 0)) || qi.some((q) => !(q.w > 0))) return;
+  let uvO, uvI, uvC;
+  if (m78) {                                                     // lens: n = normalize(view·normalize(p.x, p.y, −1)) (PSP y flip folded in)
+    const R = fxRot3(cam.matrixWorldInverse).multiply(fxNormAxes(fxRot3(W)));
+    const lens = (p) => { const n = new THREE.Vector3(p[0], p[1], -1).normalize().applyMatrix4(R).normalize(); return [(n.x + 1) / 2, (n.y + 1) / 2]; };
+    uvO = outer.map(lens); uvC = lens([0, 0, 0]); uvI = uvO.map((u) => [uvC[0] + in68 * (u[0] - uvC[0]), uvC[1] + in68 * (u[1] - uvC[1])]);
+    ctx.approx.add('shockwave lens');
+  } else if (m77) {                                              // refraction scale B
+    uvO = outer.map((p) => scr(clip(p.map((x) => x * Bs)))); uvI = inner.map((p) => scr(clip(p.map((x) => x * Bs)))); uvC = scr(c0);
+  } else {                                                       // shift: the points themselves + A (PSP pixels at w = 1), turned by the element
+    const e = fxNormAxes(fxRot3(W)), al = Math.hypot(A[0], A[1]), a = new THREE.Vector3(A[0], A[1], 0).applyMatrix4(e), l2 = Math.hypot(a.x, a.y);
+    const d = l2 > 0 ? [a.x / l2 * al / 480, a.y / l2 * al / 272] : [0, 0];
+    const sh = (q) => [sat((q.x / q.w + d[0] / q.w + 1) / 2), sat((q.y / q.w + d[1] / q.w + 1) / 2)];
+    uvO = qo.map(sh); uvI = qi.map(sh); uvC = sh(c0);
+  }
+  const P = [], UV = [], Aa = [], Ix = [], push = (q, uv, al) => { const n = ndc(q); P.push(n[0], n[1], 0); UV.push(uv[0], uv[1]); Aa.push(al); return Aa.length - 1; };
+  const ci = push(c0, uvC, 1), fi = qi.map((q, i) => push(q, uvI[i], 1));            // 1. fan: centre + inner circle, full colour
+  for (let i = 0; i < N; i++) Ix.push(ci, fi[i], fi[(i + 1) % N]);
+  const aIn = fxF(fep, o + 60) / 128, aOut = fxF(fep, o + 64) / 128;                    // 2. strip: the annulus
+  const si = qi.map((q, i) => push(q, uvI[i], aIn)), so = qo.map((q, i) => push(q, uvO[i], aOut));
+  for (let i = 0; i < N; i++) { const j = (i + 1) % N; Ix.push(si[i], so[i], si[j], si[j], so[i], so[j]); }
+  FXV.post.push({ kind: 'ring', P, UV, A: Aa, I: Ix, rgba: C, blend: fxB(fep, o + 79) });
+  if (fxB(fep, o + 84)) ctx.approx.add('shockwave depth bias');   // the pass draws over everything
 }
 /* ------------------------------------------------------------------ ch111 screen shift, line / point emitters (docs/archive/fx-components/G.md) */
 function fxRotBlur(ctx, el, tr, sg) {                      // ch111: the frame redrawn shifted by V pixels (G §2)
@@ -993,8 +1076,10 @@ const fxSat = (x) => Math.min(1, Math.max(0, x));
 const fxV3 = { add: (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]], sub: (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]],
   mul: (a, k) => [a[0] * k, a[1] * k, a[2] * k], len: (a) => Math.hypot(a[0], a[1], a[2]),
   norm: (a) => { const l = Math.hypot(a[0], a[1], a[2]); return l > 0 ? [a[0] / l, a[1] / l, a[2] / l] : [0, 0, 0]; } };
-/* acc += rate·dt; at >= 1: n = trunc(acc), acc -= n + pause·rate (95/100/102/103) */
-function fxEmitN(st, rate, pause) { st.acc += rate; if (st.acc < 1) return 0; const n = Math.trunc(st.acc); st.acc -= n + pause * rate; return n; }
+/* acc += rate·dt; at >= 1: n = trunc(acc), acc -= n + pause·rate (95/100/102/103). Life, motion and history step once
+   per PSP update (fx.md §3, §7): the emitters run on even ticks only, with dt = FX_UPD. */
+const FX_UPD = 2;
+function fxEmitN(st, rate, pause) { st.acc += rate * FX_UPD; if (st.acc < 1) return 0; const n = Math.trunc(st.acc); st.acc -= n + pause * rate; return n; }
 function fxSlot(pool, max) { const s = pool.find((x) => !x.alive); if (s) return s; if (pool.length >= max) return null; pool.push({}); return pool[pool.length - 1]; }
 /* the parameter block of track tr at element age f (the emitters read the current segment every tick) */
 const fxSegAt = (el, tr, f) => fxSeg(tr, Math.floor(fxElTime(el, f)));
@@ -1012,7 +1097,7 @@ function fxStreaks100(ctx, el, tr, key) {                  // G §3.1
   const { fep } = el, rnd = fxRng(el.seed ^ 100), st = { acc: 0, time: 0 }, sp = [];
   const i0 = fxSeg(tr, 0); if (!i0) return;
   const max = Math.min(256, fxH(fep, i0.o + 60)), n = Math.max(1, fxB(fep, i0.o + 66)); if (!max || !fxH(fep, i0.o + 62)) return;
-  for (let f = 0; f <= Math.floor(el.age); f++) {
+  for (let f = 0; f <= Math.floor(el.age); f += FX_UPD) {
     const sg = fxSegAt(el, tr, f); if (!sg) break; const o = sg.o;
     st.time += 1;
     for (let k = fxEmitN(st, fxF(fep, o + 52), fxB(fep, o + 67)); k > 0; k--) {
@@ -1047,7 +1132,7 @@ function fxLines(ctx, el, tr, key) {                       // ch102 (G §3.2) an
   const { fep } = el, is103 = tr.chan === 103, rnd = fxRng(el.seed ^ tr.chan), st = { acc: 0 }, Ls = [];
   const i0 = fxSeg(tr, 0); if (!i0) return;
   const max = Math.min(256, fxH(fep, i0.o + (is103 ? 44 : 64))); if (!max || !fxH(fep, i0.o + (is103 ? 46 : 66))) return;
-  for (let f = 0; f <= Math.floor(el.age); f++) {
+  for (let f = 0; f <= Math.floor(el.age); f += FX_UPD) {
     const sg = fxSegAt(el, tr, f); if (!sg) break; const o = sg.o;
     const rate = fxF(fep, o + (is103 ? 28 : 60)), pause = fxB(fep, o + (is103 ? 62 : 70));
     for (let k = fxEmitN(st, rate, pause); k > 0; k--) {
@@ -1092,7 +1177,7 @@ function fxPoints95(ctx, el, tr, key) {                    // G §3.4
   const { fep } = el, rnd = fxRng(el.seed ^ 95), st = { acc: 0 }, ps = [];
   const i0 = fxSeg(tr, 0); if (!i0) return;
   const max = Math.min(256, fxH(fep, i0.o + 32)); if (!max || !fxH(fep, i0.o + 34)) return;
-  for (let f = 0; f <= Math.floor(el.age); f++) {
+  for (let f = 0; f <= Math.floor(el.age); f += FX_UPD) {
     const sg = fxSegAt(el, tr, f); if (!sg) break; const o = sg.o;
     const hs = [0, 1, 2].map((j) => fxF(fep, o + 4 * j) / 2), lo = hs.map((h) => -h - 1e-4), hi = hs.map((h) => h + 1e-4);
     for (let k = fxEmitN(st, fxF(fep, o + 28), fxB(fep, o + 38)); k > 0; k--) {
@@ -1123,53 +1208,28 @@ function fxPoints95(ctx, el, tr, key) {                    // G §3.4
 }
 
 
-/* the earlier spark approximation (kept for reference; G §3.6 lists what it gets wrong) */
-function fxSparks(ctx, el, tr, sg, key) {                   // ch100 streaks / ch102, 103 lines (layouts partly guessed, F)
-  const { fep, node } = el, o = sg.o, rnd = fxRng(el.seed ^ tr.chan), I = el.I;
-  const is100 = tr.chan === 100;
-  const head = [0, 1, 2, 3].map((k) => fxF(fep, o + 4 * k)), tail = is100 ? head.slice(0, 3).concat([0]) : [0, 1, 2, 3].map((k) => fxF(fep, o + 16 + 4 * k));
-  const speed = is100 ? fxF(fep, o + 32) : fxF(fep, o + 44), speedR = is100 ? fxF(fep, o + 36) : fxF(fep, o + 48), grav = is100 ? fxF(fep, o + 48) : 0;
-  const rate = is100 ? fxF(fep, o + 52) : fxF(fep, o + 60), cone = is100 ? fxF(fep, o + 56) : 360;
-  const maxN = Math.min(64, is100 ? fxH(fep, o + 60) : fxH(fep, o + 64)), life = is100 ? fxH(fep, o + 62) : fxH(fep, o + 66), lifeR = is100 ? fxH(fep, o + 64) : fxH(fep, o + 68);
-  const pts = is100 ? Math.max(2, fxB(fep, o + 66)) : 2, len = is100 ? 1 : fxF(fep, o + 36);
-  const blend = is100 ? fxB(fep, o + 68) : 1;
-  if (!maxN || !life) return;
-  const sparks = []; let acc = rate > 0 ? 0 : maxN;
-  const steps = Math.floor(el.age);
-  for (let f = 0; f <= steps && f < node.duration; f++) {
-    acc += rate; let n = Math.trunc(acc); acc -= n; if (f === 0 && rate <= 0) n = maxN;
-    for (let i = 0; i < n && sparks.length < maxN; i++) {
-      const yaw = fxR(rnd, cone / 2) * FX_D2R, pitch = fxR(rnd, cone / 2) * FX_D2R;
-      const d = fxV(Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), Math.cos(yaw) * Math.cos(pitch));
-      sparks.push({ born: f, d, v: speed + fxR(rnd, speedR), life: life + fxR(rnd, lifeR) });
-    }
-    if (rate <= 0 && f === 0) break;
-  }
-  const W = fxElWorld(el, fxCh14(el, tr), el.age), P = [], Ca = [];
-  const ec = fxElColour(el, fxColDep(el, tr));
-  for (const s of sparks) {
-    const t = el.age - s.born; if (t < 0 || t >= s.life) continue;
-    const a = t < s.life / 2 ? 1 : 2 * (1 - t / s.life);
-    const at = (tt) => { tt = Math.max(0, tt); return s.d.clone().multiplyScalar(s.v * tt).add(fxV(0, grav * tt * tt / 2, 0)); };
-    const seg = []; for (let j = 0; j < pts; j++) seg.push(is100 ? at(t - j) : at(t).addScaledVector(s.d, -len * j / (pts - 1)));
-    for (let j = 0; j + 1 < pts; j++) for (const q of [j, j + 1]) {
-      const p = fxV(seg[q].x, -seg[q].y, -seg[q].z).applyMatrix4(W), k = q / (pts - 1);
-      P.push(p.x, p.y, p.z);
-      Ca.push(...[0, 1, 2, 3].map((c) => Math.min(255, Math.max(0, (head[c] + (tail[c] - head[c]) * k) * ec[c] / 128 * I.colour[c])) / 255 * (c === 3 ? a : 1)));
-    }
-  }
-  if (!P.length) return;
-  const old = FXV.pool.get(key); if (old && old.geometry) old.geometry.dispose();
-  const m = fxMesh(key, fxGeo(P, Array(P.length / 3 * 2).fill(0), Ca, null), 'lines'), u = m.material.uniforms;
-  u.map.value = null; u.useMap.value = 0; u.C.value.set(0.5, 0.5, 0.5); u.lit2.value = 1; u.A2.value = 1;
-  fxBlend(m.material, fxBlendMode(blend), 0xFFFFFF);
-  m.matrix.identity();
-  ctx.approx.add('sparks');
-}
-
 /* ------------------------------------------------------------------ what a timeline starts */
 // [{type: 'fx' | 'trail' | 'proj' | 'hit', tick, recs, end?, life?, bone?, scale?}] (tick and end in timeline ticks)
 const FX_FOREVER = 0xFFFF;
+// one fire_projectile: the shot with its visual, and the shots it hands on to by itself (link_emit, unless flag 0x20):
+// emit_count > 0 fires the child emit_delay ticks after its parent (Alterna's glass shatters at 44 when nothing was
+// hit), else at its birth; a child with origin 5 starts where its parent is. Up to 6 generations (Alterna: 2271 ->
+// 2268 -> 2278 -> 2279 -> 2280). Also used by comp.js layers. -> [inst]
+function fxProjInsts(fx, id, tick, kind, idx, arg2) {
+  const out = [], seen = new Set();
+  const walk = (id, tick, parent, depth) => {
+    const pr = fx && fx.magi ? fx.magi.get(id) : null; if (!pr || seen.has(id) || depth > 6) return;
+    seen.add(id);
+    const recs = projVisuals(fx, pr), me = { pr, tick, arg2: depth ? 0 : arg2 || 0, parent };
+    if (recs.length) out.push({ type: 'proj', tick, proj: pr, recs, kind, idx, arg2: me.arg2, parent });
+    if (pr.link_emit >= 0 && !(pr.flags & 0x20)) {
+      const n = Math.round(pv(pr, 'emit_count', 0)), d = n > 0 ? Math.max(0, pv(pr, 'emit_delay', 0)) : 0;
+      walk(pr.link_emit, tick + d, me, depth + 1);
+    }
+  };
+  walk(id, tick, null, 0);
+  return out;
+}
 function fxInstances(fx, t, ctx) {
   const out = []; if (!fx || !t) return out;
   const add = (tick, id, kind, idx, extra) => { const recs = fx.byId.get(id) || []; if (recs.length) out.push({ type: 'fx', tick, recs, kind, idx, ...extra }); };
@@ -1187,11 +1247,7 @@ function fxInstances(fx, t, ctx) {
     if (c === 0x0219) add(e.frame, a[0], 'keyed', i, { life: life(a[1]) });                         // arg1 overwrites the FEPA lifetime
     else if (c === 0x042F) add(e.frame, a[0], 'keyed', i, { life: life(a[1]) });
     else if (c === 0x0204 && fx.magi) {                  // fire_projectile: its visual (and its children's) travel with the shot
-      const pr = fx.magi.get(a[0]); if (!pr) return;
-      const recs = projVisuals(fx, pr);
-      const ch = pr.link_emit >= 0 && !(pr.flags & 0x20) ? fx.magi.get(pr.link_emit) : null;   // child fired at birth
-      if (ch) recs.push(...projVisuals(fx, ch));
-      if (recs.length) out.push({ type: 'proj', tick: e.frame, proj: pr, recs, kind: 'keyed', idx: i, arg2: typeof a[1] === 'number' ? a[1] : 0 });
+      out.push(...fxProjInsts(fx, typeof hkPickMagi === 'function' ? hkPickMagi(a[0]) : a[0], e.frame, 'keyed', i, typeof a[1] === 'number' ? a[1] : 0));   // magipick=: the member the move panel picked
     }
   });
   t.ranged.forEach((e, i) => {
@@ -1266,6 +1322,7 @@ function fxPlacer(ctx, inst, rec, t0, shot) {
   const pose = (T) => ctx.poseAt(T);
   let fn;
   if (inst.type === 'proj') fn = (T) => { const M = shot.at(T); return fxCallerPlaced(M, fxPos(M), rec, hs); };   // the record's own scale / rotation too (BIND_GENE is 0.13)
+  else if (inst.boneAt) fn = (T) => fxAttached({ root: pose(T).root, bones: [inst.boneAt(T)] }, 0, rec, hs);   // dummy.js armtrail: the arm as the preview moves it
   else if (inst.type === 'hit') { const p0 = pose(t0); const root = p0.root; const foe = inst.foe ? fxV(...inst.foe) : fxV(...FOE_AT).applyMatrix4(root); fn = () => fxCallerPlaced(root, foe, rec, hs); }
   else {
     const bi = inst.bone != null && ctx.boneOk(inst.bone) ? inst.bone : (rec.model || inst.trail) ? fxRecBone(ctx, rec) : -1;
@@ -1281,9 +1338,14 @@ function fxPlacer(ctx, inst, rec, t0, shot) {
   };
 }
 /* a projectile shot's path: from its origin (owner, or a bone) straight ahead at its speed, with acceleration and
-   gravity; homing and target-relative spawns are not simulated */
-function fxShot(ctx, pr, fireTick, arg2) {
+   gravity; homing and target-relative spawns are not simulated here (with the Dummy on, the shot flies as the
+   simulation flew it instead: opts.shotAt = dummy.js dmShotAt) */
+function fxShot(ctx, pr, fireTick, arg2, parent) {
   const p0pose = ctx.poseAt(fireTick), rootM = p0pose.root;
+  if (pr.origin === 5 && parent) {                                  // origin 5: where the shot that fired it is (magi.js)
+    const ps = fxShot(ctx, parent.pr, parent.tick, parent.arg2, parent.parent), M = ps.at(fireTick);
+    return fxShotFrom(pr, M, rootM, fireTick);
+  }
   // origin 1/2: an owner bone; origin 6: where the owner's effect with FEPA id origin_arg is playing (FUN_08AD3C24 ->
   // FUN_088AA350 finds that effect's handle, FUN_088A82D8 gives its matrix), e.g. Cloud's Fire balls start at FIGA_START
   let org = rootM;
@@ -1291,7 +1353,7 @@ function fxShot(ctx, pr, fireTick, arg2) {
   if ((pr.origin === 1 || pr.origin === 2) && ctx.boneOk(pr.origin_arg)) org = p0pose.bones[pr.origin_arg];
   else if (FOE_ORG[pr.origin]) {
     const me = fxPos(rootM), foe = (ctx.opts.foePosAt && ctx.opts.foePosAt(fireTick)) || fxV(FOE_AT[0], 0, FOE_AT[2]).applyMatrix4(rootM);
-    const pt = foe.clone(); if (FOE_ORG[pr.origin] === 256) pt.y += 1.0;          // magi.js MAGI_LOCK_H (a guess)
+    const pt = foe.clone(); if (FOE_ORG[pr.origin] === 256) pt.y += 0.9;          // magi.js MAGI_LOCK_H (+0x100: body volume centre)
     const h = fxV(pt.x - me.x, 0, pt.z - me.z), dy = pt.y - me.y, cl = (x, lo, hi) => (x < lo ? lo : x <= hi ? x : hi);
     const hd = cl(h.length(), pv(pr, 'tgt_dist_min', 0), pv(pr, 'tgt_dist_max', 9999)), vd = cl(Math.abs(dy), pv(pr, 'tgt_height_min', 0), pv(pr, 'tgt_height_max', 9999));
     const at = me.clone().add(h.lengthSq() > 1e-9 ? h.normalize().multiplyScalar(hd) : fxV(0, 0, 0)).add(fxV(0, Math.sign(dy) * vd, 0));
@@ -1301,10 +1363,23 @@ function fxShot(ctx, pr, fireTick, arg2) {
     const rec = (ctx.fx.byId.get(arg2 || pr.origin_arg) || [])[0];
     if (rec) { const bi = fxRecBone(ctx, rec); org = bi >= 0 || bi === FX_ROOT_BONE ? fxAttached(p0pose, bi, rec, 1) : fxCallerPlaced(rootM, fxPos(rootM), rec, 1); }
   }
-  const p0 = fxV(pv(pr, 'off_x', 0), pv(pr, 'off_y', 0), pv(pr, 'off_z', 0)).applyMatrix4(org);
-  const fwd = fxV(0, 0, 1).transformDirection(rootM);
-  const yaw = pv(pr, 'launch_yaw', 0) * FX_D2R; fwd.applyAxisAngle(fxV(0, 1, 0), yaw);
-  p0.addScaledVector(fwd, pv(pr, 'fwd_dist', 0));
+  return fxShotFrom(pr, org, rootM, fireTick);
+}
+function fxShotFrom(pr, org, rootM, fireTick) {
+  // the launch as magi.js magiBirth (FUN_08AD46F0), so the shot leaves the way the Dummy's flies it (2026-10-31:
+  // "The projectile flies straight ahead even with pitch set to 45degrees"): a frame on the origin (forward = its Z: a
+  // bone's, the owner's, the parent shot's; up = the bone's Y for origin 2, else world up), the offsets and the forward
+  // offset (fwd_dist turned by fwd_yaw) in it; direction 1 / 2 = the owner's facing; then launch pitch (+ = down) in the
+  // frame and launch yaw (about the frame's up for origin 2, else world up). Direction 4 (at the foe) isn't aimed here.
+  const e = org.elements, at0 = fxV(e[12], e[13], e[14]), own = fxV(0, 0, 1).transformDirection(rootM), wUp = fxV(0, 1, 0);
+  const F = pr.direction === 1 || pr.direction === 2 || pr.direction === 4 ? own.clone() : fxV(e[8], e[9], e[10]).normalize();
+  const up = pr.origin === 2 ? fxV(e[4], e[5], e[6]).normalize() : wUp;
+  const Z = F, X = up.clone().cross(Z); if (X.lengthSq() < 1e-9) X.set(1, 0, 0); X.normalize();
+  const Y = Z.clone().cross(X), L = (x, y, z) => X.clone().multiplyScalar(x).addScaledVector(Y, y).addScaledVector(Z, z);
+  const fy = pv(pr, 'fwd_yaw', 0) * FX_D2R, fd = pv(pr, 'fwd_dist', 0);
+  const p0 = at0.add(L(pv(pr, 'off_x', 0), pv(pr, 'off_y', 0), pv(pr, 'off_z', 0))).add(L(Math.sin(fy) * fd, 0, Math.cos(fy) * fd));
+  const pitch = pv(pr, 'launch_pitch', 0) * FX_D2R, yaw = pv(pr, 'launch_yaw', 0) * FX_D2R, lp = fxV(0, -Math.sin(pitch), Math.cos(pitch));
+  const fwd = (pr.origin === 2 ? L(...lp.applyAxisAngle(wUp, yaw).toArray()) : L(lp.x, lp.y, lp.z).applyAxisAngle(wUp, yaw)).normalize();
   const speed = pv(pr, 'speed', 0), accel = pv(pr, 'accel', 0), accelAt = pv(pr, 'accel_start', 0), vmax = pv(pr, 'speed_max', 0);
   const grav = pv(pr, 'gravity', 0), gravAt = pv(pr, 'gravity_start', 0), moveT = pv(pr, 'move_time', 0);
   const R = fxM().makeRotationFromQuaternion(new THREE.Quaternion().setFromUnitVectors(fxV(0, 0, 1), fwd));
@@ -1341,7 +1416,9 @@ function fxRunInstance(ctx, inst, rec, key, t0, extra) {
   const hs = inst.scale || 1;
   const I = { fep, body, t0, stop, sustained, seed: fxHash(inst.tick, rec.index, ctx.fx.fep.idBase & 0xFFFF, extra ? extra.n : 0), colour: [1, 1, 1, fade],
     iscale: [rec.scale[0] * hs, rec.scale[1] * hs, rec.scale[2] * hs], place: fxPlacer(ctx, inst, rec, t0, extra && extra.shot) };
-  FXV.labels.push({ m: I.place(ctx.tick), text: (fep.names[rec.effect] || {}).name });
+  const ev = inst.ctx ? null : /^(keyed|ranged|motion|comp)$/.test(inst.kind) ? { kind: inst.kind, idx: inst.idx }   // the timeline row that plays it (the tag selects it); none for a spawned object's own effects
+    : inst.kind === 'sim' ? { kind: 'sim', type: inst.type, idx: inst.idx } : null;   // the dummy's simulation: a projectile's contact effect or a shot born of a hit (the tag goes to the shot that caused it)
+  FXV.labels.push({ m: I.place(ctx.tick), text: (fep.names[rec.effect] || {}).name, ev, ni: S.fx && fep === S.fx.fep ? rec.effect : null, fading: fade < 1 });   // ni: an effect of this character's own package
   for (const sp of body.spawns) {
     if (sp.frame > t || sp.frame >= Math.max(1, body.duration)) continue;
     for (const ni of sp.nodes) {
@@ -1376,7 +1453,7 @@ function fxUpdate(view, fx, tl, tick, opts) {
         const pr = inst.proj, shots = Math.max(1, Math.min(8, Math.round(pv(pr, 'shots', 1)))), delay = pv(pr, 'first_delay', 0), every = pv(pr, 'interval', 0);
         for (let s = 0; s < shots; s++) {
           const fire = inst.tick + delay + s * every; if (tick < fire) continue;
-          const shot = fxShot(ctx, pr, fire, inst.arg2), born = { life: shot.life, at: () => shot.at(fire) };
+          const shot = inst.simShot || (!inst.parent && ctx.opts.shotAt && ctx.opts.shotAt(pr.id, fire, s)) || fxShot(ctx, pr, fire, inst.arg2, inst.parent), born = { life: shot.life, at: () => shot.at(fire) };
           inst.recs.forEach((rec, ri) => fxRunInstance(ctx, inst, rec, `${ii}|s${s}|${ri}`, fire, rec._once ? { shot: born, n: s + 1 } : { shot, stop: shot.life, n: s + 1 }));
         }
       } else inst.recs.forEach((rec, ri) => fxRunInstance(ctx, inst, rec, `${ii}|${ri}`, inst.tick, null));
@@ -1408,11 +1485,11 @@ function fxRender(view) {
     FXV.zoomMat = fxPostMat(`uniform sampler2D src; uniform vec2 c; uniform float k; uniform vec4 col; uniform float aMul; varying vec2 vUv;
       void main() { vec2 uv = c + (vUv - c) * (1.0 - k); vec3 rgb = texture2D(src, uv).rgb * min(vec3(1.0), 2.0 * col.rgb); float f = min(1.0, aMul * col.a); gl_FragColor = vec4(rgb * f, f); }`,
       { src: { value: null }, c: { value: new THREE.Vector2() }, k: { value: 0 }, col: { value: new THREE.Vector4() }, aMul: { value: 2 } });
-    FXV.ringMat = fxPostMat(`varying float vA; uniform sampler2D src; uniform vec2 c; uniform vec4 col; uniform float aMul; varying vec2 vUv;
-      void main() { vec2 uv = c + (vUv - c) * 0.9; vec3 rgb = texture2D(src, uv).rgb * min(vec3(1.0), 2.0 * col.rgb); float f = min(1.0, aMul * col.a * vA); gl_FragColor = vec4(rgb * f, f); }`,
-      { src: { value: null }, c: { value: new THREE.Vector2() }, col: { value: new THREE.Vector4() }, aMul: { value: 2 } });
+    FXV.ringMat = fxPostMat(`varying float vA; uniform sampler2D src; uniform vec4 col; uniform float aMul; varying vec2 vUv;
+      void main() { vec3 rgb = texture2D(src, vUv).rgb * min(vec3(1.0), 2.0 * col.rgb); float f = min(1.0, aMul * col.a * vA); gl_FragColor = vec4(rgb * f, f); }`,
+      { src: { value: null }, col: { value: new THREE.Vector4() }, aMul: { value: 2 } });
     FXV.ringMat.vertexShader = 'attribute float fxa; varying vec2 vUv; varying float vA; void main() { vUv = uv; vA = fxa; gl_Position = vec4(position.xy, 0.0, 1.0); }';
-    FXV.ringMat.needsUpdate = true;
+    FXV.ringMat.side = THREE.DoubleSide; FXV.ringMat.needsUpdate = true;
     FXV.shiftMat = fxPostMat(`uniform sampler2D src; uniform vec2 off; uniform vec4 col; uniform float aMul; varying vec2 vUv;
       void main() { vec2 uv = vUv - off; if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) discard;
         vec3 rgb = texture2D(src, uv).rgb * min(vec3(1.0), 2.0 * col.rgb); float f = min(1.0, aMul * col.a); gl_FragColor = vec4(rgb * f, f); }`,
@@ -1443,20 +1520,11 @@ function fxRender(view) {
         m.uniforms.col.value.set(p.rgba[0] / 255, p.rgba[1] / 255, p.rgba[2] / 255, p.rgba[3] / 255); blendOf(m, p.blend);
         FXV.quad.material = m; R.render(FXV.postScene, FXV.postCam); src = dst;
       }
-    } else if (p.kind === 'ring') {
-      const ctr = p.pos.clone().project(view.camera); if (ctr.z > 1) continue;
-      const camRight = fxV(1, 0, 0).applyQuaternion(view.camera.quaternion), edge = p.pos.clone().addScaledVector(camRight, p.r).project(view.camera);
-      const rx = Math.abs(edge.x - ctr.x), ry = rx * size.x / size.y;
-      const P = [], UV = [], Aa = [], Ix = [];
-      for (let i = 0; i <= p.seg; i++) {
-        const a = i / p.seg * Math.PI * 2, cs = Math.cos(a), sn = Math.sin(a);
-        for (const [rr, al] of [[p.inner, p.aIn], [1, p.aOut]]) { const x = ctr.x + cs * rx * rr, y = ctr.y + sn * ry * rr; P.push(x, y, 0); UV.push((x + 1) / 2, (y + 1) / 2); Aa.push(al); }
-        if (i) { const b = 2 * i; Ix.push(b - 2, b - 1, b, b, b - 1, b + 1); }
-      }
-      const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(P, 3)); g.setAttribute('uv', new THREE.Float32BufferAttribute(UV, 2)); g.setAttribute('fxa', new THREE.Float32BufferAttribute(Aa, 1)); g.setIndex(Ix);
+    } else if (p.kind === 'ring') {                  // ch101: geometry and UVs projected by fxShockwave
+      const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(p.P, 3)); g.setAttribute('uv', new THREE.Float32BufferAttribute(p.UV, 2)); g.setAttribute('fxa', new THREE.Float32BufferAttribute(p.A, 1)); g.setIndex(p.I);
       const dst = src === FXV.rt ? FXV.rt2 : FXV.rt;
       R.setRenderTarget(dst); FXV.quad.material = FXV.copyMat; FXV.copyMat.uniforms.src.value = src.texture; R.render(FXV.postScene, FXV.postCam);
-      const rm = FXV.ringMat; rm.uniforms.src.value = src.texture; rm.uniforms.c.value.set((ctr.x + 1) / 2, (ctr.y + 1) / 2);
+      const rm = FXV.ringMat; rm.uniforms.src.value = src.texture;
       rm.uniforms.col.value.set(p.rgba[0] / 255, p.rgba[1] / 255, p.rgba[2] / 255, p.rgba[3] / 255); blendOf(rm, p.blend);
       const mesh = new THREE.Mesh(g, rm); mesh.frustumCulled = false; FXV.postScene.add(mesh); FXV.quad.visible = false;
       R.render(FXV.postScene, FXV.postCam); FXV.postScene.remove(mesh); g.dispose(); FXV.quad.visible = true; src = dst;

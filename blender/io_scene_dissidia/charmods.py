@@ -334,6 +334,55 @@ class DFX_OT_mod_use_skin(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class DFX_OT_mod_ex_part(bpy.types.Operator):
+    """Mark this weapon as drawn in EX Mode only, in place of the others (mod.json body.ex_parts). The game swaps EX
+    weapons in its own code; this tells the Blender and Move Studio previews which one it is"""
+    bl_idname = 'dfx.mod_ex_part'
+    bl_label = 'EX weapon'
+    name: StringProperty(options={'HIDDEN'})
+    part: StringProperty(options={'HIDDEN'})
+
+    def execute(self, context):
+        p = os.path.join(mods_dir(context), self.name, 'mod.json')
+        m = json.load(open(p), object_pairs_hook=OrderedDict)
+        b = m.setdefault('body', OrderedDict())
+        cur = list(b.get('ex_parts') or [])
+        cur = [x for x in cur if x != self.part] if self.part in cur else cur + [self.part]
+        if cur:
+            b['ex_parts'] = sorted(cur)
+        else:
+            b.pop('ex_parts', None)
+        with open(p, 'w') as f:
+            json.dump(m, f, indent=1, ensure_ascii=False)
+            f.write('\n')
+        _MODS.clear()
+        _refresh_preview(context)
+        return {'FINISHED'}
+
+
+class DFX_OT_ex_preview(bpy.types.Operator):
+    """Preview EX Mode: the EX weapons (marked EX) instead of the others"""
+    bl_idname = 'dfx.ex_preview'
+    bl_label = 'EX Mode'
+
+    def execute(self, context):
+        from .panel import active_arm
+        arm = active_arm(context)
+        if arm is not None:
+            arm['dfx_ex_preview'] = not arm.get('dfx_ex_preview', False)
+        _refresh_preview(context)
+        return {'FINISHED'}
+
+
+def _refresh_preview(context):
+    from . import moveset_bl
+    from .panel import active_arm
+    arm = active_arm(context)
+    if arm is not None:
+        moveset_bl.update_visibility(context.scene, arm)
+    _redraw(context)
+
+
 class DFX_OT_mod_build(_JobOperator, bpy.types.Operator):
     """Build this character into the game's mods folder (tools/charmod.py build), as run.sh does at launch"""
     bl_idname = 'dfx.mod_build'
@@ -484,17 +533,15 @@ def _draw_mod(L, context, name):
             return
         c = m.get('character') or {}
         body = m.get('body') or {}
-        if m.get('kind') == 'retail':                      # changes a retail character: no skins / avatars / slot
+        retail = m.get('kind') == 'retail'                 # changes a retail character: no avatars / slot; a body skin
+        if retail:
             L.label(text='Builds only the files that differ from the retail ones.', icon='INFO')
-            row = L.row(align=True)
-            row.enabled = not running()
-            row.operator('dfx.mod_build', icon='EXPORT').name = name
-            return
-        # skins
-        cur = body.get('skin', 'manikin')
+        # skins ("retail": the game's own body, for a changed retail character)
+        cur = body.get('skin', 'retail' if retail else 'manikin')
         wspec = body.get('weapons')
-        options = [('manikin' if body.get('models') else 'as_is', None)] + [(s, None) for s in skins_of(md, name)]
-        box = section(L, 'dfx_mod_skin', 'Skin (body and weapons): %s' % cur, 'MOD_CLOTH')
+        base = 'retail' if retail else 'manikin' if body.get('models') else 'as_is'
+        options = [(base, None)] + [(s, None) for s in skins_of(md, name)]
+        box = section(L, 'dfx_mod_skin', ('Body: %s' if retail else 'Skin (body and weapons): %s') % cur, 'MOD_CLOTH')
         for s, _ in (options if box else []):
             row = box.row(align=True)
             label = s + ('  (default: %s)' % DEFAULT_SKINS[s] if s in DEFAULT_SKINS else '')
@@ -509,7 +556,7 @@ def _draw_mod(L, context, name):
         if box and wspec and cur in ('manikin',):
             box.label(text='Default weapons: %s\'s own' % c.get('based_on', 'the based-on character'), icon='INFO')
 
-        # the model and the weapons it wants: any model file for each (Blender fits it)
+        # the model and the weapons it wants: any model file for each (Blender fits it); a retail character: the body
         box = section(L, 'dfx_mod_look', 'Model and weapons', 'OUTLINER_OB_ARMATURE')
         if box:
             from .panel import active_arm
@@ -523,7 +570,14 @@ def _draw_mod(L, context, name):
             r = col.row()
             r.enabled = mine
             r.operator('dfx.own_model', text='Replace body with my model…', icon='OUTLINER_OB_ARMATURE')
+            if retail:
+                col.label(text='Goes on the first costume and its assist.', icon='INFO')
             groups = body.get('weapon_groups') or []
+            exp = set(body.get('ex_parts') or [])
+            if mine and arm is not None:
+                r = box.row(align=True)
+                r.label(text='Weapons')
+                r.operator('dfx.ex_preview', text='EX Mode preview', icon='SHADERFX', depress=bool(arm.get('dfx_ex_preview')))
             if not groups and mine:
                 groups = [{'name': o.name.split('.')[0], 'parts': [o.name.split('.')[0]]} for o in sorted(arm.children, key=lambda o: o.name)
                           if o.type == 'MESH' and o.name.split('.')[0].startswith('wep') and o.name.split('.')[0][3:].isdigit()]
@@ -535,6 +589,10 @@ def _draw_mod(L, context, name):
                 sub.enabled = mine
                 op = sub.operator('dfx.own_weapon', text='Use my model…', icon='IMPORT')
                 op.slot = g['parts'][0]
+                op = sub.operator('dfx.own_weapon_scene', text='Use selected', icon='RESTRICT_SELECT_OFF')
+                op.slot = g['parts'][0]
+                op = r.operator('dfx.mod_ex_part', text='EX', depress=g['parts'][0] in exp)
+                op.name, op.part = name, g['parts'][0]
                 if g.get('hint'):
                     col.label(text=g['hint'])
 
@@ -551,7 +609,7 @@ def _draw_mod(L, context, name):
                 row.operator('dfx.mod_stop', text='', icon='CANCEL')
 
 
-classes = (DFX_OT_mod_refresh, DFX_OT_mod_use_skin, DFX_OT_mod_build,
+classes = (DFX_OT_mod_refresh, DFX_OT_mod_use_skin, DFX_OT_mod_ex_part, DFX_OT_ex_preview, DFX_OT_mod_build,
            DFX_OT_mod_new, DFX_OT_mod_stop)
 
 

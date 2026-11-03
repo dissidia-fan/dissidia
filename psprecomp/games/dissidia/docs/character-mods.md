@@ -22,6 +22,14 @@ retail character back; `readme_charmod_retail.json` in the mods dir records whic
 folders can't change the same file. Animation changes in `models/` reach the game for the 1P costume only (each
 costume file carries its own animations).
 
+**Body.** A retail folder can swap the character's body like an added character's (see Body below), with `body.skin`
+defaulting to `"retail"`: the game's own body, nothing installed for it. A skin name puts `skins/<skin>/<rig>.skin`
+on each model in `body.models` (the 1P rigs in `models/`, or a retail model read from your disc), so switching back is
+setting `"retail"` again. Make one with the Move Studio (Character tab > Body > *Replace with my model…*, Blender open
+with the add-on 0.32+), Blender (Character mods > Model), or `charmod.py body cloud --from-gmo my_cloud.gmo --as
+duellum`. It goes on the first costume and its assist; the other costumes keep their own bodies. Weapons are not
+covered for retail characters yet.
+
 ## A character folder (`mods/<name>/`)
 
 | Path | What | Edit it to |
@@ -38,17 +46,49 @@ Files the character just borrows from the retail character it is built on (voice
 as `{"like": "<retail path>"}` and read from your disc at build time, so the folder never holds game files it didn't change.
 
 ### mod.json sections
+The help text for every section lives in `mods/_template/mod.json` only (`_read_me`, `_info`, `_example`). A character's
+own `mod.json` holds just its data: `charmod.py` and the Move Studio write it without the help keys.
+
 | Section | What it holds |
 |---|---|
-| `_read_me` | a short how-to |
-| `character` | `name` (what menus call it), `full_name`, `series`, `code`, `slot`, `based_on` / `based_on_id` (the retail character it is built on) |
+| `character` | `name` (what menus call it), `full_name`, `series`, `code` (names its game files: one folder per code), `based_on` / `based_on_id` (the retail character it is built on) |
 | `avatars` | one entry per menu / HUD picture: `picture` (PNG in avatars/, or null = the based-on character's), `size`, `shows` (where it appears); `generated_from` = the artwork and crop boxes they were made from |
 | `body` | `skin`: `"manikin"` or a folder in skins/; `models`: the model files the body goes on |
 | `move_names` | in-game name and help text per move (`cmd` = the command in moveset/p_<code>/moves.json) |
 | `runtime_hooks` | settings read by the game runtime (roster.cpp: `warp=`, `landact=`, `apocarms=` ...) |
-| `menu_ids` | entry ids in the shared menu pack (set by new_character.py; leave as they are) |
 | `files` | every other game file: folder path, or `{"like": ...}` |
 | `fx_shaders` | the character's shader overrides (merged into fx_shaders/manifest.json) |
+
+### `move_names` fields
+`build` merges every mod's `move_names` into `games/dissidia/extra_abilities.json` (local, not in git: rebuilt from the
+mod folders), and `roster_mainbin.py` / `new_character.py` apply that file when they rebuild main.bin. The copied `ablt`
+records of the character get new records in the name table (`general_archive/main/<lang>/main_lang.bin` -> ability.bin)
+and in the help pack (`text/<lang>/mess_pk_customize_ability_0.bin`, entry 0), and their +2 / +4 text ids point at them.
+Table and reasons: [roster.md](roster.md).
+
+- **Key:** the low byte n of the ability id (`(charId << 8) | n`, hex). Keys starting with `_` are ignored.
+- `cmd`: must equal the record's command id (+12), otherwise the entry is skipped with a log line (the map was written
+  for another moveset).
+- `name` / `help`: optional (left out: the based-on character's text stays). Each is a string (every language) or
+  `{"en": ..., "fr": ...}`.
+  - Name tokens: `{ground}` `{midair}` (the small '(ground)' / '(midair)' suffix of retail names). At most 31 characters
+    are shown.
+  - Help: at most 3 lines of 35 characters are shown. A line `{bonus}` = the equip-bonus lines of the help text the
+    record had (they describe the record's values, which stay the based-on character's), `{effects}` = its orange effect
+    lines ('Additional Effect: chase'), `{like}` = all of it; `{effect:X}` / `{effects:X}` = an orange
+    'Additional Effect: X' / 'Effects: X' line.
+- Record kind, optional (left out, the based-on character's values stay): `type` brave / hp (+0x16), `phase` ground /
+  midair / follow-up (+0x17), `after` the ability it follows up (+6, `null` = none).
+- `copy`: `"0F"` ADDS an ability the based-on character does not have under this key: a copy of the character's record
+  0F with `cmd` (required) as its command id; `learn`: N lists it in the character's `chrl` row at level N
+  (`roster_mainbin.add_new_abilities`). Its move is the objx comb command `cmd` (battle looks the record's +12 up in the
+  character's own comb). Cost fields (`cp`, `ap`, `bonus`, `learn`): see *Common changes* below.
+- `disabled`: the record is kept (saves stay valid) but not listed and does nothing in battle; `deleted` marks one the
+  Move Studio deleted.
+- Notes for the docs only: `was`, `motions`, `status`, `_note`. status: remade = the move was re-made; recast = the
+  based-on character's spell re-animated / shown without the aeon and named as the new character's spell; renamed = the
+  based-on character's move under the name of what it now plays; kept = still the based-on character's move: name and
+  help stay its own.
 
 ### Moveset files (`moveset/p_<code>/`)
 - `moves.json`: commands. Each ability points at one by its `cmd` id (`_info` names the move). `steps` = the presses,
@@ -128,6 +168,8 @@ charmod.py build noctis
 and textures; the character's animations, weapons and effects stay as they are. The body may use at most as many
 materials as the rig's body slots (Noctis: 2).
 
+**Live lighting** (native build): `"lighting": true` in `body` lights the body with a key and a rim light that follow the camera, for ripped models that look flat next to the painted retail cast. Settings and how it works: [character-lighting.md](character-lighting.md).
+
 ### Weapons
 
 Weapons taken from other games live in a skin too, never in the rig. `mod.json` → `body.weapons` lists them:
@@ -167,13 +209,17 @@ blender-addon.md).
 
 ## Working with the other forge tools
 
-Many older scripts (`forge/ffxv_tools/...`) write straight into `work/mods`. `build` remembers what it last wrote; if an
-installed file has changed since, it stops and lists it instead of overwriting newer work:
+The mod folders are the only source: `build` always writes `work/mods` from them, and `run.sh` builds at every start.
+Many older scripts (`forge/ffxv_tools/...`) write straight into `work/mods`; what they write there is replaced by the
+next build (it lists each one as `replaced <file> (changed outside the build)`). Point such a script at the mod folder
+instead, or bring its result in before building:
 
 ```
-charmod.py pull noctis     # bring the installed files back into mods/noctis (keeps the body choice and skins)
+charmod.py pull noctis     # copy the installed files back into mods/noctis (keeps the body choice and skins)
 charmod.py build noctis
 ```
+
+`work/mods` is not in git: each machine builds its own (the Steam Deck too, see steamdeck.md).
 `build` also writes the character's roster line (`work/mods/roster.txt`) and ability names (`extra_abilities.json`), merges
 its shader entries into `fx_shaders/manifest.json`, and reruns `roster_mainbin.py` when the roster or names changed.
 
@@ -261,9 +307,14 @@ Names and numbers both work: `"hit": "NEAR_COMBO"` or `"hit": "0x04A1"`, `"part"
 
 **Drop the folder in.** A character folder put in `mods/` (at the repo root) is added to the game automatically:
 `tools/run.sh` runs `charmod.py build` before the game starts (skip with `PSPRECOMP_CHARMOD=0`), and the build gives a
-character the game doesn't know yet its place: its roster slot (`character.slot`, or the next free one 35-42 if that one is
-taken), menu ids for its avatars, its name in the menu text, its records in main.bin. The slot and ids are written back to its
-`mod.json`. A folder made on another machine works the same way: everything it borrows is read from your own disc.
+character the game doesn't know yet its place: the first free roster slot (35-42), menu ids for its avatars, its name in
+the menu text, its records in main.bin. The slot and menu ids are kept by the game's mods folder (`readme_newchars.json`,
+`roster.txt`), found again by the character's `code`, and never written to `mod.json`: they depend on which other
+characters that mods folder has, so characters made by different people never have to agree on them, and a character
+keeps its slot (and with it its save record) from one build to the next. The `code` is the one thing that must differ:
+it names the character's game files, and a build with two folders on one code stops and says which. A folder made on
+another machine works the same way: everything it borrows is read from your own disc. (A `slot` or `menu_ids` left in an
+older `mod.json` is ignored.)
 
 **Starting one from scratch:** `mods/_template/` is the template (never built itself). Make a character from it with:
 ```
@@ -271,7 +322,8 @@ games/dissidia/tools/charmod.py new terra --like six100 --display Terra --full-n
 ```
 - `--like`: the retail character it starts from (code, e.g. `fiv100` Bartz, `eht100` Squall, `sev100` Cloud, `six100`
   Terra, `gst130` Lightning; or a charId). Its skeleton, animations, models, voice and moves are the starting point.
-- `--code` (default: from the folder name + 100), `--slot` (default: the first free one 35-42).
+- `--code` (default: the name's first three letters + the first free number, e.g. `ter100`). The roster slot is the
+  build's to pick.
 
 It makes `mods/terra/` with `mod.json` filled in, every avatar listed (still the based-on character's pictures), a grey
 placeholder picture for the menu art, and the based-on character's moveset unpacked in `moveset/p_<code>/` so its moves

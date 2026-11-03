@@ -3,7 +3,10 @@
 #
 # Usage: run.sh <workdir> [--retro | --crisp] [--software-gl] [--swap-ab] [--gamecontrollerdb FILE] [--log FILE]
 #                         [--scale N] [--window WxH] [--fullscreen] [--stretch] [--filter nearest|linear|integer]
-#                         [--integer-scale] [--tex-filter nearest|linear|game] [--render-scale N|auto]
+#                         [--integer-scale] [--tex-filter nearest|linear|game] [--render-scale N|auto] [--quick-battle]
+#   --quick-battle           load the work folder's save and go straight to the Quick Battle (1-on-1) character select:
+#                            tools/quick_battle.py presses the buttons through the debug socket, checking each screen
+#                            first, then the game is yours. Needs a save (without one the game starts as usual).
 #   --retro                  PRESET: keep the PSP's low-poly look. Nearest-neighbour texture filtering, 3D at 2x the PSP
 #                            resolution (960x544), shown at a whole-number scale (2x on a 1280x800 Deck: 960x544 centred,
 #                            black borders), 480:272 aspect kept, no texture-pack replacement or upscaling.
@@ -30,6 +33,11 @@
 #   --render-scale N|auto    PSPRECOMP_RENDER_SCALE (1..8 or auto, default 1): internal render resolution = N x 480x272
 #                            (sharper 3D edges, HUD unchanged; cost grows with N^2). auto = drawable height / 272,
 #                            capped at 3. Steam Deck (1280x800): 3 (or 2 to save battery).
+#   --fps 30|60              PSPRECOMP_FPS: battle logic rate (default 30). 60 runs the battle simulation itself at 60
+#                            updates a second (no interpolation); menus stay at 30. Also in the in-game settings menu.
+#
+# Settings menu: Esc / F1 on the keyboard, Guide, or both stick buttons (L3+R3) on a pad. Resolution, frame rate and
+# render scale changed there are saved to <workdir>/settings.ini and win over these flags on the next start.
 #   --legacy-ge              PSPRECOMP_GE_FAST=0: use the legacy per-PRIM renderer (CPU skinning, one draw per PRIM)
 #                            instead of the default batched GPU-skinning path. Escape hatch only; it is slower.
 #   --ge-sync 1|2|3|flush|off  PSPRECOMP_GE_SYNC: wait for the GPU (1 per batch, 2 per display list, 3 per frame,
@@ -70,7 +78,7 @@ die()  { echo "error: $*" >&2; exit 1; }
 warn() { echo "warning: $*" >&2; }
 
 PRESET="${PSPRECOMP_PRESET:-}"; INTSCALE=0; TEXF=""
-GE_SYNC=""; WORK=""; LEGACY_GE=0; SOFT=0; RSCALE=""; SCALE=""; WINSZ=""; FULL=0; STRETCH=0; FILTER=""; SWAP=0; PAD_DB=""; LOG=""
+GE_SYNC=""; WORK=""; QUICK=0; LEGACY_GE=0; SOFT=0; RSCALE=""; SCALE=""; WINSZ=""; FULL=0; STRETCH=0; FILTER=""; SWAP=0; PAD_DB=""; LOG=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --retro)       PRESET=retro; shift ;;
@@ -83,6 +91,8 @@ while [ $# -gt 0 ]; do
     --gamecontrollerdb) [ $# -ge 2 ] || die "--gamecontrollerdb needs a file"; PAD_DB="$2"; shift 2 ;;
     --log)         [ $# -ge 2 ] || die "--log needs a file"; LOG="$2"; shift 2 ;;
     --render-scale) [ $# -ge 2 ] || die "--render-scale needs N (1..8)"; RSCALE="$2"; shift 2 ;;
+    --fps)         [ $# -ge 2 ] || die "--fps needs 30|60"; case "$2" in 30|60) ;; *) die "--fps must be 30 or 60" ;; esac
+                   export PSPRECOMP_FPS="$2"; shift 2 ;;
     --scale)       [ $# -ge 2 ] || die "--scale needs N"; SCALE="$2"; shift 2 ;;
     --window)      [ $# -ge 2 ] || die "--window needs WxH"; WINSZ="$2"; shift 2 ;;
     --fullscreen)  FULL=1; shift ;;
@@ -94,7 +104,8 @@ while [ $# -gt 0 ]; do
     --ge-sync)     [ $# -ge 2 ] || die "--ge-sync needs 1|2|3|flush|off"; case "$2" in 1|2|3|flush|off) ;; *) die "--ge-sync must be 1, 2, 3, flush or off" ;; esac
                    GE_SYNC="$2"; shift 2 ;;
     --gl-debug)    export PSPRECOMP_GL_DEBUG=1 PSPRECOMP_GL_STATS=2; shift ;;
-    -h|--help)     sed -n '2,/^set -euo/{/^set -euo/!p}' "$0"; exit 0 ;;
+    --quick-battle) QUICK=1; shift ;;
+    -h|--help)     sed -n '2,/^set -euo/{/^set -euo/!p;}' "$0"; exit 0 ;;   # ';' before '}': BSD sed (macOS) needs it
     -*)            die "unknown option $1" ;;
     *)             [ -z "$WORK" ] || die "unexpected argument $1"; WORK="$1"; shift ;;
   esac
@@ -152,6 +163,15 @@ export PSPRECOMP_DISC0="${PSPRECOMP_DISC0:-$WORK/disc0}"
 export PSPRECOMP_MS0="${PSPRECOMP_MS0:-$WORK/ms0}"
 export PSPRECOMP_CROSS_MID=1
 mkdir -p "$PSPRECOMP_MS0/PSP/SAVEDATA" "$PSPRECOMP_MS0/PSP/GAME"
+if [ "$QUICK" = 1 ]; then                       # on a title without a save, its first CROSS would be NEW GAME
+  if ! ls "$PSPRECOMP_MS0"/PSP/SAVEDATA/*GameData00/DISSIDIA.BIN >/dev/null 2>&1; then
+    warn "--quick-battle needs a save in $PSPRECOMP_MS0/PSP/SAVEDATA (play once and save): the game starts as usual"
+    QUICK=0
+  elif ! command -v python3 >/dev/null; then
+    warn "--quick-battle needs python3: the game starts as usual"
+    QUICK=0
+  fi
+fi
 [ "$SOFT" = 0 ] || export LIBGL_ALWAYS_SOFTWARE=1
 [ "$SWAP" = 0 ] || export PSPRECOMP_SWAP_AB=1
 export PSPRECOMP_PAD_L2="${PSPRECOMP_PAD_L2:-R+CROSS}"      # L2 = dodge
@@ -198,6 +218,7 @@ echo "Dissidia 012 (native)  saves: $PSPRECOMP_MS0/PSP/SAVEDATA   log: $LOG" >&2
 cd "$WORK"
 "$BIN" 2> >(tee "$LOG" >&2) &
 pid=$!
+[ "$QUICK" = 0 ] || python3 "$CHARMOD_DIR/quick_battle.py" --log "$LOG" --pid "$pid" &
 trap 'kill -TERM "$pid" 2>/dev/null || true' INT TERM
 rc=0; wait "$pid" || rc=$?
 wait 2>/dev/null || true

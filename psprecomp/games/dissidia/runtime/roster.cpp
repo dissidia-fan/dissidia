@@ -41,6 +41,7 @@
 extern std::string dissidia_mods_dir();   // hooks_io.cpp
 extern FuncPtr ovl_menu_lookup(uint32_t vaddr);
 extern FuncPtr ovl_battle_lookup(uint32_t vaddr);   // generated menu overlay function set
+extern FuncPtr ovl_extra_lookup(uint32_t vaddr);    // extra overlay (cpu_forward)
 extern thread_local uint32_t g_func_ring[32];      // psp_dispatch.cpp: last 32 function entries of this thread
 extern thread_local uint32_t g_func_ring_pos;
 // hitcam= (camera.cpp reads these): the attacker of a hit-confirmed follow-up, its framing length in ticks, and a
@@ -48,6 +49,10 @@ extern thread_local uint32_t g_func_ring_pos;
 uint32_t g_dissidia_cine_actor = 0u, g_dissidia_cine_seq = 0u;
 int g_dissidia_cine_ticks = 0;
 void psp_dump_func_ring(const char*);
+
+// framerate.cpp: ticks per game frame (2 at 30 Hz, 1 at 60 Hz) and the scale for per-30-Hz-frame values.
+int dissidia_frame_ticks();
+float dissidia_own_clock_scale();
 
 namespace {
 
@@ -85,31 +90,45 @@ constexpr PtrTable k_name_table = { MOD_MENU, 0x08A544E0u, "charId -> name text 
 //   text  record number of the name in text/<lang>/mess_pk_chara_select_0.bin entry 0 (tools/mess_text.py add);
 //         written into the charId-indexed u32 table at 0x08A544E0 (valid idx 1..34) read by the info/loading panels
 //   logo  f2, game logo sprite index
-struct WarpSpec { std::vector<int> motions; float travel = 0.0f, stop = 0.0f, lift = 0.0f; bool flat = false; };   // one warp= token (LIFT -1 = flat)
+struct WarpSpec { std::vector<int> motions; float travel = 0.0f, stop = 0.0f, lift = 0.0f, from = 0.0f; bool flat = false; };   // one warp= token (LIFT -1 = flat; FROM = first motion tick that homes)
 struct VTrack { std::vector<int> motions; float from = 0.0f, to = 0.0f, max = 0.0f, lift = 0.0f; };   // one vtrack= token (vtrack_step)
-struct ApocSet { int arm0 = -1, narm = 0, nids = 0; uint16_t ids[8] = {}; };    // one apocarms= token (apoc_bone_post)
+struct WarpAbove { std::vector<int> motions; float from = 0.0f, to = 0.0f, up = 0.0f, back = 0.0f; };   // one warpabove= token (warpabove_step)
+struct ApocSet { int arm0 = -1, narm = 0, nids = 0; uint16_t ids[12] = {}; };    // one apocarms= token (apoc_bone_post)
 struct PinSpin { int bone = -1; float deg = 0.0f, ax[3] = {0.0f, 0.0f, 1.0f}; };   // pinspin= (apoc_bone_post)
 struct ProjBlock { std::vector<int> motions; float from = 0.0f, to = 0.0f; int nfx = 0; int fx_bone[8] = {}; int fx_id[8] = {}; };  // projblock= (can_hit_hook)
+struct ChargeSpec { int motion = -1, act[3] = {-1, -1, -1}; float min = 0.0f, t2 = 0.0f, t3 = 0.0f, max = 0.0f; };
+struct PickSet { int base = -1, n = 0, ids[6] = {}; bool cycle = false; };
+struct LandSpec { int act = -1, mot[4] = {-1, -1, -1, -1}; };   // one landact= token: touchdown during MOT starts ACT
+constexpr int kArmTrailSets = 8;   // armtrail= arm sets per character (was 4; Noctis has 5 since the trident's arm, 2026-10-30)
 struct Entry { int charId; std::string code; uint32_t str_addr; int like; int tile = -1, art = -1, name = -1, logo = -1, text = -1, artl = -1, artr = -1; std::string label;
                float dash = 1.0f;      // dash: R+Triangle dash speed factor (roster.txt dash=F, see dash_move_hook)
                int warp_motion = -1; float warp_travel = 0.0f, warp_stop = 0.0f, warp_lift = 0.0f; // warp=: homing root motion (warp_step_hook); first token
                std::vector<WarpSpec> warps;                      // every warp= token of the line (warps[0] = the fields above; warpfx= acts on its motions)
                std::vector<std::pair<int, float>> warp_reach;    // warpreach=: a warp= motion homes up to this far (default its TRAVEL)
                std::vector<VTrack> vtracks;                      // vtrack=: an attack eases to the target's height (vtrack_step)
+               std::vector<WarpAbove> warpaboves;                // warpabove=: a teleport to just above the target (warpabove_step)
                int warp_sword = -1, warp_wisp = -1; float warp_fly = 0.0f, warp_aim = 0.0f, warp_tip = 0.0f;  // warpfx=: sword / wisps (warp_bone_post)
                int exranged = 0;                                 // EX Mode ranged immunity (roster.txt exranged=N)
-               int land_act = -1, land_mot[4] = {-1, -1, -1, -1};   // landact=: touchdown action (land_hook)
+               LandSpec lands[4]; int nland = 0;                 // landact= (repeatable, one per action): touchdown action (land_hook)
                int chain_act[4] = {-1, -1, -1, -1};             // chainact=: a chain window (op 0x0467) starts its action (chain_add_hook)
                int hit_magi = -1, hit_act = -1;                 // hitact=: spawning magi HIT_MAGI (an on-hit child) starts HIT_ACT (hit_spawn_hook)
                int hit_cam = 0;                                 // hitcam=TICKS: the camera frames the hitact= action (camera.cpp)
+               PickSet picks[4]; int npick = 0;                  // magipick= (repeatable): a fired magi becomes one of a set (hit_spawn_hook)
+               ChargeSpec charges[4]; int ncharge = 0;          // charge= (repeatable, one per charge motion; charge_tick)
                int wd_ground = -1, wd_air = -1, wd_link = 24; float wd_range = 16.0f, wd_near = 1.0f; bool wd_hp = true;  // warpdash= (dash_start_hook)
                std::vector<int> wd_open;                         // wdopen=: commands whose link starts press 1, not press 2 (warpdash_link)
-               int apoc_arm0 = -1, apoc_narm = 0, apoc_nids = 0; uint16_t apoc_ids[8] = {};   // apocarms=: Apocalypsis arms (apoc_bone_post)
-               ApocSet apoc_more[3]; int apoc_nmore = 0;     // further apocarms= tokens: more arm sets (apoc_bone_post)
+               int apoc_arm0 = -1, apoc_narm = 0, apoc_nids = 0; uint16_t apoc_ids[12] = {};   // apocarms=: Apocalypsis arms (apoc_bone_post)
+               ApocSet apoc_more[5]; int apoc_nmore = 0;     // further apocarms= tokens: more arm sets (apoc_bone_post)
                PinSpin pin_spin[4]; int pin_nspin = 0;       // pinspin=BONE,DEG,AX,AY,AZ: a riding arm that spins
                int at_id = -1, at_slot0 = 4, at_nslot = 0, at_nset = 0;   // armtrail= (weapon trails on floating arms): trail id, slots, arm sets
-               int at_bone0[4] = {}, at_count[4] = {}, at_bit0[4] = {}, at_draw[4] = {-1, -1, -1, -1};
+               int at_hold = 0;              // armtrailhold=N: passes an apocarms= arm stays (a speck) where its flight ended (apoc_bone_post)
+               int at_bone0[kArmTrailSets] = {}, at_count[kArmTrailSets] = {}, at_bit0[kArmTrailSets] = {},
+                   at_draw[kArmTrailSets] = {-1, -1, -1, -1, -1, -1, -1, -1};
+               std::vector<int> gp_motions; int gp_first = -1, gp_last = -1;   // ghostpin=: the warp ghost stays where these motions start (ghostpin_bone_post)
+               int tl_id = -1; uint32_t tl_mask = 0;            // traillinger=: these trails stop where his travel ends and fade there (traillinger_*)
+               float tl_frac = 0.5f, tl_head = 0.5f, tl_sharp = 2.0f; int tl_cut = 3;   // traillinger= stop speed (of the peak), head cut (points), taper (of the length at each end), its curve
                std::vector<ProjBlock> projblocks;               // projblock=: projectiles blocked between two ticks of a motion (can_hit_hook)
+               std::vector<int> ex_away;                        // exaway=: draw bones (royal arms in his hands) that send the EX ring away while shown
                int armiger[9] = {-1, -1, -1, -1, -1, -1, -1, -1, -1}; };  // EX Mode parts (armiger=O,F,P,RD,FD[,BD], exarms=ARM0,NARM[,FEPA0])
 std::vector<Entry> g_entries;
 constexpr uint32_t OPPINFO_MARK = 0x7F00u;   // text id marker for extras: OPPINFO_MARK + charId
@@ -156,7 +175,8 @@ void parse_spec(const std::string& line) {
             for (char& c : e.label) if (c == '_') c = ' ';
             continue;
         }
-        if (k == "warp") {   // homing root motion, e.g. warp=87,12.5,1.8,0.5 or warp=87/88,12.5,1.8,0.5; repeatable (warp_step_hook)
+        if (k == "warp") {   // homing root motion, e.g. warp=87,12.5,1.8,0.5 or warp=87/88,12.5,1.8,0.5 or warp=86,10,1.2,0,80
+                             // (FROM 80: the motion's own steps before motion tick 80, homing from there); repeatable (warp_step_hook)
             WarpSpec w;
             const char* v = tok.c_str() + eq + 1;
             bool okm = true;
@@ -169,15 +189,39 @@ void parse_spec(const std::string& line) {
                 if (*v != '/') break;
                 v++;
             }
-            float t = 0.0f, st = 0.0f, l = 0.0f;
-            const int got = okm && *v == ',' ? std::sscanf(v + 1, "%f,%f,%f", &t, &st, &l) : 0;
-            if (got >= 2 && t > 0.0f && t <= 100.0f && st >= 0.0f && st <= 20.0f && ((l >= 0.0f && l <= 10.0f) || l == -1.0f)) {
+            float t = 0.0f, st = 0.0f, l = 0.0f, fr = 0.0f;
+            const int got = okm && *v == ',' ? std::sscanf(v + 1, "%f,%f,%f,%f", &t, &st, &l, &fr) : 0;
+            if (got >= 2 && t > 0.0f && t <= 100.0f && st >= 0.0f && st <= 20.0f && ((l >= 0.0f && l <= 10.0f) || l == -1.0f) && fr >= 0.0f && fr <= 600.0f) {
+                w.from = got >= 4 ? fr : 0.0f;
                 w.flat = got >= 3 && l == -1.0f;              // LIFT -1: flat (horizontal homing, the step's own height kept)
                 w.travel = t; w.stop = st; w.lift = got >= 3 && !w.flat ? l : 0.0f;
                 if (e.warps.empty()) { e.warp_motion = w.motions[0]; e.warp_travel = t; e.warp_stop = st; e.warp_lift = w.lift; }
                 e.warps.push_back(w);
             } else {
-                std::fprintf(stderr, "[ROSTER] charId %d: bad warp=%s (want MOTION[/MOTION...],TRAVEL,STOP[,LIFT]), ignored\n", id, tok.c_str() + eq + 1);
+                std::fprintf(stderr, "[ROSTER] charId %d: bad warp=%s (want MOTION[/MOTION...],TRAVEL,STOP[,LIFT[,FROM]]), ignored\n", id, tok.c_str() + eq + 1);
+            }
+            continue;
+        }
+        if (k == "warpabove") {   // teleport to above the target, e.g. warpabove=57,120,124,1.8,1.5; repeatable (warpabove_step)
+            WarpAbove w;
+            const char* s = tok.c_str() + eq + 1;
+            bool okm = true;
+            for (;;) {
+                char* end = nullptr;
+                const long m = std::strtol(s, &end, 10);
+                if (end == s || m < 0 || m >= 1000 || w.motions.size() >= 32) { okm = false; break; }
+                w.motions.push_back(static_cast<int>(m));
+                s = end;
+                if (*s != '/') break;
+                s++;
+            }
+            float fr = 0.0f, to = 0.0f, up = 0.0f, bk = 0.0f;
+            const int got = okm && *s == ',' ? std::sscanf(s + 1, "%f,%f,%f,%f", &fr, &to, &up, &bk) : 0;
+            if (got >= 3 && fr >= 0.0f && to > fr && to <= 600.0f && up >= -2.0f && up <= 10.0f && bk >= 0.0f && bk <= 10.0f) {
+                w.from = fr; w.to = to; w.up = up; w.back = got >= 4 ? bk : 0.0f;
+                e.warpaboves.push_back(w);
+            } else {
+                std::fprintf(stderr, "[ROSTER] charId %d: bad warpabove=%s (want MOTION[/MOTION...],FROM,TO,UP[,BACK]), ignored\n", id, tok.c_str() + eq + 1);
             }
             continue;
         }
@@ -237,12 +281,67 @@ void parse_spec(const std::string& line) {
             }
             continue;
         }
-        if (k == "landact") {   // touchdown action, e.g. landact=3024,54,55: touchdown while motion 54 / 55 plays starts action 3024 (land_hook)
+        if (k == "ghostpin") {   // ghostpin=16/17/18/19,85,117: while one of the motions plays, the warp-ghost skeleton (bones 85..117,
+                                 // g_root..) stays in the world where the motion started (ghostpin_bone_post)
+            const std::string v = tok.substr(eq + 1);
+            const size_t c1 = v.find(',');
+            int first = -1, last = -1; char tail = 0;
+            std::vector<int> ms;
+            bool ok = c1 != std::string::npos && std::sscanf(v.c_str() + c1 + 1, "%d,%d%c", &first, &last, &tail) == 2 &&
+                      first >= 0 && last >= first && last < 256;
+            for (size_t p0 = 0; ok && p0 < c1;) {
+                size_t p1 = v.find('/', p0); if (p1 == std::string::npos || p1 > c1) p1 = c1;
+                char* end = nullptr; const long mv = std::strtol(v.c_str() + p0, &end, 10);
+                ok = end == v.c_str() + p1 && mv >= 0 && mv < 1000; if (ok) ms.push_back(static_cast<int>(mv));
+                p0 = p1 + 1;
+            }
+            if (ok && !ms.empty()) { e.gp_motions = ms; e.gp_first = first; e.gp_last = last; }
+            else std::fprintf(stderr, "[ROSTER] charId %d: bad ghostpin=%s (want MOTION[/MOTION...],FIRST,LAST), ignored\n", id, tok.c_str() + eq + 1);
+            continue;
+        }
+        if (k == "traillinger") {   // traillinger=ID,BIT[/BIT...][,STOP[,CUT[,TAPER]]]: trails of FEPA records ID with one of the
+                                    // bits stay where his travel ends and fade out there (traillinger_pre / _pass / locus_points_hook)
+            const std::string v = tok.substr(eq + 1);
+            char* end = nullptr;
+            const long id_ = std::strtol(v.c_str(), &end, 10);
+            bool ok = end != v.c_str() && *end == ',' && id_ >= 0 && id_ <= 0xFFFF;
+            uint32_t mask = 0;
+            const char* q = ok ? end + 1 : "";
+            while (ok && *q) {
+                const long b = std::strtol(q, &end, 10);
+                ok = end != q && b >= 0 && b < 32;
+                if (ok) mask |= 1u << b;
+                q = end;
+                if (*q == '/') q++; else if (*q == ',') break; else if (*q) ok = false;
+            }
+            float frac = 0.5f, head = 0.5f, sharp = 2.0f; int cut = 3;
+            if (ok && *q == ',') {          // optional: STOP (fraction of the peak speed), CUT (points), TAPER (fraction of the length), SHARP (curve)
+                float f[4] = {frac, static_cast<float>(cut), head, sharp}; int got = 0;
+                while (ok && *q == ',' && got < 4) {
+                    q++;
+                    f[got++] = std::strtof(q, &end);
+                    ok = end != q; q = end;
+                }
+                ok = ok && !*q && f[0] > 0.0f && f[0] < 1.0f && f[1] >= 0.0f && f[1] <= 30.0f && f[2] >= 0.0f && f[2] <= 0.5f &&
+                     f[3] >= 0.25f && f[3] <= 8.0f;
+                frac = f[0]; cut = static_cast<int>(f[1] + 0.5f); head = f[2]; sharp = f[3];
+            }
+            if (ok && mask) { e.tl_id = static_cast<int>(id_); e.tl_mask = mask; e.tl_frac = frac; e.tl_cut = cut; e.tl_head = head; e.tl_sharp = sharp; }
+            else std::fprintf(stderr, "[ROSTER] charId %d: bad traillinger=%s (want ID,BIT[/BIT...][,STOP 0-1[,CUT 0-30[,TAPER 0-0.5[,SHARP 0.25-8]]]]), ignored\n", id, tok.c_str() + eq + 1);
+            continue;
+        }
+        if (k == "landact") {   // touchdown action, e.g. landact=3024,54,55: touchdown while motion 54 / 55 plays starts action 3024 (land_hook);
+                                // repeatable (up to 4 tokens, each its own action and motions)
             int a = -1, m[4] = {-1, -1, -1, -1};
             const int got = std::sscanf(tok.c_str() + eq + 1, "%d,%d,%d,%d,%d", &a, &m[0], &m[1], &m[2], &m[3]);
             bool ok = got >= 2 && a >= 0 && a < 0xFFFF;
             for (int i = 0; ok && i < got - 1; i++) ok = m[i] >= 0 && m[i] < 1000;
-            if (ok) { e.land_act = a; for (int i = 0; i < 4; i++) e.land_mot[i] = i < got - 1 ? m[i] : -1; }
+            if (ok && e.nland >= 4) {
+                std::fprintf(stderr, "[ROSTER] charId %d: more than 4 landact= tokens, landact=%s ignored\n", id, tok.c_str() + eq + 1);
+            } else if (ok) {
+                LandSpec& L = e.lands[e.nland++];
+                L.act = a; for (int i = 0; i < 4; i++) L.mot[i] = i < got - 1 ? m[i] : -1;
+            }
             else std::fprintf(stderr, "[ROSTER] charId %d: bad landact=%s (want ACTION,MOTION[,MOTION...]), ignored\n", id, tok.c_str() + eq + 1);
             continue;
         }
@@ -266,6 +365,38 @@ void parse_spec(const std::string& line) {
             const int got = std::sscanf(tok.c_str() + eq + 1, "%d,%d%c", &m, &a, &tail);
             if (got == 2 && m >= 0 && m < 0xFFFF && a >= 0 && a < 0xFFFF) { e.hit_magi = m; e.hit_act = a; }
             else std::fprintf(stderr, "[ROSTER] charId %d: bad hitact=%s (want MAGI,ACTION), ignored\n", id, tok.c_str() + eq + 1);
+            continue;
+        }
+        if (k == "magipick") {   // a fired magi becomes one of a set, e.g. magipick=2285,r,2285,2286,2287 (hit_spawn_hook)
+            const char* v = tok.c_str() + eq + 1;
+            int base = -1, ids[6] = {}, n = 0; char mode = 0; bool ok = false;
+            int used = 0;
+            if (std::sscanf(v, "%d,%c%n", &base, &mode, &used) == 2 && base >= 0 && base < 0xFFFF && (mode == 'r' || mode == 'c')) {
+                const char* q = v + used;
+                ok = true;
+                while (*q == ',' && n < 6) {
+                    int x = -1, u = 0;
+                    if (std::sscanf(q + 1, "%d%n", &x, &u) != 1 || x < 0 || x >= 0xFFFF) { ok = false; break; }
+                    ids[n++] = x; q += 1 + u;
+                }
+                if (*q != 0 || n < 1) ok = false;
+            }
+            if (ok && e.npick < 4) {
+                PickSet& ps = e.picks[e.npick++];
+                ps.base = base; ps.n = n; ps.cycle = mode == 'c'; for (int i = 0; i < n; i++) ps.ids[i] = ids[i];
+            } else std::fprintf(stderr, "[ROSTER] charId %d: bad magipick=%s (want BASE,r|c,ID1[,ID2..ID6]; up to 4 tokens), ignored\n", id, v);
+            continue;
+        }
+        if (k == "charge") {     // hold to charge, e.g. charge=94,20,50,90,120,3035,3036,3037 (charge_tick)
+            int m = -1, a[3] = {-1, -1, -1}; float mn = 0, t2 = 0, t3 = 0, mx = 0; char tail = 0;
+            const int got = std::sscanf(tok.c_str() + eq + 1, "%d,%f,%f,%f,%f,%d,%d,%d%c", &m, &mn, &t2, &t3, &mx, &a[0], &a[1], &a[2], &tail);
+            bool ok = got == 8 && m >= 0 && m < 1000 && mn >= 0.0f && mn <= t2 && t2 <= t3 && t3 <= mx && mx <= 3600.0f;
+            for (int i = 0; ok && i < 3; i++) ok = a[i] >= 0 && a[i] < 0xFFFF;
+            for (int i = 0; ok && i < e.ncharge; i++) ok = e.charges[i].motion != m;
+            if (ok && e.ncharge < 4) {
+                ChargeSpec& c = e.charges[e.ncharge++];
+                c.motion = m; c.min = mn; c.t2 = t2; c.t3 = t3; c.max = mx; for (int i = 0; i < 3; i++) c.act[i] = a[i];
+            } else std::fprintf(stderr, "[ROSTER] charId %d: bad charge=%s (want MOTION,MIN,T2,T3,MAX,ACT1,ACT2,ACT3, ticks MIN<=T2<=T3<=MAX; up to 4, one per motion), ignored\n", id, tok.c_str() + eq + 1);
             continue;
         }
         if (k == "warpdash") {   // R+Triangle warp dash, e.g. warpdash=3027,3028,16,1.0,24,1 (dash_start_hook, warpdash_link)
@@ -305,15 +436,25 @@ void parse_spec(const std::string& line) {
             e.exranged = std::atoi(tok.c_str() + eq + 1);
             continue;
         }
+        if (k == "armtrailhold") {   // armtrailhold=N (apoc_bone_post): when a riding arm's bullet ends, the arm stays N passes where
+                                     // the flight ended at scale kArmHoldScale (a speck, but still shown for armtrail_bone_post), so its
+                                     // trail runs into the point of contact instead of following the arm back to the motion's pose
+            char* end = nullptr;
+            const long n = std::strtol(tok.c_str() + eq + 1, &end, 10);
+            if (end != tok.c_str() + eq + 1 && !*end && n >= 0 && n <= 240) e.at_hold = static_cast<int>(n);
+            else std::fprintf(stderr, "[ROSTER] charId %d: bad armtrailhold=%s (want 0..240), ignored\n", id, tok.c_str() + eq + 1);
+            continue;
+        }
         if (k == "armtrail") {   // armtrail=ID,SLOT0,NSLOT,BONE0:COUNT:BIT0[:DRAW],...  (armtrail_bone_post / armtrail_consume_hook)
             const char* q = tok.c_str() + eq + 1; char* end = nullptr; bool ok = true;
             long id_ = std::strtol(q, &end, 10); ok = ok && end != q && *end == ','; q = end + 1;
             long s0 = ok ? std::strtol(q, &end, 10) : 0; ok = ok && end != q && *end == ','; q = end + 1;
             long ns = ok ? std::strtol(q, &end, 10) : 0; ok = ok && end != q && *end == ','; q = end + 1;
             ok = ok && id_ >= 0 && id_ <= 0xFFFF && s0 >= 4 && ns >= 1 && s0 + ns <= 16;
-            int nset = 0, b0[4] = {}, cn[4] = {}, bt[4] = {}, dr[4] = {-1, -1, -1, -1}, total = 0;
+            int nset = 0, b0[kArmTrailSets] = {}, cn[kArmTrailSets] = {}, bt[kArmTrailSets] = {},
+                dr[kArmTrailSets] = {-1, -1, -1, -1, -1, -1, -1, -1}, total = 0;
             while (ok && *q) {
-                if (nset >= 4) { ok = false; break; }
+                if (nset >= kArmTrailSets) { ok = false; break; }
                 long v[4] = {0, 0, 0, -1}; int got = 0;
                 while (got < 4) {
                     v[got++] = std::strtol(q, &end, 10);
@@ -329,16 +470,16 @@ void parse_spec(const std::string& line) {
             }
             if (ok && nset > 0 && total <= 32) {
                 e.at_id = static_cast<int>(id_); e.at_slot0 = static_cast<int>(s0); e.at_nslot = static_cast<int>(ns); e.at_nset = nset;
-                for (int i = 0; i < 4; i++) { e.at_bone0[i] = b0[i]; e.at_count[i] = cn[i]; e.at_bit0[i] = bt[i]; e.at_draw[i] = dr[i]; }
+                for (int i = 0; i < kArmTrailSets; i++) { e.at_bone0[i] = b0[i]; e.at_count[i] = cn[i]; e.at_bit0[i] = bt[i]; e.at_draw[i] = dr[i]; }
             } else {
                 std::fprintf(stderr, "[ROSTER] charId %d: bad armtrail=%s (want ID,SLOT0>=4,NSLOT,BONE0:COUNT:BIT0[:DRAW],... "
-                             "SLOT0+NSLOT<=16, at most 4 sets / 32 arms), ignored\n", id, tok.c_str() + eq + 1);
+                             "SLOT0+NSLOT<=16, at most 8 sets / 32 arms), ignored\n", id, tok.c_str() + eq + 1);
             }
             continue;
         }
         if (k == "apocarms") {   // Apocalypsis arms riding their magi, e.g. apocarms=168,12,2220,2222,2223,2228 (apoc_bone_post)
-            long v[10]; int got = 0; const char* q = tok.c_str() + eq + 1; char* end = nullptr; bool ok = true;
-            while (*q && got < 10) {
+            long v[14]; int got = 0; const char* q = tok.c_str() + eq + 1; char* end = nullptr; bool ok = true;
+            while (*q && got < 14) {
                 v[got++] = std::strtol(q, &end, 10);
                 if (end == q) { ok = false; break; }
                 q = end;
@@ -346,15 +487,15 @@ void parse_spec(const std::string& line) {
             }
             if (ok && !*q && got >= 3 && v[0] >= 0 && v[0] < 256 && v[1] > 0 && v[1] <= 16) {
                 ApocSet st; st.arm0 = static_cast<int>(v[0]); st.narm = static_cast<int>(v[1]);
-                for (int i = 2; i < got && st.nids < 8; i++)
+                for (int i = 2; i < got && st.nids < 12; i++)
                     if (v[i] >= 0 && v[i] <= 0xFFFF) st.ids[st.nids++] = static_cast<uint16_t>(v[i]);
                 if (e.apoc_narm <= 0) {                     // the first token, as before
                     e.apoc_arm0 = st.arm0; e.apoc_narm = st.narm; e.apoc_nids = st.nids;
-                    for (int i = 0; i < 8; i++) e.apoc_ids[i] = st.ids[i];
-                } else if (e.apoc_nmore < 3) {
+                    for (int i = 0; i < 12; i++) e.apoc_ids[i] = st.ids[i];
+                } else if (e.apoc_nmore < 5) {
                     e.apoc_more[e.apoc_nmore++] = st;        // a further arm set (e.g. apocarms=81,1,2230)
                 } else {
-                    std::fprintf(stderr, "[ROSTER] charId %d: more than 4 apocarms= tokens, apocarms=%s ignored\n", id, tok.c_str() + eq + 1);
+                    std::fprintf(stderr, "[ROSTER] charId %d: more than 6 apocarms= tokens, apocarms=%s ignored\n", id, tok.c_str() + eq + 1);
                 }
             } else {
                 std::fprintf(stderr, "[ROSTER] charId %d: bad apocarms=%s (want ARM0,NARM,ID1[,ID2..]), ignored\n", id, tok.c_str() + eq + 1);
@@ -417,6 +558,21 @@ void parse_spec(const std::string& line) {
             if (n == 5 || n == 6)
                 for (int i = 0; i < 6; i++) e.armiger[i] = b[i];
             else std::fprintf(stderr, "[ROSTER] bad armiger= token: %s\n", tok.c_str());
+            continue;
+        }
+        if (k == "exaway") {     // exaway=D,D/...: while one of these draw bones is shown (a royal arm he holds or throws),
+                                 // the EX ring gives way as it does for apocarms= arms (ex_summons_out), so the arms are not
+                                 // in the ring and in his hands at once (2026-10-30: "In Ex mode the armiger weapons
+                                 // shouldn't be duplicated")
+            const char* q = tok.c_str() + eq + 1; char* end = nullptr; std::vector<int> d; bool ok = true;
+            while (*q) {
+                const long v = std::strtol(q, &end, 10);
+                if (end == q || v < 0 || v > 254) { ok = false; break; }
+                d.push_back(static_cast<int>(v)); q = end;
+                if (*q == ',' || *q == '/') q++; else if (*q) { ok = false; break; }
+            }
+            if (ok && !d.empty()) e.ex_away = d;
+            else std::fprintf(stderr, "[ROSTER] charId %d: bad exaway=%s (want DRAW[,DRAW...]), ignored\n", id, tok.c_str() + eq + 1);
             continue;
         }
         if (k == "exarms") {     // EX Mode arms: first arm bone, arm count, first deflect FEPA id (a token of its own so a
@@ -489,7 +645,8 @@ void dissidia_roster_boot_patch(uint8_t* rdram) {
             uint32_t val = e.str_addr;
             // The voice bank loader (FUN_088A3A94) resolves each slot's name in a bank index (a data file
             // read at boot) and never returns for a name the index does not list. A new code string has
-            // no voice entry yet, so the slot reuses `like`'s voice bank (no voice of its own).
+            // no voice entry yet, so the slot reuses `like`'s (this 35-slot table is the menu-side voice; in battle the
+            // fighter loader reads the extra's own voice_p_<code>_00.scd once it has cosx files, docs/audio.md).
             if (e.like >= 1 && e.like <= 33 && e.charId >= kFirstNew) {
                 uint32_t lp; std::memcpy(&lp, rdram + ((t.slot0 + 4u * static_cast<uint32_t>(e.like)) & 0x07FFFFFFu), 4);
                 if (lp) val = lp;
@@ -1521,17 +1678,130 @@ FuncPtr g_orig_setframe = nullptr;
 int g_binder_depth = 0;   // > 0 while one of the setup panel binder functions is running
 int g_binder_which = -1;  // index into the binder table of the innermost one running (1 = the player's side)
 FuncPtr g_orig_binder[4] = {nullptr, nullptr, nullptr, nullptr};
+// The player's two binders (0x08AA44AC, 0x08AA6148) also read a 10-byte record per charId at 0x08AA8864 (index
+// charId - 1): the sprite frames the portrait layers show (+0/+4 for node S+168, +2/+6 for node S+172) and a value kept at
+// S+7780. It has records for charIds 1..32 only (24..31 repeat Warrior of Light's); an extra character read the bytes
+// after it (charId 34: frames 0x0001 / 0xFFFF / 0x0000 / 0x001B), which left its portrait washed out (30 Oct,
+// still faded with 0x08AA6148 wrapped). So the player-side binders run with the based-on character's charId (its
+// record), and setframe_hook turns that character's portrait / plate entities back into the extra character's.
+bool roster_extra(int c);
+int g_binder_donor = -1;   // charId the running player-side binder was given instead of g_binder_extra
+int g_binder_extra = -1;
+int binder_donor(int c) {
+    for (const Entry& e : g_entries)
+        if (e.charId == c) return e.like >= 1 && e.like <= 32 ? e.like : 1;
+    return 1;
+}
 template <int N> void binder_wrap(uint8_t* rdram, recomp_context* ctx) {
-    const int prev = g_binder_which;
+    const int prev = g_binder_which, prev_donor = g_binder_donor, prev_extra = g_binder_extra;
     g_binder_depth++;
     g_binder_which = N;
+    g_binder_donor = g_binder_extra = -1;
+    const int c = static_cast<int>(ctx->r[5]);
+    if ((N == 1 || N == 3) && roster_extra(c)) {
+        g_binder_extra = c;
+        g_binder_donor = binder_donor(c);
+        ctx->r[5] = g_binder_donor;
+    }
     g_orig_binder[N](rdram, ctx);
     g_binder_which = prev;
+    g_binder_donor = prev_donor;
+    g_binder_extra = prev_extra;
     g_binder_depth--;
 }
 bool in_setup_binder() { return g_binder_depth > 0; }
+
+// Customization screens (menu overlay). They show a character's pictures from the customize pack
+// (menu/menu_pk_customize_gim_0.bin, entity id 0x0C00 + entry; menu/<lang>/menu_lpk_customize_gim_0.bin fills the
+// entries the first leaves empty, under the same ids) as base + charId - 1, from three bases of 33 pictures each
+// (charIds 1..33): 0x0C2A face strip (entries 42..74, the same bytes as p_<code>_face_in_name.gim), 0x0C09 name plate
+// (lpk 9..41, = the Quick Battle name plate), 0x0C4B grid tile (entries 75..107, = the Quick Battle tile). For an extra
+// character the sum lands on a retail picture (charId 34: Warrior of Light's tile and strip) and FUN_088D5638 skips ids
+// >= 35, so the screen kept its layout's default, Warrior of Light's strip (30 Oct: Noctis's Customization header).
+// The build (charmod_avatars.write_customize_pack) appends each extra character's strip / plate / tile at entry
+// 146 + 3 * (charId - 33) + kind (0 strip, 1 plate, 2 tile); the binders are redirected there:
+//   FUN_08AE3B14 (charId a3: strip, plate), FUN_08AE10B8 (charId t0: tile), FUN_08B03FF8 (charId a2: strip, plate)
+//     run with g_cust_char set and setframe_hook swaps the entity;
+//   FUN_088D5638 (EBOOT, generic: charId a0 + a second one in t3, table t0 = {strip base, plate base}) is redone here
+//     when its table is the customize one and a charId is an extra character.
+// A mods dir whose pack lacks the entries just leaves the picture as it was (FUN_088D0984 finds no entity, binds nothing).
+constexpr uint32_t kCustStrip = 0x0C2Au, kCustPlate = 0x0C09u, kCustTile = 0x0C4Bu;
+constexpr uint32_t kCustExtra0 = 0x0C00u + 146u;   // entity of the first appended entry (retail pack: 146 entries)
+constexpr uint32_t kHeapGlobal = 0x089D7830u;       // FUN_088D0984's first argument, as every binder loads it
+bool roster_extra(int c) {
+    if (c < kFirstNew || c >= kRosterMax) return false;
+    for (const Entry& e : g_entries) if (e.charId == c) return true;
+    return false;
+}
+uint32_t cust_entity(int c, int kind) { return kCustExtra0 + 3u * static_cast<uint32_t>(c - kFirstNew) + static_cast<uint32_t>(kind); }
+int cust_kind(uint32_t base) { return base == kCustStrip ? 0 : base == kCustPlate ? 1 : base == kCustTile ? 2 : -1; }
+uint32_t cust_rd32(const uint8_t* rdram, uint32_t a) { uint32_t v; std::memcpy(&v, rdram + (a & 0x07FFFFFFu), 4); return v; }
+uint16_t cust_rd16(const uint8_t* rdram, uint32_t a) { uint16_t v; std::memcpy(&v, rdram + (a & 0x07FFFFFFu), 2); return v; }
+int g_cust_char = -1;      // charId the running customize binder shows (-1: none running)
+unsigned g_cust_kinds = 0; // bit k: that binder binds pictures of kind k
+FuncPtr g_orig_cust[3] = {nullptr, nullptr, nullptr};
+template <int N, int REG, unsigned KINDS> void cust_wrap(uint8_t* rdram, recomp_context* ctx) {
+    const int prev = g_cust_char;
+    const unsigned prev_k = g_cust_kinds;
+    g_cust_char = static_cast<int>(ctx->r[REG]);
+    g_cust_kinds = KINDS;
+    g_orig_cust[N](rdram, ctx);
+    g_cust_char = prev;
+    g_cust_kinds = prev_k;
+}
+// entity a customize binder asked for -> the extra character's own picture (or the entity unchanged)
+uint32_t cust_swap(uint32_t ent) {
+    if (g_cust_char < 0 || !roster_extra(g_cust_char)) return ent;
+    const uint32_t off = static_cast<uint32_t>(g_cust_char - 1);
+    const int kind = ent >= off ? cust_kind(ent - off) : -1;
+    if (kind < 0 || !(g_cust_kinds & (1u << kind))) return ent;
+    const uint32_t ne = cust_entity(g_cust_char, kind);
+    static const bool dbg = std::getenv("PSPRECOMP_ROSTER_DEBUG") != nullptr;
+    if (dbg) std::fprintf(stderr, "[ROSTER] customize %s charId %d: entity 0x%04X -> 0x%04X\n",
+                          kind == 0 ? "strip" : kind == 1 ? "plate" : "tile", g_cust_char, ent, ne);
+    return ne;
+}
+FuncPtr g_orig_bind2 = nullptr;   // FUN_088D5638
+FuncPtr g_orig_setframe_cust = nullptr;   // FUN_088D0984 itself (set by the install, = g_orig_setframe)
+void cust_bind2_hook(uint8_t* rdram, recomp_context* ctx) {
+    const int c1 = static_cast<int>(ctx->r[4]), c2 = static_cast<int>(ctx->r[11]);
+    const uint32_t tbl = static_cast<uint32_t>(ctx->r[8]);
+    const bool ours = g_orig_setframe_cust && tbl >= 0x08000000u && tbl < 0x0A000000u &&
+                      cust_rd16(rdram, tbl) == kCustStrip && cust_rd16(rdram, tbl + 2) == kCustPlate &&
+                      (roster_extra(c1) || roster_extra(c2));
+    if (!ours) { g_orig_bind2(rdram, ctx); return; }
+    const uint32_t sheets = static_cast<uint32_t>(ctx->r[5]), group = static_cast<uint32_t>(ctx->r[7]) & 0xFFu;
+    const uint32_t s1 = static_cast<uint32_t>(ctx->r[9]) & 0xFFFFu, s2 = static_cast<uint32_t>(ctx->r[10]) & 0xFFFFu;
+    const uint32_t s3 = cust_rd32(rdram, static_cast<uint32_t>(ctx->r[29])) & 0xFFFFu;   // 9th argument, on the stack
+    static const bool dbg = std::getenv("PSPRECOMP_ROSTER_DEBUG") != nullptr;
+    auto entity = [&](int c, int kind, uint32_t base) -> int64_t {
+        if (roster_extra(c)) return cust_entity(c, kind);
+        if (c > 0 && c < kRetailSlots) return base + static_cast<uint32_t>(c) - 1u;   // what the game does
+        return -1;
+    };
+    auto bind = [&](uint32_t sheet, int64_t e) {
+        if (e < 0) return;
+        if (dbg) std::fprintf(stderr, "[ROSTER] customize FUN_088D5638 sheet %u -> entity 0x%04X\n", sheet, static_cast<uint32_t>(e));
+        ctx->r[4] = static_cast<int32_t>(cust_rd32(rdram, kHeapGlobal));
+        ctx->r[5] = static_cast<int32_t>(cust_rd32(rdram, sheets + 4u * sheet));
+        ctx->r[6] = static_cast<int32_t>(group);
+        ctx->r[7] = static_cast<int32_t>(static_cast<uint32_t>(e) & 0xFFFFu);
+        g_orig_setframe_cust(rdram, ctx);
+    };
+    bind(s1, entity(c1, 0, kCustStrip));
+    bind(s2, entity(c1, 1, kCustPlate));
+    bind(s3, entity(c2, 0, kCustStrip));
+}
 void setframe_hook(uint8_t* rdram, recomp_context* ctx) {
     uint32_t ent = static_cast<uint32_t>(ctx->r[7]) & 0xFFFFu;
+    if (g_cust_char >= 0) {                       // a Customization screen binder: an extra character's own pictures
+        const uint32_t ce = cust_swap(ent);
+        if (ce != ent) { ctx->r[7] = static_cast<int32_t>(ce); g_orig_setframe(rdram, ctx); return; }
+    }
+    if (g_binder_extra > 0 && in_setup_binder()) {   // the donor's portrait / plate -> the extra character's (binder_wrap)
+        if (ent == 0x700Bu + static_cast<uint32_t>(g_binder_donor)) ent = 0x700Bu + static_cast<uint32_t>(g_binder_extra);
+        else if (ent == 0x704Eu + static_cast<uint32_t>(g_binder_donor)) ent = 0x704Eu + static_cast<uint32_t>(g_binder_extra);
+    }
     const uint32_t kArt0 = 0x700Bu + kFirstNew, kPlate0 = 0x704Eu + kFirstNew;   // entities of charId 34
     bool art = ent >= kArt0 && ent < 0x700Bu + kRosterMax, plate = ent >= kPlate0 && ent < 0x704Eu + kRosterMax;
     static const bool dbg0 = std::getenv("PSPRECOMP_ROSTER_DEBUG") != nullptr;
@@ -1780,6 +2050,46 @@ const VTrack* vtrack_spec(int charId, int motion) {
                 for (int m : v.motions) if (m == motion) return &v;
     return nullptr;
 }
+// Teleport onto the target per character (roster.txt `warpabove=MOTION[/MOTION...],FROM,TO,UP[,BACK]`, repeatable), e.g.
+// `34 noc100 9 ... warpabove=57,120,124,1.8,1.5`: Royal Arsenal's last warp (motion 57, ticks 120-124, before the
+// greatsword slam) always lands just above the foe, wherever its earlier hits knocked it (2026-10-30: "The final hit
+// of armiger onslaught HP attack should always teleport to slightly above the enemy, at the moment it sometimes misses
+// because the enemy has travelled too far away"). While a listed motion plays at motion time t in [FROM, TO) and the
+// actor has a target, each root-motion step (warp_step_hook) is replaced by an equal share of the way left to
+//   E = target feet (*(actor +0x2FC) +0x80) + (0, UP, 0), moved BACK m towards the actor on the horizontal line between them,
+// the share being 1 / the steps left before TO (step length = the motion time the last step took, 2 at first), so the
+// last step of the window lands on E, a moving target followed. The motion's own steps after TO (its forward creep and
+// the slam down) then carry on from there; BACK leaves room for that creep. No reach limit. No target, another motion or
+// another character: the engine's own step.
+struct WarpAboveRun { uint32_t actor = 0; float last_t = -1.0f; };
+WarpAboveRun g_wa_runs[8];
+int g_wa_next = 0;
+bool warpabove_step(uint8_t* rdram, const Entry* e, uint32_t actor, int motion, float t, uint32_t out) {
+    if (!e || motion < 0 || e->warpaboves.empty()) return false;
+    const WarpAbove* w = nullptr;
+    for (const WarpAbove& x : e->warpaboves)
+        for (int m : x.motions) if (m == motion && t >= x.from && t < x.to) w = &x;
+    WarpAboveRun* run = nullptr;
+    for (WarpAboveRun& r : g_wa_runs) if (r.actor == actor) run = &r;
+    if (!run) { run = &g_wa_runs[g_wa_next++ & 7]; *run = WarpAboveRun{}; run->actor = actor; }
+    const float last = run->last_t;
+    run->last_t = w ? t : -1.0f;
+    if (!w) return false;
+    float p[3], T[3];
+    const uint32_t tgt = guest_rd<uint32_t>(rdram, actor + ACT_TARGET);
+    if (!guest_ok(tgt, 0x100u) || !guest_vec3(rdram, tgt + ACT_POS, T) || !guest_vec3(rdram, actor + ACT_POS, p)) return false;
+    float E[3] = {T[0], T[1] + w->up, T[2]};
+    const float hx = T[0] - p[0], hz = T[2] - p[2], hd = std::sqrt(hx * hx + hz * hz);
+    if (hd > 1e-4f) { const float b = std::min(w->back, hd); E[0] -= hx / hd * b; E[2] -= hz / hd * b; }
+    const float dt = last >= 0.0f && t > last && t - last < 10.0f ? t - last : 2.0f;
+    const float left = std::max(1.0f, std::ceil((w->to - t) / dt - 1e-3f));
+    float o[3];
+    for (int i = 0; i < 3; i++) o[i] = (E[i] - p[i]) / left;
+    std::memcpy(rdram + (out & 0x07FFFFFFu), o, sizeof o);   // w (yaw step) untouched
+    if (g_warp_log && left <= 1.0f)
+        std::fprintf(stderr, "[WARP] actor %08X motion %d warpabove: target (%.2f %.2f %.2f) -> end (%.2f %.2f %.2f)\n", actor, motion, T[0], T[1], T[2], E[0], E[1], E[2]);
+    return true;
+}
 void vtrack_step(uint8_t* rdram, uint32_t actor, uint32_t out, int charId) {
     if (!g_vtrack_any) return;
     const int motion = warp_motion_now(rdram, actor);
@@ -1836,11 +2146,13 @@ void warp_step_hook(uint8_t* rdram, recomp_context* ctx) {
         motion = guest_rd<uint16_t>(rdram, row + 2u);
     WarpRun& r = warp_run(actor);
     const float t = guest_rd<float>(rdram, actor + ACT_MOTION_T);
+    if (warpabove_step(rdram, e, actor, motion, t, out)) { r.last_t = t; r.motion = motion; return; }
     const WarpSpec* sp = warp_spec(e, motion);
     if (!sp) { r.done = -1.0f; r.have_e = false; r.motion = -1; return; }
     if (r.done >= 0.0f && (t < r.last_t || motion != r.motion)) { r.done = -1.0f; r.have_e = false; }   // started again / another warp motion
     r.last_t = t;
     r.motion = motion;
+    if (t < sp->from) return;                                  // FROM: the motion's own steps until then (e.g. a hop back first)
     float o[4];
     std::memcpy(o, rdram + (out & 0x07FFFFFFu), sizeof o);
     const float m = sp->flat ? std::sqrt(o[0] * o[0] + o[2] * o[2]) : std::sqrt(o[0] * o[0] + o[1] * o[1] + o[2] * o[2]);
@@ -2055,6 +2367,13 @@ void warp_install() {
             std::fprintf(stderr, "[ROSTER] charId %d: motion %d homes up to %.1f m (warpreach=)%s\n", e.charId, r.first, r.second,
                          warp_spec(&e, r.first) ? "" : " - not in any warp= token, no effect");
     for (const Entry& e : g_entries)
+        for (const WarpAbove& w : e.warpaboves) {
+            std::string ml;
+            for (int m : w.motions) ml += (ml.empty() ? "" : " ") + std::to_string(m);
+            std::fprintf(stderr, "[ROSTER] charId %d: motion %s teleports to %.2f m above the target, %.2f m short (ticks %.0f-%.0f)%s\n",
+                         e.charId, ml.c_str(), w.up, w.back, w.from, w.to, e.warps.empty() ? " - needs a warp= token on the line to be installed" : "");
+        }
+    for (const Entry& e : g_entries)
         for (const VTrack& v : e.vtracks) {
             g_vtrack_any = true;
             std::string ml;
@@ -2077,7 +2396,9 @@ void warp_install() {
 }
 // Touchdown action per character (roster.txt `landact=ACTION,MOTION[,MOTION...]`, up to 4 motions, e.g.
 // `34 noc100 9 ... landact=3024,54,55`: Noctis's Greatsword Down Strike lands into its impact action 3024, script 10096,
-// motion 84 `_642A`, when it touches down during the dive `_640A` (54) or the carry `_641A` (55)).
+// motion 84 `_642A`, when it touches down during the dive `_640A` (54) or the carry `_641A` (55)). The token may be
+// given up to 4 times, each with its own action (`landact=3034,94`: the Trident of the Oracle dive lands into its
+// planted landing); the first token listing the motion that plays wins.
 // FUN_08833C98(actor, f12) is the touchdown handler of the air states (0x12 / 1; actor vtable +0xC0, reached from
 // FUN_08833818 once timeline op 0x002D allows landing and the height reaches 0): it plays the landing script from
 // *(actor + 0x314) + 0xF2 (always 102 `_022A`: every caller of FUN_08834934 passes 0x66), queues stand (script 1) and
@@ -2117,12 +2438,13 @@ int land_action_for(const uint8_t* rdram, uint32_t actor) {
     if (!guest_ok(info, 8u)) return -1;
     const int charId = static_cast<int8_t>(rdram[(info + 6u) & 0x07FFFFFFu]);
     for (const Entry& e : g_entries) {
-        if (e.charId != charId || e.land_act < 0) continue;
+        if (e.charId != charId || e.nland == 0) continue;
         const uint32_t row = guest_rd<uint32_t>(rdram, actor + ACT_SCRIPT_ROW);
         const int16_t script = guest_rd<int16_t>(rdram, actor + ACT_SCRIPT);
         if (script < 0 || !guest_ok(row, 8u) || guest_rd<uint16_t>(rdram, row) != static_cast<uint16_t>(script)) return -1;
         const int motion = guest_rd<uint16_t>(rdram, row + 2u);
-        for (int m : e.land_mot) if (m >= 0 && m == motion) return e.land_act;
+        for (int k = 0; k < e.nland; k++)
+            for (int m : e.lands[k].mot) if (m >= 0 && m == motion) return e.lands[k].act;
         return -1;
     }
     return -1;
@@ -2182,10 +2504,11 @@ void land_hook(uint8_t* rdram, recomp_context* ctx) {
 void land_install() {
     bool any = false;
     for (const Entry& e : g_entries)
-        if (e.land_act >= 0) {
+        for (int k = 0; k < e.nland; k++) {
+            const LandSpec& L = e.lands[k];
             any = true;
             std::fprintf(stderr, "[ROSTER] charId %d: touchdown during motion %d %d %d %d starts action %d\n", e.charId,
-                         e.land_mot[0], e.land_mot[1], e.land_mot[2], e.land_mot[3], e.land_act);
+                         L.mot[0], L.mot[1], L.mot[2], L.mot[3], L.act);
         }
     if (!any) return;
     g_land_log = std::getenv("PSPRECOMP_LAND_LOG") != nullptr;
@@ -2327,6 +2650,108 @@ const Entry* hit_entry(const uint8_t* rdram, uint32_t actor) {
     for (const Entry& e : g_entries) if (e.charId == cid && e.hit_magi >= 0) return &e;
     return nullptr;
 }
+// A magi that becomes one of a set (roster.txt `magipick=BASE,MODE,ID1[,ID2..ID6]`, e.g. Noctis's elemancy flask
+// 2026-10-28: "a single move that does a random effect when thrown, cycling fire, blizzard, lightning":
+// `magipick=2285,r,2285,2286,2287`). When this character's own emitter of record BASE is created (the timeline's op
+// 0x0204 or a link child, both through FUN_08AD0978), the record id in a0 is swapped for one of ID1.. before the engine
+// function runs: MODE r = at random (never the same one twice in a row when there are 2+), c = in turn. Each set entry is
+// an ordinary magi record of the character's own objx, so without this hook (or on another character) BASE fires as is.
+// The token repeats (up to 4 sets, one per BASE: Elemancy's three charge levels each fire their own flask set); the sets
+// share the actor's last pick index, so the next flask of any level is a different element from the last one.
+struct PickState { uint32_t actor = 0; int last = -1; uint32_t seq = 0; };
+PickState g_pick[4];
+uint32_t g_pick_rng = 0x9E3779B9u;
+int magi_pick(const uint8_t* rdram, uint32_t owner, int id) {
+    if (!guest_ok(owner, 0x1070u)) return id;
+    const uint32_t info = guest_rd<uint32_t>(rdram, owner + ACTOR_INFO);
+    if (!guest_ok(info, 8u)) return id;
+    const int cid = static_cast<int8_t>(rdram[(info + 6u) & 0x07FFFFFFu]);
+    const PickSet* e = nullptr;
+    for (const Entry& x : g_entries)
+        if (x.charId == cid) for (int i = 0; i < x.npick && !e; i++) if (x.picks[i].base == id) e = &x.picks[i];
+    if (!e) return id;
+    PickState* st = nullptr;
+    for (PickState& p : g_pick) if (p.actor == owner) { st = &p; break; }
+    if (!st) {
+        st = &g_pick[0];
+        for (PickState& p : g_pick) if (!p.actor || p.seq < st->seq) st = &p;
+        *st = PickState{}; st->actor = owner;
+    }
+    static uint32_t clock = 0;
+    st->seq = ++clock;
+    int k;
+    if (e->cycle) k = (st->last + 1) % e->n;
+    else {
+        g_pick_rng ^= g_pick_rng << 13; g_pick_rng ^= g_pick_rng >> 17; g_pick_rng ^= g_pick_rng << 5;
+        g_pick_rng += owner + clock;
+        if (e->n > 1 && st->last >= 0) { k = static_cast<int>(g_pick_rng % static_cast<uint32_t>(e->n - 1)); if (k >= st->last) k++; }
+        else k = static_cast<int>(g_pick_rng % static_cast<uint32_t>(e->n));
+    }
+    st->last = k;
+    if (chain_say()) { g_chain_logs++; std::fprintf(stderr, "[MAGIPICK] actor %08X: magi %d fired as %d\n", owner, id, e->ids[k]); }
+    return e->ids[k];
+}
+// PSPRECOMP_MAGI_LOG=1 (2026-10-29, Alterna's glass sphere 2267 never hits, and at 30 fps never shows): every magi a
+// roster extra spawns (FUN_08AD0978's emitter), then for about 7 s that emitter and its bullets whenever they change:
+// bullet age (+120), state (+128), flags (+132), position (+0), hit object (+256: centre +144, radius +176, touched
+// +16 bit 2), and the owner's opponent (+0x300) position for comparison. Read-only; offsets from MAGI_NOTES.md.
+struct MagiWatch { uint32_t owner = 0, em = 0, rec = 0; int id = -1, ticks = 0; uint32_t sig[8] = {}; uint32_t bl[8] = {}; };
+MagiWatch g_mw[16];
+int g_mw_next = 0, g_magi_log = -1;
+bool magi_log_on() { if (g_magi_log < 0) g_magi_log = std::getenv("PSPRECOMP_MAGI_LOG") ? 1 : 0; return g_magi_log == 1; }
+int extra_char(const uint8_t* rdram, uint32_t actor) {
+    if (!guest_ok(actor, 0x1070u)) return -1;
+    const uint32_t info = guest_rd<uint32_t>(rdram, actor + ACTOR_INFO);
+    if (!guest_ok(info, 8u)) return -1;
+    const int cid = static_cast<int8_t>(rdram[(info + 6u) & 0x07FFFFFFu]);
+    for (const Entry& e : g_entries) if (e.charId == cid) return cid;
+    return -1;
+}
+void magi_vec(const uint8_t* rdram, uint32_t a, float v[3]) { for (int i = 0; i < 3; i++) v[i] = guest_rd<float>(rdram, a + 4u * static_cast<uint32_t>(i)); }
+void magi_watch_spawn(const uint8_t* rdram, uint32_t owner, int id, uint32_t em) {
+    if (!magi_log_on() || extra_char(rdram, owner) < 0) return;
+    float op[3] = {}, ep[3] = {}, fp[3] = {};
+    magi_vec(rdram, owner + 0x80u, op);
+    const uint32_t opp = guest_rd<uint32_t>(rdram, owner + 0x300u);
+    if (guest_ok(opp, 0x100u)) magi_vec(rdram, opp + 0x80u, fp);
+    if (guest_ok(em, 0x130u)) magi_vec(rdram, em, ep);
+    std::fprintf(stderr, "[MAGI] owner %08X spawn %d -> emitter %08X (rec %08X shots %u) at %.2f %.2f %.2f; owner at %.2f %.2f %.2f; opponent %08X at %.2f %.2f %.2f\n",
+                 owner, id, em, guest_ok(em, 0x130u) ? guest_rd<uint32_t>(rdram, em + 36u) : 0u, guest_ok(em, 0x130u) ? guest_rd<uint32_t>(rdram, em + 44u) : 0u,
+                 ep[0], ep[1], ep[2], op[0], op[1], op[2], opp, fp[0], fp[1], fp[2]);
+    if (!guest_ok(em, 0x130u)) return;
+    MagiWatch& w = g_mw[g_mw_next++ & 15];
+    w = MagiWatch{}; w.owner = owner; w.em = em; w.rec = guest_rd<uint32_t>(rdram, em + 36u); w.id = id;
+}
+void magi_watch_tick(const uint8_t* rdram, uint32_t actor) {
+    if (g_magi_log != 1) return;
+    for (MagiWatch& w : g_mw) {
+        if (!w.owner || w.owner != actor) continue;
+        if (++w.ticks > 420 || guest_rd<uint32_t>(rdram, w.em + 36u) != w.rec) {
+            std::fprintf(stderr, "[MAGI] emitter %08X (magi %d) %s after %d passes\n", w.em, w.id, w.ticks > 420 ? "no longer watched" : "freed / reused", w.ticks);
+            w = MagiWatch{}; continue;
+        }
+        uint32_t b = guest_rd<uint32_t>(rdram, w.em + 60u);
+        for (int k = 0; k < 8 && guest_ok(b, 0x110u); k++, b = guest_rd<uint32_t>(rdram, b + 244u)) {
+            const float age = guest_rd<float>(rdram, b + 120u);
+            const uint32_t st = guest_rd<uint32_t>(rdram, b + 128u), fl = guest_rd<uint32_t>(rdram, b + 132u), h = guest_rd<uint32_t>(rdram, b + 256u);
+            const bool hok = guest_ok(h, 0xD0u);
+            const uint32_t touched = hok ? (guest_rd<uint32_t>(rdram, h + 16u) >> 2) & 1u : 0u;
+            const uint32_t sig = (st & 0xFFu) | (fl & 0xFFu) << 8 | (hok ? 1u : 0u) << 16 | touched << 17 | 1u << 20;
+            const bool every = (w.ticks % 8) == 0;
+            if (w.bl[k] == b && w.sig[k] == sig && !every) continue;
+            w.bl[k] = b; w.sig[k] = sig;
+            float bp[3], hc[3] = {}, fp[3] = {};
+            magi_vec(rdram, b, bp);
+            if (hok) magi_vec(rdram, h + 144u, hc);
+            const uint32_t opp = guest_rd<uint32_t>(rdram, actor + 0x300u);
+            if (guest_ok(opp, 0x100u)) magi_vec(rdram, opp + 0x80u, fp);
+            std::fprintf(stderr, "[MAGI]   magi %d bullet %08X pass %d: age %.1f state %u flags %02X size %.2f pos %.2f %.2f %.2f; hit %s%s centre %.2f %.2f %.2f r %.2f; opponent at %.2f %.2f %.2f\n",
+                         w.id, b, w.ticks, age, st, fl & 0xFFu, guest_rd<float>(rdram, b + 184u), bp[0], bp[1], bp[2],
+                         hok ? "on" : "off", touched ? " TOUCHED" : "", hc[0], hc[1], hc[2], hok ? guest_rd<float>(rdram, h + 176u) : 0.0f,
+                         fp[0], fp[1], fp[2]);
+        }
+    }
+}
 void hit_spawn_hook(uint8_t* rdram, recomp_context* ctx) {
     uint32_t ovl;
     std::memcpy(&ovl, rdram + (OVL_BASE & 0x07FFFFFFu), 4);
@@ -2334,9 +2759,12 @@ void hit_spawn_hook(uint8_t* rdram, recomp_context* ctx) {
         if (FuncPtr f = ovl == 2u ? ovl_menu_lookup(MAGI_SPAWN) : nullptr) f(rdram, ctx);
         return;
     }
-    const int id = static_cast<int>(static_cast<uint32_t>(ctx->r[4]) & 0xFFFFu);
+    int id = static_cast<int>(static_cast<uint32_t>(ctx->r[4]) & 0xFFFFu);
     const uint32_t owner = static_cast<uint32_t>(ctx->r[5]);
+    const int picked = magi_pick(rdram, owner, id);
+    if (picked != id) { ctx->r[4] = static_cast<int32_t>((static_cast<uint32_t>(ctx->r[4]) & 0xFFFF0000u) | static_cast<uint32_t>(picked)); id = picked; }
     g_magi_spawn(rdram, ctx);
+    magi_watch_spawn(rdram, owner, id, static_cast<uint32_t>(ctx->r[2]));
     const Entry* e = hit_entry(rdram, owner);
     if (!e || id != e->hit_magi) return;
     uint32_t table = 0;
@@ -2352,8 +2780,27 @@ void hit_spawn_hook(uint8_t* rdram, recomp_context* ctx) {
     p->actor = owner; p->rec = own; p->table = table; p->act = e->hit_act; p->cur = chain_running(rdram, owner);
     if (chain_say()) { g_chain_logs++; std::fprintf(stderr, "[HITACT] actor %08X: magi %d spawned (on-hit), action %d queued for the next bone pass\n", owner, id, e->hit_act); }
 }
+bool pick_wanted() {
+    for (const Entry& e : g_entries) if (e.npick > 0) return true;
+    return false;
+}
+void spawn_hook_install(bool hit_any) {     // FUN_08AD0978: hitact= and magipick= share the one wrapper
+    const bool pick_any = pick_wanted();
+    if (!hit_any && !pick_any) return;
+    g_magi_spawn = ovl_battle_lookup(MAGI_SPAWN);
+    if (!g_magi_spawn) { std::fprintf(stderr, "[ROSTER] magi spawn hook (hitact= / magipick=) NOT installed (no battle overlay function at %08X)\n", MAGI_SPAWN); return; }
+    psp_dispatch_register(MAGI_SPAWN, hit_spawn_hook);
+    for (const Entry& e : g_entries) {
+        if (e.hit_magi >= 0)
+            std::fprintf(stderr, "[ROSTER] charId %d: spawning magi %d (an on-hit child) starts action %d%s\n", e.charId, e.hit_magi, e.hit_act,
+                         e.hit_cam > 0 ? " (framed by the camera, hitcam=)" : "");
+        for (int i = 0; i < e.npick; i++)
+            std::fprintf(stderr, "[ROSTER] charId %d: magi %d fires as one of %d records (%s)\n", e.charId, e.picks[i].base, e.picks[i].n,
+                         e.picks[i].cycle ? "in turn" : "at random");
+    }
+}
 void chain_install() {
-    if (!chain_wanted()) return;
+    if (!chain_wanted()) { if (pick_wanted()) spawn_hook_install(false); return; }
     g_chain_log = std::getenv("PSPRECOMP_CHAIN_LOG") != nullptr;
     g_chain_add = ovl_battle_lookup(CHAIN_ADD);
     if (!g_start_action) g_start_action = ovl_battle_lookup(START_ACTION);
@@ -2367,21 +2814,125 @@ void chain_install() {
     psp_dispatch_register(CHAIN_ADD, chain_add_hook);
     bool hit_any = false;
     for (const Entry& e : g_entries) if (e.hit_magi >= 0) hit_any = true;
-    if (hit_any) {
-        g_magi_spawn = ovl_battle_lookup(MAGI_SPAWN);
-        if (!g_magi_spawn) std::fprintf(stderr, "[ROSTER] hitact hook NOT installed (no battle overlay function at %08X)\n", MAGI_SPAWN);
-        else {
-            psp_dispatch_register(MAGI_SPAWN, hit_spawn_hook);
-            for (const Entry& e : g_entries)
-                if (e.hit_magi >= 0)
-                    std::fprintf(stderr, "[ROSTER] charId %d: spawning magi %d (an on-hit child) starts action %d%s\n", e.charId, e.hit_magi, e.hit_act,
-                                 e.hit_cam > 0 ? " (framed by the camera, hitcam=)" : "");
-        }
-    }
+    spawn_hook_install(hit_any);
     for (const Entry& e : g_entries)
         if (e.chain_act[0] >= 0)
             std::fprintf(stderr, "[ROSTER] charId %d: a chain window (timeline op 0x0467) to action %d %d %d %d starts it at once\n",
                          e.charId, e.chain_act[0], e.chain_act[1], e.chain_act[2], e.chain_act[3]);
+}
+// Hold to charge (roster.txt `charge=MOTION,MIN,T2,T3,MAX,ACT1,ACT2,ACT3`, e.g. Noctis's Elemancy, 2026-10-28: "the
+// throw should be a charge similar to Ultimecia's HP move, and it determines the range":
+// `charge=94,20,50,90,120,3035,3036,3037`). Retail charged moves (Ultimecia's Shockwave Pulsar: loop script 10092, release
+// scripts 10093 / 10096 / 10097 on one motion with motion_map phases 1 / 2 / 3, whose fire events are phase-filtered;
+// Yuna's Impulse) are driven by per-move native code: the action records carry script 0..8 / 103 and no data table links
+// the loop to its releases (no plya, objx section, EBOOT or overlay data holds those script ids), so a new move cannot
+// reuse it. This hook does the same job: while MOTION (the charge loop) plays on this character, its bone pass asks the
+// engine's own "HP button still held" test FUN_08B30B54(actor) (battle overlay; ○/□ held through the controller at
+// actor +0x5C4, input bit 0x0B, with the press latch at actor +0x5B4 bit 0x10 that it clears on release; for a CPU
+// fighter it asks the AI object at actor +0x5A0, so the CPU charges too). The first tick it says no, the hold time is
+// the motion time then (ticks, actor +0x1A8). From motion time MIN on (the wind-up done) a released hold, or the hold
+// reaching MAX, starts the release action for its level: hold < T2 -> ACT1, < T3 -> ACT2, else ACT3, with
+// FUN_08B382B8(actor, 1, 0) and the selector override (as chainact=). The release actions are ordinary plya records
+// whose scripts share one motion with motion_map phases 1 / 2 / 3, so its timeline fires a different projectile per
+// level (keyed `x` = phase). The token repeats (up to 4, one per charge motion: Elemancy has an air and a ground
+// charge). Once per run of the motion (a restart is a drop in its time); a refused start is not
+// retried; if the hook is missing the charge motion simply plays to its end. PSPRECOMP_CHAIN_LOG=1 logs each release.
+constexpr uint32_t HP_HELD = 0x08B30B54u;       // battle overlay: 1 while the HP button that started the move is held
+FuncPtr g_hp_held = nullptr;
+struct ChargeRun { uint32_t actor = 0; float last_t = 0.0f, rel_t = -1.0f; bool fired = false; uint32_t seq = 0; int motion = -1; };
+ChargeRun g_charge[4];
+bool charge_wanted() {
+    for (const Entry& e : g_entries) if (e.ncharge > 0) return true;
+    return false;
+}
+const Entry* charge_entry(const uint8_t* rdram, uint32_t actor) {
+    if (!guest_ok(actor, 0x1070u)) return nullptr;
+    const uint32_t info = guest_rd<uint32_t>(rdram, actor + ACTOR_INFO);
+    if (!guest_ok(info, 8u)) return nullptr;
+    const int cid = static_cast<int8_t>(rdram[(info + 6u) & 0x07FFFFFFu]);
+    for (const Entry& e : g_entries) if (e.charId == cid && e.ncharge > 0) return &e;
+    return nullptr;
+}
+int charge_level(const ChargeSpec& c, float held) { return held >= c.t3 ? 2 : held >= c.t2 ? 1 : 0; }
+void charge_tick(uint8_t* rdram, recomp_context* ctx, uint32_t actor) {
+    const Entry* en = charge_entry(rdram, actor);
+    if (!en) return;
+    uint32_t ovl;
+    std::memcpy(&ovl, rdram + (OVL_BASE & 0x07FFFFFFu), 4);
+    if (ovl != 1u) return;
+    ChargeRun* r = nullptr;
+    for (ChargeRun& x : g_charge) if (x.actor == actor) { r = &x; break; }
+    const int motion = warp_motion_now(rdram, actor);
+    const ChargeSpec* e = nullptr;
+    for (int i = 0; i < en->ncharge; i++) if (en->charges[i].motion == motion) e = &en->charges[i];
+    if (!e) { if (r) *r = ChargeRun{}; return; }
+    if (r && r->motion != motion) *r = ChargeRun{actor};   // another charge motion
+    static uint32_t clock = 0;
+    if (!r) {
+        r = &g_charge[0];
+        for (ChargeRun& x : g_charge) if (!x.actor || x.seq < r->seq) r = &x;
+        *r = ChargeRun{}; r->actor = actor;
+    }
+    r->seq = ++clock; r->motion = motion;
+    const float t = guest_rd<float>(rdram, actor + ACT_MOTION_T);
+    if (t < r->last_t) { r->fired = false; r->rel_t = -1.0f; }   // the motion started again
+    r->last_t = t;
+    if (r->fired) return;
+    if (r->rel_t < 0.0f) {
+        bool held = false;
+        if (g_hp_held) {
+            const recomp_context saved = *ctx;
+            ctx->r[4] = static_cast<int32_t>(actor);
+            g_hp_held(rdram, ctx);
+            held = ctx->r[2] != 0;
+            *ctx = saved;
+        }
+        if (!held) r->rel_t = t;
+    }
+    if (t < e->min || (r->rel_t < 0.0f && t < e->max)) return;
+    r->fired = true;
+    const float hold = r->rel_t >= 0.0f ? r->rel_t : t;
+    const int lvl = charge_level(*e, hold), act = e->act[lvl];
+    if (!g_start_action || !g_plya_select) return;
+    uint32_t table = 0;
+    const uint32_t rec = plya_record(rdram, actor, act, &table);
+    if (!rec) {
+        if (chain_say()) { g_chain_logs++; std::fprintf(stderr, "[CHARGE] actor %08X: no action %d in its own table: not released\n", actor, act); }
+        return;
+    }
+    const recomp_context after = *ctx;
+    ctx->r[4] = static_cast<int32_t>(actor); ctx->r[5] = LAND_KIND; ctx->r[6] = 0;
+    g_force_actor = actor; g_force_rec = rec; g_force_table = table;
+    g_start_action(rdram, ctx);
+    g_force_actor = g_force_rec = g_force_table = 0u;
+    const uint32_t ok = static_cast<uint32_t>(ctx->r[2]);
+    *ctx = after;
+    if (chain_say()) {
+        g_chain_logs++;
+        std::fprintf(stderr, "[CHARGE] actor %08X: held %.0f ticks (%s), release at tick %.0f -> level %d, action %d %s\n", actor, hold,
+                     r->rel_t >= 0.0f ? "let go" : "full charge", t, lvl + 1, act, ok ? "started" : "NOT started");
+    }
+}
+void charge_install() {
+    if (!charge_wanted()) return;
+    g_chain_log = g_chain_log || std::getenv("PSPRECOMP_CHAIN_LOG") != nullptr;
+    g_hp_held = ovl_battle_lookup(HP_HELD);
+    if (!g_start_action) g_start_action = ovl_battle_lookup(START_ACTION);
+    if (!g_plya_select) g_plya_select = psp_dispatch_probe_lookup(PLYA_SELECT);
+    if (!g_start_action || !g_plya_select) {
+        std::fprintf(stderr, "[ROSTER] charge hook NOT installed (start action %s, selector %s)\n",
+                     g_start_action ? "ok" : "missing", g_plya_select ? "ok" : "missing");
+        g_start_action = nullptr;
+        return;
+    }
+    psp_dispatch_register(PLYA_SELECT, plya_select_hook);
+    for (const Entry& e : g_entries)
+        for (int i = 0; i < e.ncharge; i++) {
+            const ChargeSpec& c = e.charges[i];
+            std::fprintf(stderr, "[ROSTER] charId %d: motion %d charges (release from tick %.0f, levels at %.0f / %.0f, full at %.0f) into action %d / %d / %d%s\n",
+                         e.charId, c.motion, c.min, c.t2, c.t3, c.max, c.act[0], c.act[1], c.act[2],
+                         g_hp_held ? "" : " - no hold test (FUN_08B30B54 missing): always level 1");
+        }
 }
 // EX Mode extras per character (roster.txt tokens on the character's line):
 //   exranged=N                                   ranged immunity while in EX Mode (N = 1 or 2, 0 = off)
@@ -2623,11 +3174,11 @@ ArmState* arm_state(uint32_t actor) {
 float ease_out(float x) { x = x < 0 ? 0 : (x > 1 ? 1 : x); return 1.0f - (1.0f - x) * (1.0f - x) * (1.0f - x); }
 float clamp01(float x) { return x < 0 ? 0 : (x > 1 ? 1 : x); }
 
-// FUN_08838300: the actor's time step this frame, in 60 fps ticks
+// FUN_08838300: the actor's time step this frame, in 60 fps ticks (framerate.cpp scales the own clock at 60 Hz)
 float ex_actor_dt(uint8_t* r, uint32_t actor) {
     const uint32_t m0 = ex_r32(r, 0x089C7FD8u), m1 = ex_r32(r, 0x089C7FDCu);
     const bool own = ((ex_r32(r, actor + 0x388u) & m0) | (ex_r32(r, actor + 0x38Cu) & m1)) != 0;
-    float dt = own ? ex_rf(r, actor + 0x3CCu) : ex_rf(r, actor + 0x3C8u) * ex_rf(r, 0x089D5EACu);
+    float dt = own ? ex_rf(r, actor + 0x3CCu) * dissidia_own_clock_scale() : ex_rf(r, actor + 0x3C8u) * ex_rf(r, 0x089D5EACu);
     if (!(dt >= 0.0f) || dt > 8.0f) dt = 0.0f;
     return dt;
 }
@@ -2787,6 +3338,7 @@ void armiger_update(uint8_t* r, uint32_t actor) {
         // battle start (seen in game 2026-10-20: the ring stood around him before any EX Mode), so its entry is
         // added if missing and kept at {bone, 0, 0} (FUN_0886CB64's hide). EX start shows them again (FUN_08ACAC60).
         for (int k = 3; k <= 4; k++) {
+            if (e->armiger[k] < 0) continue;         // fx draw bone -1: no activation pillar (an FEP effect plays instead)
             uint32_t v = ex_vis_entry(r, ctrl, e->armiger[k]);
             if (!v) v = ex_vis_add(r, ctrl, e->armiger[k]);
             if (v) { if (ex_p(r, v)[1] != 0) s->forced = true; ex_p(r, v)[1] = 0; ex_p(r, v)[2] = 0; }
@@ -2802,11 +3354,12 @@ void armiger_update(uint8_t* r, uint32_t actor) {
         // again (no change in its own lists), so give them back {bone, 1, 0xFF} once.
         s->forced = false;
         for (int k = 3; k <= 4; k++) {
+            if (e->armiger[k] < 0) continue;
             const uint32_t v = ex_vis_entry(r, ctrl, e->armiger[k]);
             if (v) { ex_p(r, v)[1] = 1; ex_p(r, v)[2] = 0xFF; }
         }
     }
-    const uint32_t ring_vis = ex_vis_entry(r, ctrl, e->armiger[3]), fx_vis = ex_vis_entry(r, ctrl, e->armiger[4]);
+    const uint32_t ring_vis = ex_vis_entry(r, ctrl, e->armiger[3]), fx_vis = e->armiger[4] >= 0 ? ex_vis_entry(r, ctrl, e->armiger[4]) : 0u;
     if (!ring_vis) return;
     if (*ex_p(r, ring_vis + 1) != 1) {                                    // EX parts hidden: leave the rest pose
         body_restore(r, ctrl, e, s);
@@ -2874,7 +3427,7 @@ void armiger_update(uint8_t* r, uint32_t actor) {
         body_restore(r, ctrl, e, s);
     }
 }
-// Apocalypsis: the crystal royal arms fly as themselves (roster.txt `apocarms=ARM0,NARM,ID1[,ID2..ID8]`, e.g.
+// Apocalypsis: the crystal royal arms fly as themselves (roster.txt `apocarms=ARM0,NARM,ID1[,ID2..ID12]`, up to 6 tokens, e.g.
 // `34 noc100 9 ... apocarms=168,12,2220,2222,2223,2228`). The move's GMO arms (skin bones ARM0..ARM0+NARM-1, Noctis:
 // 168-179 `apoc_w00..11`, one royal arm each) swirl around him and burst out of their crown; each one vanishes (scale 0)
 // at the point where a magi bullet of one of the records ID1.. (Noctis: brave volleys 2220 / 2222, HP greatsword 2223
@@ -2903,16 +3456,23 @@ void armiger_update(uint8_t* r, uint32_t actor) {
 // `pinspin=BONE,DEG,AX,AY,AZ`: while the arm with skin bone BONE rides a bullet it spins DEG degrees per bone pass about
 // its own axis (AX,AY,AZ) (bone frame, e.g. a shuriken's face normal), and the arm's axis in that plane nearest its +Y
 // (instead of +Y itself) is the one kept along the flight, so a shuriken flies edge-first, spinning flat.
+// Hand-off (2026-10-30, the star flying on after its hit): when an arm's bullet ends, the arm waits where it was for up
+// to kApocHand passes; a listed bullet born within kApocReach of that place (a child: link_hit / link_emit) takes it and
+// the arm flies on with its turn and spin; otherwise it is hidden as before.
 constexpr uint32_t APOC_FXDIR = 0x08AD20BCu;     // battle overlay: per-frame matrix of a bullet's visual (a0 visual, a1 bullet)
 constexpr uint32_t BUL_POS = 0x00u, BUL_DIR = 0x20u, BUL_EMIT = 0x64u, EMIT_REC = 0x24u;
-constexpr int kApocBullets = 64, kApocActors = 4, kApocArms = 24, kApocSets = 4;
+constexpr int kApocBullets = 64, kApocActors = 4, kApocArms = 24, kApocSets = 6;
 constexpr uint32_t kApocLive = 3u;              // passes without a visual update before a bullet counts as gone
 constexpr uint32_t kApocSeen = 12u;             // an arm can take a bullet this many passes after the motion last showed it
 constexpr float kApocReach = 3.0f;              // m (model space) between an arm's last shown place and its bullet
+constexpr uint32_t kApocHand = 6u;              // passes an arm whose bullet ended waits where it was for a listed child bullet
+constexpr float kArmHoldScale = 0.06f;          // armtrailhold=: the held arm's scale (armtrail_bone_post counts an arm shown above 0.05)
 struct ApocBullet { uint32_t ptr = 0; uint16_t rec = 0; uint32_t seq = 0; float p[3] = {0, 0, 0}, d[3] = {0, 0, 1}; };
 struct ApocArm { uint32_t bullet = 0; uint16_t rec = 0; uint32_t seen = 0; bool have_pose = false, wrote = false;
                  float pose[16] = {}, last[16] = {}, R[9] = {}, d[3] = {0, 1, 0};
-                 float spin_deg = 0.0f, spin = 0.0f, ax[3] = {0, 0, 1}; };          // pinspin=: per pass, angle so far, local axis
+                 float spin_deg = 0.0f, spin = 0.0f, ax[3] = {0, 0, 1};             // pinspin=: per pass, angle so far, local axis
+                 uint32_t freed = 0; float freed_p[3] = {0, 0, 0};                  // hand-off: pass its bullet ended, where (model space)
+                 bool rode = false; uint32_t held = 0; float held_M[16] = {}; };    // armtrailhold=: rode this flight; pass it ended, its last matrix
 struct ApocState { uint32_t actor = 0, used = 0; ApocArm arm[kApocArms]; };
 ApocBullet g_apoc_bul[kApocBullets];
 ApocState g_apoc_st[kApocActors];
@@ -2924,7 +3484,7 @@ int apoc_sets_of(const Entry& e, ApocSet* s) {
     int n = 0;
     if (e.apoc_narm > 0 && e.apoc_nids > 0) {
         s[n] = ApocSet{}; s[n].arm0 = e.apoc_arm0; s[n].narm = e.apoc_narm; s[n].nids = e.apoc_nids;
-        for (int i = 0; i < e.apoc_nids && i < 8; i++) s[n].ids[i] = e.apoc_ids[i];
+        for (int i = 0; i < e.apoc_nids && i < 12; i++) s[n].ids[i] = e.apoc_ids[i];
         n++;
     }
     for (int k = 0; k < e.apoc_nmore && n < kApocSets; k++)
@@ -3003,10 +3563,14 @@ ApocState* apoc_state(uint32_t actor) {
     *free_s = ApocState{}; free_s->actor = actor;
     return free_s;
 }
-// true while one of the entry's apocarms= arms is out: shown by the motion this pass (model-space scale > 0.05 and its
+// true while one of the entry's exaway= draw bones is shown, or one of its apocarms= arms is out: shown by the motion this pass (model-space scale > 0.05 and its
 // draw bone, from the armtrail= set holding it, not hidden: Onslaught's star keeps scale 1 and is shown / hidden through
 // draw bone 160) or riding a magi bullet (apoc_bone_post state; looked up, never allocated here)
 bool ex_summons_out(uint8_t* r, uint32_t ctrl, uint32_t gm, const Entry* e, uint32_t actor) {
+    for (const int d : e->ex_away) {                 // exaway=: a royal arm drawn in his hands
+        const uint32_t v = ex_vis_entry(r, ctrl, d);
+        if (v && ex_p(r, v)[1] == 1) return true;
+    }
     ApocSet sets[kApocSets];
     const int ns = apoc_sets_of(*e, sets);
     for (int q = 0; q < ns; q++)
@@ -3101,12 +3665,10 @@ void apoc_bone_post(uint8_t* rdram, uint32_t actor) {
         if (!a.bullet || apoc_live(a.bullet, a.rec, now)) continue;
         if (g_apoc_log) std::fprintf(stderr, "[APOC] actor %08X arm %d (bone %d): bullet %08X gone\n", actor, k, bone[k], a.bullet);
         a.bullet = 0; a.have_pose = false;
-        if (a.wrote && at[k]) {                         // the bone still holds the flight: hide it (rest scale 0)
-            float M[16];
-            std::memcpy(M, a.last, sizeof M);
-            for (int i = 0; i < 12; i++) M[i] = 0.0f;
-            std::memcpy(rdram + (at[k] & 0x07FFFFFFu), M, sizeof M);
-            std::memcpy(a.last, M, sizeof M);
+        if (a.rode && e->at_hold > 0) { a.held = now; std::memcpy(a.held_M, a.last, sizeof a.held_M); }   // armtrailhold=
+        a.rode = false;
+        if (a.wrote && at[k]) {                         // it waits where the flight ended for a hand-off (below), then hides
+            a.freed = now; a.freed_p[0] = a.last[12]; a.freed_p[1] = a.last[13]; a.freed_p[2] = a.last[14];
         }
     }
     for (const ApocBullet& b : g_apoc_bul) {
@@ -3119,14 +3681,24 @@ void apoc_bone_post(uint8_t* rdram, uint32_t actor) {
         int best = -1; float bd = kApocReach * kApocReach;
         for (int k = 0; k < n; k++) {
             const ApocArm& a = s->arm[k];
-            if (a.bullet || !a.have_pose || now - a.seen > kApocSeen || !at[k] || !apoc_set_has(sets[set_of[k]], b.rec)) continue;
-            const float dx = pm[0] - a.pose[12], dy = pm[1] - a.pose[13], dz = pm[2] - a.pose[14];
+            if (a.bullet || !at[k] || !apoc_set_has(sets[set_of[k]], b.rec)) continue;
+            // hand-off: an arm whose bullet just ended (a listed bullet's child, e.g. Armiger Onslaught's star flying on
+            // after its hit, magi 2230 link_hit 2297) takes a listed bullet born near where it ended
+            const bool hand = a.freed && now - a.freed <= kApocHand;
+            if (!hand && (!a.have_pose || now - a.seen > kApocSeen)) continue;
+            const float* q = hand ? a.freed_p : a.pose + 12;
+            const float dx = pm[0] - q[0], dy = pm[1] - q[1], dz = pm[2] - q[2];
             const float d2 = dx * dx + dy * dy + dz * dz;
             if (d2 < bd) { bd = d2; best = k; }
         }
         if (best < 0) continue;
         ApocArm& a = s->arm[best];
-        a.bullet = b.ptr; a.rec = b.rec;
+        a.bullet = b.ptr; a.rec = b.rec; a.held = 0;
+        if (a.freed) {                                  // a hand-off: it keeps its turn and spin, and flies on
+            a.freed = 0;
+            if (g_apoc_log) std::fprintf(stderr, "[APOC] actor %08X arm %d (bone %d) hands on to bullet %08X (record %u, %.2f m away)\n", actor, best, bone[best], b.ptr, b.rec, std::sqrt(bd));
+            continue;
+        }
         for (int r = 0; r < 3; r++) {                   // the arm's last shown orientation, rows normalised
             float l = 0.0f;
             for (int j = 0; j < 3; j++) l += a.pose[4 * r + j] * a.pose[4 * r + j];
@@ -3146,6 +3718,36 @@ void apoc_bone_post(uint8_t* rdram, uint32_t actor) {
         for (int j = 0; j < 3; j++) a.d[j] = f[0] * a.R[j] + f[1] * a.R[3 + j] + f[2] * a.R[6 + j];
         if (g_apoc_log) std::fprintf(stderr, "[APOC] actor %08X arm %d (bone %d) takes bullet %08X (record %u, %.2f m away)\n", actor, best, bone[best], b.ptr, b.rec, std::sqrt(bd));
     }
+    // arms waiting for a hand-off: held where their flight ended, hidden (rest scale 0) once nothing has taken them
+    for (int k = 0; k < n; k++) {
+        ApocArm& a = s->arm[k];
+        if (!a.freed || a.bullet) continue;
+        if (!at[k]) { a.freed = 0; continue; }
+        float M[16];
+        std::memcpy(M, a.last, sizeof M);
+        if (now - a.freed > kApocHand) { for (int i = 0; i < 12; i++) M[i] = 0.0f; a.freed = 0; }
+        std::memcpy(rdram + (at[k] & 0x07FFFFFFu), M, sizeof M);
+        std::memcpy(a.last, M, sizeof M);
+        a.wrote = true;
+    }
+    // armtrailhold=: an arm whose flight just ended stays where it ended as a speck (its trail runs into that point), over
+    // the motion's pose and the hand-off wait; a new bullet (a hand-off) ends the hold
+    for (int k = 0; k < n; k++) {
+        ApocArm& a = s->arm[k];
+        if (!a.held || a.bullet) continue;
+        if (!at[k] || now - a.held > static_cast<uint32_t>(e->at_hold)) { a.held = 0; continue; }
+        float M[16];
+        std::memcpy(M, a.held_M, sizeof M);
+        for (int r = 0; r < 3; r++) {
+            float l = 0.0f;
+            for (int j = 0; j < 3; j++) l += M[4 * r + j] * M[4 * r + j];
+            l = l > 1e-12f ? kArmHoldScale / std::sqrt(l) : 0.0f;
+            for (int j = 0; j < 3; j++) M[4 * r + j] *= l;
+        }
+        std::memcpy(rdram + (at[k] & 0x07FFFFFFu), M, sizeof M);
+        std::memcpy(a.last, M, sizeof M);
+        a.wrote = true;
+    }
     // 3. carried arms ride their bullets
     for (int k = 0; k < n; k++) {
         ApocArm& a = s->arm[k];
@@ -3163,7 +3765,7 @@ void apoc_bone_post(uint8_t* rdram, uint32_t actor) {
         float Rs[9];
         std::memcpy(Rs, a.R, sizeof Rs);
         if (a.spin_deg != 0.0f) {                       // pinspin=: the frame turned about its own spin axis
-            a.spin += a.spin_deg * 0.0174532925f;
+            a.spin += a.spin_deg * 0.0174532925f * dissidia_own_clock_scale();   // DEG per 30 Hz pass
             if (a.spin > 6.2831853f) a.spin -= 6.2831853f;
             if (a.spin < -6.2831853f) a.spin += 6.2831853f;
             float Am[3];
@@ -3181,6 +3783,7 @@ void apoc_bone_post(uint8_t* rdram, uint32_t actor) {
         std::memcpy(rdram + (at[k] & 0x07FFFFFFu), M, sizeof M);
         std::memcpy(a.last, M, sizeof M);
         a.wrote = true;
+        a.rode = true;
     }
 }
 void apoc_install() {
@@ -3521,7 +4124,7 @@ void warpdash_on_hit(const uint8_t* rdram, uint32_t hitrec, uint32_t hit) {
     const bool arm = on_enemy && !s.used, again = arm && s.hit;
     if (arm) {
         s.hit = true;
-        s.armed_until = s.frames + static_cast<uint32_t>(e->wd_link);
+        s.armed_until = s.frames + 2u * static_cast<uint32_t>(e->wd_link);   // wd_link in 30 Hz frames, s.frames in ticks
     }
     if (g_wd_log || g_wd_hit_logs < kWdFirstLogs) {
         g_wd_hit_logs++;
@@ -3541,7 +4144,7 @@ void warpdash_tick(uint8_t* rdram, uint32_t actor) {
     const Entry* e = wd_entry(rdram, actor);
     if (!e) return;
     WdState& s = wd_state(actor);
-    s.frames++;
+    s.frames += static_cast<uint32_t>(dissidia_frame_ticks());   // ticks: 2 per 30 Hz frame, 1 per 60 Hz frame
     const int id = wd_record_id(rdram, wd_current_record(rdram, actor));
     if (!(id >= 0 && (id == e->wd_ground || id == e->wd_air))) s.in_dash = false;
 }
@@ -3786,6 +4389,307 @@ void armtrail_assign(uint8_t* r, TrailState* s, const Entry* e) {
     }
     std::memcpy(ex_p(r, s->actor + TRAIL_MASK), &mask, 4);
 }
+// PSPRECOMP_TRAIL_LOG=1 (2026-10-29: Noctis's warp wisp strands, records 9999 bits 30 / 31 / 5 on warp_trail0..2, show
+// nowhere in game): after FUN_0884E660, every change of its per-actor trail state (0x09B166F0 + 0x48 * i: active mask,
+// script id at spawn, 16 effect handles; docs/archive/event-ops/D.md) is logged with the requesting actor's mask
+// (+0x6D8). For a slot that starts: the handle, its FEPA record (id, bit mask, bone name), the bone index the handle
+// resolved (+244; -1 = not found, not attached) and its effect object (+204; 0 = no instance). A slot requested for
+// 30 passes without starting is logged once (the filter 0x0884E888 refused every record). Read-only.
+constexpr uint32_t TRAIL_STATE = 0x09B166F0u;
+struct TrailLogSlot { uint32_t active = 0, h[16] = {}; int waiting[16] = {}; };
+TrailLogSlot g_tl[8];
+int g_trail_log2 = -1;
+// instances of the running trails, for the locus draw log below (rebuilt every pass)
+struct TrailInst { uint32_t inst = 0, seen = 0, drawn = 0, logged = 0; char bone[16] = {}; int state = 0, slot = 0; };
+TrailInst g_tinst[24];
+const TrailInst* trail_inst_find(uint32_t inst) {
+    for (const TrailInst& t : g_tinst) if (t.inst == inst) return &t;
+    return nullptr;
+}
+void trail_inst_note(uint32_t inst, const char* bone, int state, int slot) {
+    TrailInst* old = nullptr;
+    for (TrailInst& t : g_tinst) {
+        if (t.inst == inst) { t.seen = g_trail_clock; t.state = state; t.slot = slot; std::memcpy(t.bone, bone, 15); return; }
+        if (!old || t.seen < old->seen) old = &t;
+    }
+    *old = TrailInst{};
+    old->inst = inst; old->seen = g_trail_clock; old->state = state; old->slot = slot; std::memcpy(old->bone, bone, 15);
+}
+// FUN_089656D8 = the ch105 locus renderer's draw (a1 = runner: +136 instance, +140 element, +144 track). For an instance
+// of a running trail: note that it drew, and every 8 passes log its ch106 history (the track's dependency #2 state:
+// +0 / +4 point buffers of n x {pos, vel}, +8 "first", +48 n): newest and oldest A and B, in the world.
+constexpr uint32_t LOCUS_DRAW = 0x089656D8u;
+FuncPtr g_orig_locus_draw = nullptr;
+void locus_draw_hook(uint8_t* r, recomp_context* ctx) {
+    const uint32_t runner = static_cast<uint32_t>(ctx->r[5]);
+    if (ex_ok(runner, 0x94u)) {
+        const uint32_t inst = ex_r32(r, runner + 136u), el = ex_r32(r, runner + 140u), tr = ex_r32(r, runner + 144u);
+        for (TrailInst& t : g_tinst) {
+            if (!t.inst || t.inst != inst) continue;
+            t.drawn = g_trail_clock;
+            if ((g_trail_clock & 7) != 0 || t.logged == g_trail_clock || !ex_ok(tr, 12u) || !ex_ok(el, 0x100u)) break;
+            t.logged = g_trail_clock;
+            const uint32_t nd = ex_r32(r, tr + 4u), data = ex_r32(r, tr + 8u);
+            if (nd < 3 || nd > 8 || !ex_ok(data, 2u * (nd + 3u))) break;
+            const uint32_t L = ex_r32(r, el + 96u + ex_r16(r, data + 2u * (nd + 2u)));
+            if (!ex_ok(L, 64u)) break;
+            const int n = static_cast<int>(ex_r32(r, L + 48u));
+            const uint32_t ba = ex_r32(r, L + 0u), bb = ex_r32(r, L + 4u);
+            if (n < 2 || n > 64 || !ex_ok(ba, 32u * n) || !ex_ok(bb, 32u * n)) break;
+            auto v = [&](uint32_t buf, int k, int c) { return ex_rf(r, buf + 32u * k + 4u * c); };
+            std::fprintf(stderr, "[TRAILDRAW] state %d slot %2d '%s' inst %08X el %08X n %d first %u | A new (%.2f %.2f %.2f) old (%.2f %.2f %.2f) | B new (%.2f %.2f %.2f) old (%.2f %.2f %.2f)\n",
+                         t.state, t.slot, t.bone, inst, el, n, ex_r32(r, L + 8u), v(ba, 0, 0), v(ba, 0, 1), v(ba, 0, 2), v(ba, n - 1, 0), v(ba, n - 1, 1), v(ba, n - 1, 2),
+                         v(bb, 0, 0), v(bb, 0, 1), v(bb, 0, 2), v(bb, n - 1, 0), v(bb, n - 1, 1), v(bb, n - 1, 2));
+            break;
+        }
+    }
+    g_orig_locus_draw(r, ctx);
+}
+void trail_log_pass(uint8_t* r) {
+    if (g_trail_log2 < 0) g_trail_log2 = std::getenv("PSPRECOMP_TRAIL_LOG") ? 1 : 0;
+    if (g_trail_log2 != 1) return;
+    uint32_t req = 0, who = 0;
+    for (const TrailState& s : g_trail) if (s.actor && ex_ok(s.actor, TRAIL_MASK + 4u)) { req = ex_r32(r, s.actor + TRAIL_MASK); who = s.actor; break; }
+    for (int i = 0; i < 8; i++) {
+        const uint32_t b = TRAIL_STATE + 0x48u * static_cast<uint32_t>(i);
+        if (!ex_ok(b, 0x48u)) continue;
+        TrailLogSlot& L = g_tl[i];
+        const uint32_t act = ex_r32(r, b);
+        for (int q = 0; q < 16; q++) {
+            const uint32_t h = ex_r32(r, b + 8u + 4u * static_cast<uint32_t>(q));
+            const bool on = (act >> q) & 1u, was = (L.active >> q) & 1u;
+            if (on && (!was || h != L.h[q])) {
+                const uint32_t rec = ex_ok(h, 0x280u) ? ex_r32(r, h + 192u) : 0u;
+                char bone[33] = {};
+                if (ex_ok(rec, 0x104u)) std::memcpy(bone, ex_p(r, rec + 0xA8u), 32);
+                std::fprintf(stderr, "[TRAIL] state %d slot %2d ON  handle %08X record id %u bits %08X bone '%s' -> index %d, effect %08X (actor %08X mask %04X)\n",
+                             i, q, h, ex_ok(rec, 0x104u) ? ex_r32(r, rec + 0x24u) : 0u, ex_ok(rec, 0x104u) ? ex_r32(r, rec + 0x44u) : 0u, bone,
+                             ex_ok(h, 0x280u) ? static_cast<int>(ex_r32(r, h + 244u)) : -2, ex_ok(h, 0x280u) ? ex_r32(r, h + 204u) : 0u, who, req & 0xFFFFu);
+            } else if (!on && was) std::fprintf(stderr, "[TRAIL] state %d slot %2d off (actor %08X mask %04X)\n", i, q, who, req & 0xFFFFu);
+            L.h[q] = h;
+        }
+        L.active = act;
+        // where a running trail is: every 8 passes, the handle's attach matrix (+112) next to the actor (+0x80), and its
+        // effect instance(s): the handle's fx object (+204) holds the FEP node at +16, an instance or a group (byte 0
+        // 0x6C, u16 count +4, children +48). Instance: +2 flags, +12 pause, +64 colour, +80 world matrix, +348 time,
+        // +364 fade, +380 attached; "drawn" = passes since the locus draw (FUN_089656D8) last ran for it.
+        for (int q = 0; q < 16; q++) {
+            if (!((act >> q) & 1u)) continue;
+            const uint32_t h = L.h[q], rec = ex_ok(h, 0x280u) ? ex_r32(r, h + 192u) : 0u;
+            if (!ex_ok(rec, 0x104u)) continue;
+            const uint32_t fx = ex_r32(r, h + 204u);
+            char bn[16] = {}; std::memcpy(bn, ex_p(r, rec + 0xA8u), 15);
+            uint32_t ins[8]; int ni = 0;
+            const uint32_t node = ex_ok(fx, 0x20u) ? ex_r32(r, fx + 16u) : 0u;
+            if (ex_ok(node, 0x40u) && ex_p(r, node)[0] == 0x6C) {
+                const int cnt = ex_r16(r, node + 4u);
+                const uint32_t lst = ex_r32(r, node + 48u);
+                for (int k = 0; k < cnt && ni < 8 && ex_ok(lst, 4u * (k + 1)); k++) { const uint32_t c = ex_r32(r, lst + 4u * k); if (ex_ok(c, 0x200u)) ins[ni++] = c; }
+            } else if (ex_ok(node, 0x200u)) ins[ni++] = node;
+            for (int k = 0; k < ni; k++) trail_inst_note(ins[k], bn, i, q);
+            if ((g_trail_clock & 7) != 0) continue;
+            float A[16] = {}, P[3] = {};
+            std::memcpy(A, ex_p(r, h + 112u), 64);
+            if (ex_ok(who, 0x90u)) std::memcpy(P, ex_p(r, who + 0x80u), 12);
+            auto len = [](const float* M, int row) { return std::sqrt(M[4 * row] * M[4 * row] + M[4 * row + 1] * M[4 * row + 1] + M[4 * row + 2] * M[4 * row + 2]); };
+            std::fprintf(stderr, "[TRAIL] state %d slot %2d at: '%s' attach (%.2f %.2f %.2f) axes %.3f %.3f %.3f | actor (%.2f %.2f %.2f) | fx %08X node %08X%s, %d instance(s)\n",
+                         i, q, bn, A[12], A[13], A[14], len(A, 0), len(A, 1), len(A, 2), P[0], P[1], P[2], fx, node,
+                         ex_ok(node, 4u) && ex_p(r, node)[0] == 0x6C ? " (group)" : "", ni);
+            for (int k = 0; k < ni; k++) {
+                const uint32_t in = ins[k];
+                float B[16], C[16], col[4];
+                std::memcpy(B, ex_p(r, in + 80u), 64); std::memcpy(C, ex_p(r, in + 272u), 64); std::memcpy(col, ex_p(r, in + 64u), 16);
+                const TrailInst* ti = trail_inst_find(in);
+                std::fprintf(stderr, "[TRAIL]     inst %08X flags %04X pause %u colour (%.2f %.2f %.2f %.2f) world (%.2f %.2f %.2f) axes %.3f %.3f %.3f | sent (%.2f %.2f %.2f) | t %.1f fade %.2f attached %08X | drawn %d passes ago\n",
+                             in, ex_r16(r, in + 2u), ex_r32(r, in + 12u), col[0], col[1], col[2], col[3], B[12], B[13], B[14], len(B, 0), len(B, 1), len(B, 2),
+                             C[12], C[13], C[14], ex_rf(r, in + 348u), ex_rf(r, in + 364u), ex_r32(r, in + 380u),
+                             ti && ti->drawn ? static_cast<int>(g_trail_clock - ti->drawn) : -1);
+            }
+        }
+    }
+    TrailLogSlot& W = g_tl[0];                            // requested but not started (any state): once per stretch
+    for (int q = 0; q < 16; q++) {
+        bool any = false;
+        for (int i = 0; i < 8; i++) any = any || ((g_tl[i].active >> q) & 1u);
+        if ((req >> q) & 1u && !any) { if (++W.waiting[q] == 30) std::fprintf(stderr, "[TRAIL] slot %2d requested by actor %08X for 30 passes, never started\n", q, who); }
+        else W.waiting[q] = 0;
+    }
+}
+// traillinger=ID,BIT[/BIT...] (2026-10-29, Noctis's warp wisp: "It should travel and then stop and linger in the air as
+// it fades out", "same for every use of the effect"): a trail (bone_effect) of this character's FEPA records ID with one
+// of the mask bits follows him while he travels, then stays in the world where it was and fades out.
+//  * stop: in the bone pass his speed (actor +0x80 moved per pass) is tracked; once it has passed kLingerMove and then
+//    drops under STOP (default 0.5) of its peak, the trail's request (actor +0x5D8 + 16 * slot,
+//    mask +0x6D8) is withdrawn before FUN_0884E660, every pass until the range ends or the motion changes, so the game
+//    stops that trail. A trail he never travels in stops at its range end as before.
+//  * linger: the stopped effect instance (inst +360 = stop time >= 0) keeps drawing while its FEP stop fade runs (body
+//    d = 0 / 1: 30 / 15 frames, applied to the instance alpha by FUN_0894A824); its ch106 point history (m2
+//    FUN_089672C4 -> FUN_0896808C) is no longer updated, so the ribbon does not shrink back onto the bone.
+//  * shape (request: "The end should be tapered and stop a little sooner", "More tapered with a sharper point"): on its
+//    first frozen update the history (the ch106 object = *a3: +0 / +4 point buffers of n x {pos, vel}, +48 n) loses its
+//    newest CUT points (default 3: it ends that much short of where he stopped), and both ends narrow to a point over
+//    TAPER of its length each (default 0.5) along (s / TAPER)^SHARP (default 2: a needle point).
+//    Instances are noted from the running trails after FUN_0884E660 (handle +208 = actor + 0x4C8, +192 record, +204 fx
+//    object: +16 instance or group) with their leaf (+464), and forgotten kLingerKeep passes after.
+constexpr uint32_t LOCUS_POINTS = 0x089672C4u;     // ch106 m2: the trail's point-history update
+constexpr uint32_t kLingerKeep = 600;
+constexpr float kLingerMove = 0.06f;               // metres per pass: he travelled
+struct LingerInst { uint32_t inst = 0, leaf = 0, seen = 0; int cut = 0; float head = 0.0f, sharp = 1.0f; uint32_t shaped[4] = {}; };
+struct LingerSlot { bool on = false, done = false; float peak = 0.0f; };
+struct LingerActor { uint32_t actor = 0, seen = 0; float pos[3] = {}, speed = 0.0f; bool have = false; int motion = -1;
+                     float t = 0.0f; LingerSlot slot[16]; };
+LingerInst g_linger[48];
+LingerActor g_linger_actor[4];
+FuncPtr g_orig_locus_points = nullptr;
+bool g_linger_log = false;
+bool traillinger_wanted() {
+    for (const Entry& e : g_entries) if (e.tl_id >= 0 && e.tl_mask) return true;
+    return false;
+}
+// bone pass: his speed this pass; a new motion (or the same one from its start) forgets every slot's state
+void traillinger_bone_post(uint8_t* r, uint32_t actor) {
+    const Entry* e = ex_entry(r, actor);
+    if (!e || e->tl_id < 0) return;
+    LingerActor* a = nullptr;
+    for (LingerActor& x : g_linger_actor) if (x.actor == actor) a = &x;
+    if (!a) {
+        for (LingerActor& x : g_linger_actor) if (!a || x.seen < a->seen) a = &x;
+        *a = LingerActor{};
+        a->actor = actor;
+    }
+    if (a->have && a->seen == g_trail_clock) return;     // once per pass (the clock steps in FUN_0884E660's wrapper)
+    a->seen = g_trail_clock;
+    float p[3];
+    std::memcpy(p, ex_p(r, actor + ACT_POS), 12);
+    a->speed = a->have ? std::sqrt((p[0] - a->pos[0]) * (p[0] - a->pos[0]) + (p[1] - a->pos[1]) * (p[1] - a->pos[1]) +
+                                   (p[2] - a->pos[2]) * (p[2] - a->pos[2])) : 0.0f;
+    std::memcpy(a->pos, p, 12);
+    a->have = true;
+    const int m = warp_motion_now(r, actor);
+    const float t = guest_rd<float>(r, actor + ACT_MOTION_T);
+    if (m != a->motion || t < a->t - 0.5f)
+        for (LingerSlot& sl : a->slot) sl = LingerSlot{};
+    a->motion = m;
+    a->t = t;
+}
+// before FUN_0884E660: withdraw the request of a lingering trail whose travel is over
+void traillinger_pre(uint8_t* r) {
+    for (LingerActor& a : g_linger_actor) {
+        if (!a.actor || a.seen + 2u < g_trail_clock || !ex_ok(a.actor, TRAIL_MASK + 4u)) continue;
+        const Entry* e = ex_entry(r, a.actor);
+        if (!e || e->tl_id < 0) continue;
+        uint32_t mask = ex_r32(r, a.actor + TRAIL_MASK);
+        const uint32_t was = mask;
+        for (int q = 0; q < 16; q++) {
+            LingerSlot& sl = a.slot[q];
+            const uint32_t at = a.actor + TRAIL_SLOTS + 16u * static_cast<uint32_t>(q);
+            const bool req = (mask >> q) & 1u;
+            const uint32_t bit = ex_r32(r, at + 4u);
+            if (!req || ex_r32(r, at) != static_cast<uint32_t>(e->tl_id) || bit > 31 || !((e->tl_mask >> bit) & 1u)) {
+                sl = LingerSlot{};
+                continue;
+            }
+            if (!sl.on) { sl.on = true; sl.done = false; sl.peak = 0.0f; }
+            if (!sl.done) {
+                sl.peak = std::max(sl.peak, a.speed);
+                if (sl.peak > kLingerMove && a.speed < e->tl_frac * sl.peak) {
+                    sl.done = true;
+                    if (g_linger_log) std::fprintf(stderr, "[LINGER] actor %08X slot %d (bit %u): travel over (peak %.3f, now %.3f m/pass), trail stops\n",
+                                                   a.actor, q, bit, sl.peak, a.speed);
+                }
+            }
+            if (sl.done) mask &= ~(1u << q);
+        }
+        if (mask != was) std::memcpy(ex_p(r, a.actor + TRAIL_MASK), &mask, 4);
+    }
+}
+void linger_note(uint8_t* r, uint32_t inst, const Entry* e) {
+    const uint32_t leaf = ex_r32(r, inst + 464u);
+    LingerInst* old = nullptr;
+    for (LingerInst& x : g_linger) {
+        if (x.inst == inst && x.leaf == leaf) { x.seen = g_trail_clock; return; }
+        if (!old || x.seen < old->seen) old = &x;
+    }
+    *old = LingerInst{};
+    old->inst = inst; old->leaf = leaf; old->seen = g_trail_clock; old->cut = e->tl_cut; old->head = e->tl_head; old->sharp = e->tl_sharp;
+}
+// the frozen history loses its newest `cut` points; then both ends narrow to a point, each over `head` of the remaining
+// length, width (s / head)^sharp from the end (s = distance from that end, 0..1 of the length): sharp 1 is a straight
+// taper, 2 a needle. The renderer's own straight taper to the oldest point comes on top.
+void linger_shape(uint8_t* r, uint32_t L, int cut, float head, float sharp) {
+    if (!ex_ok(L, 64u)) return;
+    const int n = static_cast<int>(ex_r32(r, L + 48u));
+    const uint32_t buf[2] = {ex_r32(r, L + 0u), ex_r32(r, L + 4u)};
+    if (n < 3 || n > 256 || !ex_ok(buf[0], 32u * n) || !ex_ok(buf[1], 32u * n)) return;
+    float P[2][256][3];
+    for (int s = 0; s < 2; s++)
+        for (int i = 0; i < n; i++) std::memcpy(P[s][i], ex_p(r, buf[s] + 32u * i), 12);
+    const int c = std::min(cut, n - 2), m = n - c;    // m real points; the last c repeat the oldest
+    for (int i = 0; i < n; i++) {
+        const int j = std::min(i + c, n - 1);
+        float a[3], b[3];
+        std::memcpy(a, P[0][j], 12); std::memcpy(b, P[1][j], 12);
+        const float s = std::min(1.0f, static_cast<float>(i) / static_cast<float>(m - 1));
+        float f = 1.0f;
+        if (head > 0.0f && s < head) f *= std::pow(s / head, sharp);
+        if (head > 0.0f && s > 1.0f - head) f *= std::pow((1.0f - s) / head, sharp);
+        for (int x = 0; x < 3; x++) {
+            const float mid = 0.5f * (a[x] + b[x]);
+            a[x] = mid + (a[x] - mid) * f; b[x] = mid + (b[x] - mid) * f;
+        }
+        std::memcpy(ex_p(r, buf[0] + 32u * i), a, 12);
+        std::memcpy(ex_p(r, buf[1] + 32u * i), b, 12);
+    }
+}
+// after FUN_0884E660: note the effect instances of the running lingering trails
+void traillinger_pass(uint8_t* r) {
+    for (int i = 0; i < 8; i++) {
+        const uint32_t b = TRAIL_STATE + 0x48u * static_cast<uint32_t>(i);
+        if (!ex_ok(b, 0x48u)) continue;
+        const uint32_t act = ex_r32(r, b);
+        for (int q = 0; q < 16; q++) {
+            if (!((act >> q) & 1u)) continue;
+            const uint32_t h = ex_r32(r, b + 8u + 4u * static_cast<uint32_t>(q));
+            if (!ex_ok(h, 0x280u)) continue;
+            const uint32_t rec = ex_r32(r, h + 192u), ch = ex_r32(r, h + 208u);
+            if (!ex_ok(rec, 0x104u) || ch < 0x08000000u + 0x4C8u) continue;
+            const Entry* e = ex_entry(r, ch - 0x4C8u);
+            if (!e || e->tl_id < 0 || ex_r32(r, rec + 0x24u) != static_cast<uint32_t>(e->tl_id) || !(ex_r32(r, rec + 0x44u) & e->tl_mask)) continue;
+            const uint32_t fx = ex_r32(r, h + 204u), node = ex_ok(fx, 0x20u) ? ex_r32(r, fx + 16u) : 0u;
+            if (ex_ok(node, 0x40u) && ex_p(r, node)[0] == 0x6C) {
+                const int cnt = ex_r16(r, node + 4u);
+                const uint32_t lst = ex_r32(r, node + 48u);
+                for (int k = 0; k < cnt && k < 8 && ex_ok(lst, 4u * (k + 1)); k++) {
+                    const uint32_t c = ex_r32(r, lst + 4u * static_cast<uint32_t>(k));
+                    if (ex_ok(c, 0x200u)) linger_note(r, c, e);
+                }
+            } else if (ex_ok(node, 0x200u)) {
+                linger_note(r, node, e);
+            }
+        }
+    }
+}
+// ch106 m2 (a1 = runner, +136 instance): a stopping lingering instance keeps its points where they are
+void locus_points_hook(uint8_t* r, recomp_context* ctx) {
+    const uint32_t runner = static_cast<uint32_t>(ctx->r[5]);
+    if (ex_ok(runner, 0x94u)) {
+        const uint32_t inst = ex_r32(r, runner + 136u);
+        if (ex_ok(inst, 0x200u))
+            for (LingerInst& x : g_linger)
+                if (x.inst == inst && g_trail_clock - x.seen < kLingerKeep && ex_r32(r, inst + 464u) == x.leaf &&
+                    ex_rf(r, inst + 360u) >= 0.0f) {
+                    const uint32_t state = static_cast<uint32_t>(ctx->r[7]);
+                    const uint32_t L = ex_ok(state, 4u) ? ex_r32(r, state) : 0u;
+                    bool done = !L;
+                    for (uint32_t& d : x.shaped) done = done || d == L;
+                    if (!done)
+                        for (uint32_t& d : x.shaped)
+                            if (!d) { d = L; linger_shape(r, L, x.cut, x.head, x.sharp); break; }
+                    return;
+                }
+    }
+    g_orig_locus_points(r, ctx);
+}
 void armtrail_consume_hook(uint8_t* rdram, recomp_context* ctx) {
     const uint32_t now = g_trail_clock++;
     for (TrailState& s : g_trail) {
@@ -3794,11 +4698,17 @@ void armtrail_consume_hook(uint8_t* rdram, recomp_context* ctx) {
         if (!e || e->at_nset <= 0) { s.actor = 0; continue; }
         armtrail_assign(rdram, &s, e);
     }
+    traillinger_pre(rdram);
     g_orig_trail_consume(rdram, ctx);
+    traillinger_pass(rdram);
+    trail_log_pass(rdram);
 }
 void armtrail_install() {
-    if (!armtrail_wanted()) return;
+    const bool linger = traillinger_wanted();
+    if (!armtrail_wanted() && !linger) return;
     for (const Entry& e : g_entries) {
+        if (e.tl_id >= 0 && e.tl_mask)
+            std::fprintf(stderr, "[ROSTER] charId %d: trails id %d bits mask %08X stay where his travel ends and fade there\n", e.charId, e.tl_id, e.tl_mask);
         if (e.at_nset <= 0) continue;
         std::string sets;
         for (int i = 0; i < e.at_nset; i++)
@@ -3812,9 +4722,83 @@ void armtrail_install() {
     g_orig_trail_consume = psp_dispatch_probe_lookup(TRAIL_CONSUME);
     if (g_orig_trail_consume) psp_dispatch_register(TRAIL_CONSUME, armtrail_consume_hook);
     else std::fprintf(stderr, "[ROSTER] arm trails hook NOT installed (no function at %08X)\n", TRAIL_CONSUME);
+    if (linger) {
+        g_linger_log = std::getenv("PSPRECOMP_LINGER_LOG") != nullptr;
+        g_orig_locus_points = psp_dispatch_probe_lookup(LOCUS_POINTS);
+        if (g_orig_locus_points) psp_dispatch_register(LOCUS_POINTS, locus_points_hook);
+        else std::fprintf(stderr, "[ROSTER] trail linger hook NOT installed (no function at %08X)\n", LOCUS_POINTS);
+    }
+    if (std::getenv("PSPRECOMP_TRAIL_LOG")) {
+        g_orig_locus_draw = psp_dispatch_probe_lookup(LOCUS_DRAW);
+        if (g_orig_locus_draw) psp_dispatch_register(LOCUS_DRAW, locus_draw_hook);
+        std::fprintf(stderr, "[ROSTER] trail log: locus draw hook %s\n", g_orig_locus_draw ? "on" : "NOT installed");
+    }
 }
 
 void exflash_bone_post(uint8_t* rdram, uint32_t actor);   // PSPRECOMP_EXFLASH_LOG, below
+// ghostpin= (2026-10-29, Noctis's dodges: "he should leave a ghost at the original position"): the warp ghost is a copy
+// of his skeleton (bones FIRST..LAST, g_root first) that the dodge motions pose in his first-frame pose at the model
+// origin. The game moves him through a dodge itself (only the backward hop has root motion), so the motion can't keep
+// the ghost still; here, after the engine's bone pass, every ghost bone M becomes M . W0 . W^-1 (row vectors: model ->
+// world is M . W): where it was in the world on the motion's first frame, whatever he has done since. A frame the
+// engine did not re-pose (a bone still holds what this pass wrote) uses the pose of the frame before.
+// A dodge made again before the last one ends plays the same motion from its start (two air dodges in a row): the
+// motion time (actor +0x1A8) dropping counts as a new start too, so the ghost moves to where the new dodge begins.
+struct GhostPinRun { uint32_t actor = 0; int motion = -1; float W0[16] = {}, t = 0.0f; bool wrote = false;
+                     std::vector<float> last, data; };   // per bone: the matrix written / the engine's pose
+std::vector<GhostPinRun> g_ghostpin_runs;
+bool ghostpin_wanted() {
+    for (const Entry& e : g_entries) if (e.gp_first >= 0 && !e.gp_motions.empty()) return true;
+    return false;
+}
+void ghostpin_bone_post(uint8_t* rdram, uint32_t actor) {
+    if (!guest_ok(actor, 0x400u)) return;
+    const uint32_t info = guest_rd<uint32_t>(rdram, actor + ACTOR_INFO);
+    if (!guest_ok(info, 8u)) return;
+    const int cid = static_cast<int8_t>(rdram[(info + 6u) & 0x07FFFFFFu]);
+    const Entry* e = nullptr;
+    for (const Entry& x : g_entries) if (x.charId == cid && x.gp_first >= 0 && !x.gp_motions.empty()) { e = &x; break; }
+    if (!e) return;
+    const uint32_t ctrl = guest_rd<uint32_t>(rdram, actor + ACT_MODEL);
+    if (!guest_ok(ctrl, 0x110u)) return;
+    const uint32_t gm = guest_rd<uint32_t>(rdram, ctrl + 0x0Cu);
+    if (!guest_ok(gm, 0x24u)) return;
+    GhostPinRun* r = nullptr;
+    for (GhostPinRun& x : g_ghostpin_runs) if (x.actor == actor) r = &x;
+    const int m = warp_motion_now(rdram, actor), n = e->gp_last - e->gp_first + 1;
+    const bool on = std::find(e->gp_motions.begin(), e->gp_motions.end(), m) != e->gp_motions.end();
+    if (!on) {
+        if (r && r->wrote) {   // the motion ended: a bone still holding this pass's matrix gets the engine's pose back
+            for (int k = 0; k < n; k++) {
+                const uint32_t at = ex_bone_mat(rdram, gm, e->gp_first + k);
+                if (at && std::memcmp(rdram + (at & 0x07FFFFFFu), &r->last[16 * k], 64) == 0) std::memcpy(rdram + (at & 0x07FFFFFFu), &r->data[16 * k], 64);
+            }
+        }
+        if (r) { r->motion = -1; r->wrote = false; }
+        return;
+    }
+    if (!r) { g_ghostpin_runs.push_back(GhostPinRun{}); r = &g_ghostpin_runs.back(); r->actor = actor; }
+    if (static_cast<int>(r->last.size()) != 16 * n) { r->last.assign(16 * n, 0.0f); r->data.assign(16 * n, 0.0f); r->wrote = false; }
+    float W[16], Wi[16], C[16];
+    std::memcpy(W, rdram + ((actor + ACT_WORLD) & 0x07FFFFFFu), sizeof W);
+    const float t = guest_rd<float>(rdram, actor + ACT_MOTION_T);
+    if (r->motion != m || t < r->t - 0.5f) { r->motion = m; std::memcpy(r->W0, W, sizeof W); }   // the motion starts (or starts again): where he stands now
+    r->t = t;
+    if (!mat_inv_affine(W, Wi)) return;
+    mat_mul(r->W0, Wi, C);
+    const bool wrote = r->wrote;
+    for (int k = 0; k < n; k++) {
+        const uint32_t at = ex_bone_mat(rdram, gm, e->gp_first + k);
+        if (!at) continue;
+        float cur[16], M[16];
+        std::memcpy(cur, rdram + (at & 0x07FFFFFFu), sizeof cur);
+        if (!(wrote && std::memcmp(cur, &r->last[16 * k], 64) == 0)) std::memcpy(&r->data[16 * k], cur, 64);
+        mat_mul(&r->data[16 * k], C, M);
+        std::memcpy(rdram + (at & 0x07FFFFFFu), M, 64);
+        std::memcpy(&r->last[16 * k], M, 64);
+    }
+    r->wrote = true;
+}
 void bone_post_hook(uint8_t* rdram, recomp_context* ctx) {
     const uint32_t actor = static_cast<uint32_t>(ctx->r[6]);
     g_orig_bone_post(rdram, ctx);
@@ -3822,8 +4806,12 @@ void bone_post_hook(uint8_t* rdram, recomp_context* ctx) {
     warp_bone_post(rdram, actor);      // Warp-Strike's thrown sword / wisps (warpfx=)
     apoc_bone_post(rdram, actor);      // Apocalypsis arms riding their magi (apocarms=)
     armtrail_bone_post(rdram, actor);  // which floating arms are shown, for their trails (armtrail=)
+    traillinger_bone_post(rdram, actor);  // his speed, for trails that stay where his travel ends (traillinger=)
+    ghostpin_bone_post(rdram, actor);  // the dodge ghost stays where the dodge started (ghostpin=)
     warpdash_tick(rdram, actor);       // warp dash: arm the link when its hit connects (warpdash=)
+    magi_watch_tick(rdram, actor);     // PSPRECOMP_MAGI_LOG=1: an extra's magi emitters and bullets
     chain_tick(rdram, ctx, actor);     // a chain window's action starts here (chainact=)
+    charge_tick(rdram, ctx, actor);    // a charge's release starts here (charge=)
     exflash_bone_post(rdram, actor);   // PSPRECOMP_EXFLASH_LOG
 }
 
@@ -4075,12 +5063,319 @@ void exmode_install() {
         if (g_orig_can_hit) psp_dispatch_register(CAN_HIT, can_hit_hook);
         else std::fprintf(stderr, "[ROSTER] EX ranged immunity hook NOT installed (no function at %08X)\n", CAN_HIT);
     }
-    if (arm || warp_fx_wanted() || apoc_wanted() || warpdash_wanted() || armtrail_wanted() || chain_wanted()) {     // the bone pass also places Warp-Strike's sword / wisps (warpfx=)
+    if (arm || warp_fx_wanted() || apoc_wanted() || warpdash_wanted() || armtrail_wanted() || traillinger_wanted() || chain_wanted() || charge_wanted() || ghostpin_wanted()) {     // the bone pass also places Warp-Strike's sword / wisps (warpfx=)
         g_orig_bone_post = psp_dispatch_probe_lookup(BONE_POST);
         g_play_fx = psp_dispatch_probe_lookup(PLAY_FX);
         if (g_orig_bone_post) psp_dispatch_register(BONE_POST, bone_post_hook);
         else std::fprintf(stderr, "[ROSTER] armiger hook NOT installed (no function at %08X)\n", BONE_POST);
     }
+}
+
+// ---- CPU control fix and CPU decision log (2026-11-01) -------------------------------------------------------------
+// request: every extra character (Noctis, Vivi, Y'shtola, ...) stands completely still as the CPU. Cause (static trace,
+// docs/archive/open-questions/cpu-ai.md section 1): at battle start (EBOOT 0x0888BE30) a side's controller type is the
+// halfword +0xF34 of its setup block 0x09AFB8A0 + side * 0x1060 (0 human, 1 CPU, 2 CPU with a recorded play style).
+// FUN_088F8D34 clears it to 0. Battle request type 0 ("own save record", FUN_088F9BB0(side, charId, ?, cpu flag)) sets
+// it to 2 only when FUN_088C04B4(save + 0x124A4, charId) finds the character's play-style record, and FUN_088C04F8
+// looks the charId up in the fixed list at EBOOT 0x089CBA68 = {1..22, 24..32}. An extra charId is not in it, so +0xF34
+// stays 0: the side is "human" with no pad, its brain (actor +0x5C4) keeps mode -1 and the AI tick FUN_08A64400 returns
+// at once.
+// Fix (PSPRECOMP_CPU_EXTRA_FIX, on unless set to 0): a wrapper on FUN_088F9BB0 runs it, then, for a CPU request of a
+// roster character whose charId the play-style list does not hold, does what the function would have done for its base
+// character (roster.txt `like`, Noctis -> Bartz 9): FUN_088C04B4 with the like's charId, +0xF34 = 2, strength +0xF38 =
+// FUN_088C0640(FUN_088CBB3C(block)), FUN_088C0274(record, block + 0xF40) copies the play style. So the extra plays as the
+// CPU exactly like a type-0 CPU of its base character, with the base character's recorded play style (commands the
+// style does not list weigh 0.1, the battle overlay's default at 0x08A9806C). If the like has no record either, +0xF34 =
+// 1 (plain CPU; level +0xF36 0 when it is still -1, as the brat weights need a level >= 0).
+// Why not a hook on FUN_088C04F8 itself: FUN_088C04B4 has three other callers (FUN_088F5AE8 / FUN_088F5FEC and battle
+// FUN_08AEF78C, the play-style recording), which would then write an extra's play into its base character's record.
+//
+// PSPRECOMP_CPU_LOG=1 logs (stderr, prefix [CPU]):
+//  * every type-0 battle request: side, charId, CPU flag, +0xF34 before / after the fix;
+//  * each brain's first AI tick (FUN_08A64400) and every change of its mode word (brain +0x54: -1 = no AI at all, 0 =
+//    CPU, 2 = human helper), with a heartbeat every 600 ticks (attack choices made / with a result);
+//  * the attack choice FUN_08A7C1DC(brain, request): the request, the foe's distance / height, every command looked at,
+//    how far it got through the gates (the callees the picker reaches only past each gate are wrapped to see it) and
+//    why it dropped out, its brat weight codes, the weight it got, and the result. Repeats of the same outcome are
+//    counted, not printed (one line per 300). PSPRECOMP_CPU_LOG_CHAR=N limits the choice log to charId N.
+// The picker's callees are battle overlay functions: their wrappers run them only while the battle overlay is resident
+// and otherwise forward to the menu / extra overlay function at that address, as camera.cpp does.
+constexpr uint32_t CPU_REQ0 = 0x088F9BB0u;      // EBOOT: battle request type 0 (a0 side, a1 charId, a3 & 0xFF CPU flag)
+constexpr uint32_t CPU_PS_LOOKUP = 0x088C04B4u; // EBOOT: play-style record of a charId (a0 save + 0x124A4, a1 charId), 0 if none
+constexpr uint32_t CPU_STR_SRC = 0x088CBB3Cu;   // EBOOT: (setup block) -> value FUN_088C0640 turns into the strength
+constexpr uint32_t CPU_STR = 0x088C0640u;
+constexpr uint32_t CPU_PS_COPY = 0x088C0274u;   // EBOOT: copy a play-style record (a0 record, a1 block + 0xF40)
+constexpr uint32_t CPU_PS_LIST = 0x089CBA68u;   // EBOOT: the 31 charIds with a play-style record
+constexpr uint32_t CPU_SAVE_PTR = 0x089D712Cu;  // word -> save area; + 0xF58 + 0x124A4 = the play-style records
+constexpr uint32_t CPU_SETUP = 0x09AFB8A0u, CPU_SETUP_STRIDE = 0x1060u;
+constexpr uint32_t CPU_TICK = 0x08A64400u;      // battle: brain tick (a0 = brain = actor +0x5C4)
+constexpr uint32_t CPU_PICK = 0x08A7C1DCu;      // battle: attack choice (a0 brain, a1 request) -> v0, -1 = none
+constexpr uint32_t CPU_FIRSTREC = 0x08A7BEC0u;  // (brain, comb record) -> plya record of its first action
+constexpr uint32_t CPU_STARTREC = 0x08A7BF1Cu;  // (brain, comb record) -> first press without plya flag 0x1000; reached only if equipped
+constexpr uint32_t CPU_HPFLAG = 0x08A7C004u;    // (brain, comb record) -> 1 when a press has plya flag 0x10 (HP)
+constexpr uint32_t CPU_WINGET = 0x08AB33DCu;    // (plya record) -> f0 = +0x24; reached once the kind gates passed
+constexpr uint32_t CPU_SLOTV = 0x08A652F4u;     // (.., comb record, ..) -> set slot, >= 12 = not in the set
+constexpr uint32_t CPU_POSTWIN = 0x08A7C0F4u;   // (brain, comb record): reached once the reach window passed
+constexpr uint32_t CPU_WEIGHT = 0x08A7BDF4u;    // (brain, brat table, row, situation, level) -> f0 weight
+constexpr uint32_t CPU_WEIGHT2 = 0x08A977D4u;   // (play style, command) -> f0 weight (play-style mode)
+constexpr uint32_t CPU_ADDRS[8] = {CPU_FIRSTREC, CPU_STARTREC, CPU_HPFLAG, CPU_WINGET, CPU_SLOTV, CPU_POSTWIN, CPU_WEIGHT, CPU_WEIGHT2};
+FuncPtr g_cpu_req0 = nullptr, g_cpu_ps_lookup = nullptr, g_cpu_str_src = nullptr, g_cpu_str = nullptr, g_cpu_ps_copy = nullptr,
+        g_cpu_tick = nullptr, g_cpu_pick = nullptr, g_cpu_fn[8] = {};
+bool g_cpu_log = false, g_cpu_fix = true;
+int g_cpu_log_char = -1, g_cpu_lines = 0;
+constexpr int kCpuMaxLines = 30000;
+bool cpu_say() { if (g_cpu_lines >= kCpuMaxLines) return false; if (++g_cpu_lines == kCpuMaxLines) std::fprintf(stderr, "[CPU] log line limit reached, quiet from now on\n"); return true; }
+uint16_t cpu_rd16(const uint8_t* rdram, uint32_t a) { return guest_rd<uint16_t>(rdram, a); }
+void cpu_wr16(uint8_t* rdram, uint32_t a, uint16_t v) { std::memcpy(rdram + (a & 0x07FFFFFFu), &v, 2); }
+bool cpu_in_ps_list(const uint8_t* rdram, int charId) {
+    for (uint32_t i = 0; i < 31; i++) if (rdram[(CPU_PS_LIST + i) & 0x07FFFFFFu] == static_cast<uint8_t>(charId)) return true;
+    return false;
+}
+// a0 (side) .. a3 as the game passes them; a1 = charId, a3 & 0xFF = CPU flag
+void cpu_req0_hook(uint8_t* rdram, recomp_context* ctx) {
+    const uint32_t side = static_cast<uint32_t>(ctx->r[4]);
+    const int charId = ctx->r[5], flag = ctx->r[7] & 0xFF;
+    g_cpu_req0(rdram, ctx);
+    if (side > 3u) return;
+    const uint32_t block = CPU_SETUP + side * CPU_SETUP_STRIDE;
+    const uint16_t before = cpu_rd16(rdram, block + 0xF34u);
+    const char* what = "unchanged";
+    int like = -1;
+    if (flag == 1 && before == 0 && g_cpu_fix && !cpu_in_ps_list(rdram, charId)) {
+        for (const Entry& e : g_entries) if (e.charId == charId) like = e.like;
+        if (like >= 0 && like != charId && cpu_in_ps_list(rdram, like) && g_cpu_ps_lookup && g_cpu_str_src && g_cpu_str && g_cpu_ps_copy) {
+            const uint32_t save = guest_rd<uint32_t>(rdram, CPU_SAVE_PTR) + 0xF58u + 0x124A4u;
+            const uint32_t rec = wd_call(g_cpu_ps_lookup, rdram, ctx, save, static_cast<uint32_t>(like));
+            if (rec) {
+                cpu_wr16(rdram, block + 0xF34u, 2);
+                const uint32_t s = wd_call(g_cpu_str_src, rdram, ctx, block);
+                cpu_wr16(rdram, block + 0xF38u, static_cast<uint16_t>(wd_call(g_cpu_str, rdram, ctx, s)));
+                wd_call(g_cpu_ps_copy, rdram, ctx, rec, block + 0xF40u);
+                what = "fixed: CPU with the base character's play style (mode 2)";
+            } else {
+                cpu_wr16(rdram, block + 0xF34u, 1);
+                if (cpu_rd16(rdram, block + 0xF36u) == 0xFFFFu) cpu_wr16(rdram, block + 0xF36u, 0);
+                what = "fixed: plain CPU (mode 1; the base character has no play-style record)";
+            }
+        } else if (like >= 0) {
+            what = "NOT fixed (base character not in the play-style list, or a function is missing)";
+        }
+    }
+    if (g_cpu_log || before != cpu_rd16(rdram, block + 0xF34u))
+        std::fprintf(stderr, "[CPU] battle request (own record): side %u charId %d (base %d) CPU flag %d: controller +0xF34 %d -> %d, "
+                     "level +0xF36 %d, strength +0xF38 %d, %s\n", side, charId, like, flag, static_cast<int16_t>(before),
+                     static_cast<int16_t>(cpu_rd16(rdram, block + 0xF34u)), static_cast<int16_t>(cpu_rd16(rdram, block + 0xF36u)),
+                     static_cast<int16_t>(cpu_rd16(rdram, block + 0xF38u)), what);
+}
+uint32_t cpu_ovl_id(const uint8_t* rdram) { uint32_t o; std::memcpy(&o, rdram + (OVL_BASE & 0x07FFFFFFu), 4); return o; }
+// true = not the battle overlay: the call went to the resident overlay's own function at that address
+bool cpu_forward(uint8_t* rdram, recomp_context* ctx, uint32_t addr) {
+    const uint32_t id = cpu_ovl_id(rdram);
+    if (id == 1u) return false;
+    FuncPtr f = id == 2u ? ovl_menu_lookup(addr) : id == 3u ? ovl_extra_lookup(addr) : nullptr;
+    if (f) f(rdram, ctx);
+    return true;
+}
+uint32_t cpu_brain_actor(const uint8_t* rdram, uint32_t brain) {   // *(*(brain + 4) + 4), checked against actor +0x5C4
+    const uint32_t m = guest_ok(brain, 8u) ? guest_rd<uint32_t>(rdram, brain + 4u) : 0u;
+    const uint32_t a = guest_ok(m, 8u) ? guest_rd<uint32_t>(rdram, m + 4u) : 0u;
+    return guest_ok(a, 0x5C8u) ? a : 0u;
+}
+int cpu_char(const uint8_t* rdram, uint32_t actor, int* aiId = nullptr) {
+    const uint32_t info = actor ? guest_rd<uint32_t>(rdram, actor + 0x2F8u) : 0u;
+    if (!guest_ok(info, 8u)) return -1;
+    if (aiId) *aiId = guest_rd<int16_t>(rdram, info + 2u);
+    return static_cast<int8_t>(rdram[(info + 6u) & 0x07FFFFFFu]);
+}
+struct CpuBrain { uint32_t brain = 0; int mode = -99, en = -1, c = -1; uint32_t ticks = 0, picks = 0, hits = 0; };
+CpuBrain g_cpu_brains[8];
+CpuBrain& cpu_brain(uint32_t b) {
+    for (CpuBrain& x : g_cpu_brains) if (x.brain == b) return x;
+    for (CpuBrain& x : g_cpu_brains) if (x.brain == 0) { x.brain = b; return x; }
+    static int next = 0; CpuBrain& x = g_cpu_brains[next++ & 7]; x = CpuBrain(); x.brain = b; return x;
+}
+void cpu_tick_hook(uint8_t* rdram, recomp_context* ctx) {
+    if (cpu_forward(rdram, ctx, CPU_TICK)) return;
+    const uint32_t brain = static_cast<uint32_t>(ctx->r[4]);
+    if (guest_ok(brain, 0x60u)) {
+        CpuBrain& s = cpu_brain(brain);
+        const int mode = guest_rd<int32_t>(rdram, brain + 0x54u), en = rdram[brain & 0x07FFFFFFu], c = rdram[(brain + 0xCu) & 0x07FFFFFFu];
+        s.ticks++;
+        if ((mode != s.mode || en != s.en || c != s.c || s.ticks % 600u == 0u) && cpu_say()) {
+            const uint32_t actor = cpu_brain_actor(rdram, brain);
+            const bool mine = actor && guest_rd<uint32_t>(rdram, actor + 0x5C4u) == brain;
+            std::fprintf(stderr, "[CPU] brain %08X (actor %08X charId %d): mode %d (%s), enabled %d, +0xC %d, state %d; tick %u, "
+                         "attack choices %u (%u with a result)%s\n", brain, mine ? actor : 0u, mine ? cpu_char(rdram, actor) : -1, mode,
+                         mode == -1 ? "no AI: the tick returns at once" : mode == 0 ? "CPU" : mode == 2 ? "human helper" : "other",
+                         en, c, mine ? wd_state_id(rdram, actor) : -1, s.ticks, s.picks, s.hits,
+                         mode != s.mode && s.mode != -99 ? " (mode changed)" : "");
+        }
+        s.mode = mode; s.en = en; s.c = c;
+    }
+    g_cpu_tick(rdram, ctx);
+}
+struct CpuCand { uint32_t comb = 0, prec = 0; int cmd = -1, act = -1, stage = 0, hp = -1, slot = -1, sit = -1, lvl = -1; float w = -1.0f; };
+struct CpuPick {
+    bool on = false; uint32_t brain = 0, actor = 0; int n = 0, cur = -1; CpuCand c[64];
+    bool win = false; float dist = 0, height = 0, tol = 0;
+} g_cp;
+CpuCand* cpu_cand(uint32_t comb, bool make) {
+    for (int i = 0; i < g_cp.n; i++) if (g_cp.c[i].comb == comb) return &g_cp.c[i];
+    if (!make || g_cp.n >= 64) return nullptr;
+    CpuCand& c = g_cp.c[g_cp.n++]; c = CpuCand(); c.comb = comb; return &c;
+}
+CpuCand* cpu_last() { return g_cp.cur >= 0 && g_cp.cur < g_cp.n ? &g_cp.c[g_cp.cur] : nullptr; }   // the command the loop is on
+template <int K> void cpu_gate_hook(uint8_t* rdram, recomp_context* ctx) {
+    if (cpu_forward(rdram, ctx, CPU_ADDRS[K])) return;
+    const uint32_t a0 = static_cast<uint32_t>(ctx->r[4]), a1 = static_cast<uint32_t>(ctx->r[5]), sp = static_cast<uint32_t>(ctx->r[29]);
+    const int a3 = ctx->r[7], a4 = ctx->r[8];
+    g_cpu_fn[K](rdram, ctx);
+    if (!g_cp.on) return;
+    const uint32_t v0 = static_cast<uint32_t>(ctx->r[2]);
+    if (K == 0) {                                       // first action's plya record
+        if (!guest_ok(a1, 16u)) return;
+        CpuCand* c = cpu_cand(a1, true);
+        if (!c) return;
+        g_cp.cur = static_cast<int>(c - g_cp.c);
+        c->cmd = guest_rd<int16_t>(rdram, a1); c->act = guest_rd<uint16_t>(rdram, a1 + 8u);
+        if (v0) c->stage = std::max(c->stage, 1);
+    } else if (K == 1 || K == 2 || K == 4 || K == 5) {  // gates keyed by the comb record
+        CpuCand* c = cpu_cand(a1, false);
+        if (!c || c != cpu_last()) return;              // calls after the main loop (the final pick) are not gates
+        const int st = K == 1 ? 2 : K == 2 ? 3 : K == 4 ? 5 : 6;
+        c->stage = std::max(c->stage, st);
+        if (K == 1) c->prec = v0;
+        if (K == 2) c->hp = static_cast<int>(v0);
+        if (K == 4) c->slot = static_cast<int>(v0);
+    } else if (K == 3) {                                // window getter: the kind gates passed (only in the main loop)
+        CpuCand* c = cpu_last();
+        if (c && c->stage == 3 && c->prec == a0) {
+            c->stage = 4;
+            g_cp.win = true;
+            g_cp.dist = guest_rd<float>(rdram, sp + 6152u); g_cp.height = guest_rd<float>(rdram, sp + 6168u); g_cp.tol = guest_rd<float>(rdram, sp + 6200u);
+        }
+    } else {                                            // weight
+        CpuCand* c = cpu_last();
+        if (c && c->stage >= 6) { c->stage = 7; c->w = ctx->f[0]; if (K == 6) { c->sit = a3; c->lvl = a4; } }
+    }
+}
+// brat row codes of a command, from the table the picker uses (objdata +0xA0 + 8: id, N, rows, -, M, weights)
+std::string cpu_brat_codes(const uint8_t* rdram, uint32_t actor, int cmd) {
+    const uint32_t ms = guest_rd<uint32_t>(rdram, actor + 0x390u);
+    if (!guest_ok(ms, 0xC0u) || !rdram[(ms + 0xA0u) & 0x07FFFFFFu]) return "brat not loaded";
+    const uint32_t t = ms + 0xA8u, n = guest_rd<uint32_t>(rdram, t + 4u), rows = guest_rd<uint32_t>(rdram, t + 8u);
+    const uint32_t m = guest_rd<uint32_t>(rdram, t + 16u), w = guest_rd<uint32_t>(rdram, t + 20u);
+    if (n > 255u || !guest_ok(rows, n * 28u) || !guest_ok(w, m)) return "brat unreadable";
+    for (uint32_t i = 0; i < n; i++) {
+        const uint32_t r = rows + 28u * i;
+        if (guest_rd<int32_t>(rdram, r) != cmd) continue;
+        std::string s = "brat";
+        for (int k = 0; k < 6; k++) {
+            const uint16_t off = guest_rd<uint16_t>(rdram, r + 4u + 4u * k), cnt = guest_rd<uint16_t>(rdram, r + 6u + 4u * k);
+            s += k ? "/" : " ";
+            for (uint16_t j = 0; j < cnt && j < 4; j++) s += (j ? "," : "") + std::to_string(off + j < m ? rdram[(w + off + j) & 0x07FFFFFFu] : 255);
+        }
+        return s;
+    }
+    return "NO brat row";
+}
+void cpu_pick_hook(uint8_t* rdram, recomp_context* ctx) {
+    if (cpu_forward(rdram, ctx, CPU_PICK)) return;
+    const uint32_t brain = static_cast<uint32_t>(ctx->r[4]), req = static_cast<uint32_t>(ctx->r[5]);
+    const uint32_t actor = cpu_brain_actor(rdram, brain);
+    int aiId = -1;
+    const int charId = actor ? cpu_char(rdram, actor, &aiId) : -1;
+    const bool logit = g_cp.on == false && (g_cpu_log_char < 0 || g_cpu_log_char == charId);
+    if (logit) { g_cp = CpuPick(); g_cp.on = true; g_cp.brain = brain; g_cp.actor = actor; }
+    g_cpu_pick(rdram, ctx);
+    const int v0 = ctx->r[2];
+    CpuBrain& bs = cpu_brain(brain);
+    bs.picks++; if (v0 >= 0) bs.hits++;
+    if (!logit) return;
+    g_cp.on = false;
+    // the outcome, for the repeat filter
+    uint32_t sig = 2166136261u;
+    auto mix = [&](uint32_t x) { sig = (sig ^ x) * 16777619u; };
+    mix(brain); mix(static_cast<uint32_t>(v0));
+    int32_t rq[10] = {};
+    if (guest_ok(req, 0x30u)) for (int i = 0; i < 10; i++) { rq[i] = guest_rd<int32_t>(rdram, req + 4u * i); mix(static_cast<uint32_t>(rq[i])); }
+    for (int i = 0; i < g_cp.n; i++) { mix(static_cast<uint32_t>(g_cp.c[i].cmd)); mix(static_cast<uint32_t>(g_cp.c[i].stage)); }
+    static uint32_t last_sig[8] = {}, last_brain[8] = {}, reps[8] = {};
+    int slot = 0;
+    while (slot < 8 && last_brain[slot] && last_brain[slot] != brain) slot++;
+    if (slot == 8) slot = static_cast<int>(brain >> 4) & 7;
+    last_brain[slot] = brain;
+    if (sig == last_sig[slot]) {
+        if (++reps[slot] % 300u == 0u && cpu_say())
+            std::fprintf(stderr, "[CPU] choice charId %d actor %08X: same outcome as above x%u (v0 %d)\n", charId, actor, reps[slot], v0);
+        return;
+    }
+    last_sig[slot] = sig; reps[slot] = 0;
+    if (!cpu_say()) return;
+    const uint32_t ms = actor ? guest_rd<uint32_t>(rdram, actor + 0x390u) : 0u;
+    const bool bl = guest_ok(ms, 0xC0u) && rdram[(ms + 0xA0u) & 0x07FFFFFFu];
+    std::fprintf(stderr, "[CPU] choice charId %d actor %08X brain %08X mode %d: request sit %d +4 %d type %d +C %d window-mode %d +14 %d "
+                 "class %d +1C %d +20 %d +24 %d | objentry AI id %d, brat %s id %d rows %u | foe %s dist %.2f height %.2f (+-%.2f) "
+                 "-> v0 %d%s\n", charId, actor, brain, guest_ok(brain, 0x60u) ? guest_rd<int32_t>(rdram, brain + 0x54u) : -99,
+                 rq[0], rq[1], rq[2], rq[3], rq[4], rq[5], rq[6], rq[7], rq[8], rq[9], aiId, bl ? "loaded" : "NOT loaded",
+                 bl ? guest_rd<int32_t>(rdram, ms + 0xA8u) : -1, bl ? guest_rd<uint32_t>(rdram, ms + 0xACu) : 0u,
+                 g_cp.win ? "at" : "(no window test reached)", g_cp.dist, g_cp.height, g_cp.tol, v0,
+                 g_cp.n == 0 ? " - no command looked at (an early exit: no target, no brat with this id, no objdata...)" : "");
+    for (int i = 0; i < g_cp.n; i++) {
+        const CpuCand& c = g_cp.c[i];
+        char why[200];
+        uint32_t rec = c.prec;
+        float lo = 0, hi = 0, hl = 0, hh = 0;
+        int cls = -1;
+        if (guest_ok(rec, 0x74u)) { lo = guest_rd<float>(rdram, rec + 0x24u); hi = guest_rd<float>(rdram, rec + 0x28u); hl = guest_rd<float>(rdram, rec + 0x2Cu); hh = guest_rd<float>(rdram, rec + 0x30u); cls = rdram[(rec + 0x0Eu) & 0x07FFFFFFu]; }
+        switch (c.stage) {
+            case 0: std::snprintf(why, sizeof why, "no plya record for its first action"); break;
+            case 1: std::snprintf(why, sizeof why, "not equipped (no ability of the set gives it; plya +0x0F&4 off)"); break;
+            case 2: std::snprintf(why, sizeof why, "no press without plya flag 0x1000"); break;
+            case 3: std::snprintf(why, sizeof why, "wrong kind for this request (%s; air/ground, flag 0x40, class +0x0E %d vs request class %d)", c.hp == 1 ? "HP" : "brave", cls, rq[6]); break;
+            case 4: std::snprintf(why, sizeof why, "dropped before the set-slot check"); break;
+            case 5: if (c.slot >= 12) std::snprintf(why, sizeof why, "not in the 12 set slots (slot %d)", c.slot);
+                    else std::snprintf(why, sizeof why, "outside the reach window (window %.1f..%.1f m, height %.1f..%.1f; slot %d)", lo, hi, hl, hh, c.slot);
+                    break;
+            case 6: std::snprintf(why, sizeof why, "a late gate (flags 0x04000000 / assist class / HP gate / form) or no brat row"); break;
+            default: if (c.w > 0.0f) std::snprintf(why, sizeof why, "CANDIDATE weight %.3f (situation %d level %d)", c.w, c.sit, c.lvl);
+                     else std::snprintf(why, sizeof why, "weight 0 (situation %d level %d)", c.sit, c.lvl);
+        }
+        if (cpu_say())
+            std::fprintf(stderr, "[CPU]    cmd %02X action %d: %s [%s]\n", c.cmd & 0xFFFF, c.act, why, actor ? cpu_brat_codes(rdram, actor, c.cmd).c_str() : "-");
+    }
+}
+void cpu_install() {
+    g_cpu_log = std::getenv("PSPRECOMP_CPU_LOG") != nullptr && std::strcmp(std::getenv("PSPRECOMP_CPU_LOG"), "0") != 0;
+    if (const char* c = std::getenv("PSPRECOMP_CPU_LOG_CHAR")) g_cpu_log_char = std::atoi(c);
+    if (const char* f = std::getenv("PSPRECOMP_CPU_EXTRA_FIX")) g_cpu_fix = std::strcmp(f, "0") != 0;
+    g_cpu_req0 = psp_dispatch_probe_lookup(CPU_REQ0);
+    g_cpu_ps_lookup = psp_dispatch_probe_lookup(CPU_PS_LOOKUP);
+    g_cpu_str_src = psp_dispatch_probe_lookup(CPU_STR_SRC);
+    g_cpu_str = psp_dispatch_probe_lookup(CPU_STR);
+    g_cpu_ps_copy = psp_dispatch_probe_lookup(CPU_PS_COPY);
+    if (g_cpu_req0 && (g_cpu_fix || g_cpu_log)) psp_dispatch_register(CPU_REQ0, cpu_req0_hook);
+    std::fprintf(stderr, "[ROSTER] extra characters as the CPU: %s (request type 0 %s, play-style lookup %s, strength %s/%s, copy %s)%s\n",
+                 g_cpu_fix ? "fix on (PSPRECOMP_CPU_EXTRA_FIX=0 turns it off)" : "fix OFF", g_cpu_req0 ? "ok" : "missing",
+                 g_cpu_ps_lookup ? "ok" : "missing", g_cpu_str_src ? "ok" : "missing", g_cpu_str ? "ok" : "missing",
+                 g_cpu_ps_copy ? "ok" : "missing", g_cpu_log ? ", CPU log on" : "");
+    if (!g_cpu_log) return;
+    g_cpu_tick = ovl_battle_lookup(CPU_TICK);
+    g_cpu_pick = ovl_battle_lookup(CPU_PICK);
+    for (int k = 0; k < 8; k++) g_cpu_fn[k] = ovl_battle_lookup(CPU_ADDRS[k]);
+    if (g_cpu_tick) psp_dispatch_register(CPU_TICK, cpu_tick_hook);
+    bool all = g_cpu_pick != nullptr;
+    for (int k = 0; k < 8; k++) all = all && g_cpu_fn[k] != nullptr;
+    if (all) {
+        psp_dispatch_register(CPU_PICK, cpu_pick_hook);
+        psp_dispatch_register(CPU_ADDRS[0], cpu_gate_hook<0>); psp_dispatch_register(CPU_ADDRS[1], cpu_gate_hook<1>);
+        psp_dispatch_register(CPU_ADDRS[2], cpu_gate_hook<2>); psp_dispatch_register(CPU_ADDRS[3], cpu_gate_hook<3>);
+        psp_dispatch_register(CPU_ADDRS[4], cpu_gate_hook<4>); psp_dispatch_register(CPU_ADDRS[5], cpu_gate_hook<5>);
+        psp_dispatch_register(CPU_ADDRS[6], cpu_gate_hook<6>); psp_dispatch_register(CPU_ADDRS[7], cpu_gate_hook<7>);
+    }
+    std::fprintf(stderr, "[ROSTER] CPU log: brain tick %s, attack choice %s%s\n", g_cpu_tick ? "logged" : "NOT found",
+                 all ? "logged" : "NOT logged (a battle overlay function is missing)",
+                 g_cpu_log_char >= 0 ? (" (charId " + std::to_string(g_cpu_log_char) + " only)").c_str() : "");
 }
 }  // namespace
 
@@ -4111,6 +5406,19 @@ void dissidia_roster_grid_install() {
         g_orig_memset = psp_dispatch_probe_lookup(0x08935828u);
         if (g_orig_memcpy) psp_dispatch_register(0x08935524u, wc_memcpy);
         if (g_orig_memset) psp_dispatch_register(0x08935828u, wc_memset);
+    }
+    {   // the Customization screens' picture binders (see cust_wrap)
+        static const uint32_t addr[3] = { 0x08AE3B14u, 0x08AE10B8u, 0x08B03FF8u };
+        static const FuncPtr wrap[3] = { cust_wrap<0, 7, 3u>, cust_wrap<1, 8, 4u>, cust_wrap<2, 6, 3u> };
+        int n = 0;
+        for (int i = 0; i < 3; i++) {
+            g_orig_cust[i] = g_orig_setframe ? ovl_menu_lookup(addr[i]) : nullptr;
+            if (g_orig_cust[i]) { psp_dispatch_register(addr[i], wrap[i]); n++; }
+        }
+        g_orig_setframe_cust = g_orig_setframe;
+        g_orig_bind2 = g_orig_setframe ? psp_dispatch_probe_lookup(0x088D5638u) : nullptr;
+        if (g_orig_bind2) psp_dispatch_register(0x088D5638u, cust_bind2_hook);
+        std::fprintf(stderr, "[ROSTER] customize picture binders: %d of 3 wrapped, FUN_088D5638 %s\n", n, g_orig_bind2 ? "wrapped" : "NOT found");
     }
     g_orig_saveidx = psp_dispatch_probe_lookup(0x088CB3B4u);
     if (g_orig_saveidx) psp_dispatch_register(0x088CB3B4u, saveidx_hook);
@@ -4153,6 +5461,8 @@ void dissidia_roster_grid_install() {
     land_install();
     warpdash_install();
     chain_install();
+    cpu_install();
+    charge_install();
     g_orig_list_build = psp_dispatch_probe_lookup(0x088D5AC8u);
     if (g_orig_list_build) psp_dispatch_register(0x088D5AC8u, list_build_hook);
     grid40_install();

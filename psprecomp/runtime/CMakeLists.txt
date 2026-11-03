@@ -137,6 +137,7 @@ set(RUNTIME_SOURCES
     src/psp_scheduler.cpp
     src/psp_render_queue.cpp
     src/psp_event_loop.cpp
+    src/psp_settings.cpp
     src/psp_ge.cpp
     src/psp_ge_vertex.cpp
     src/psp_ge_texture.cpp
@@ -430,6 +431,31 @@ target_compile_options(test_ge_viewport PRIVATE
 )
 
 add_test(NAME ge_viewport_tests COMMAND test_ge_viewport)
+
+# GE list FIFO unit test: stall / resume bookkeeping in psp_render_queue.cpp,
+# with the GE interpreter, presenter and scheduler stubbed -- no SDL2/GL.
+add_executable(test_render_queue
+    tests/test_render_queue.cpp
+    src/psp_render_queue.cpp
+)
+
+target_include_directories(test_render_queue PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${PSPRECOMP_OUTPUT_DIR}/include  # recomp.h (psp_scheduler.h)
+)
+
+target_link_libraries(test_render_queue PRIVATE
+    pthread
+)
+
+target_compile_options(test_render_queue PRIVATE
+    -O2
+    -Wall
+    -Wextra
+    -Wno-unused-parameter
+)
+
+add_test(NAME render_queue_tests COMMAND test_render_queue)
 
 # FX shader overrides (FX_SHADERS.md): manifest parsing, hash matching, effect
 # ages, compile-failure fallback (no GL), plus a check of the shipped manifest.

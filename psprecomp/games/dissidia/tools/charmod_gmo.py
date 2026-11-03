@@ -198,8 +198,10 @@ def skin_to_bytes(skin):
         idx[k] = [o, len(v)]
         blobs.append(v)
         o += len(v)
-    head = json.dumps({'version': 1, 'info': skin.get('info', ''), 'slots': skin['slots'], 'blobs': idx},
-                      indent=1).encode()
+    h = {'version': 1, 'info': skin.get('info', ''), 'slots': skin['slots'], 'blobs': idx}
+    if skin.get('ranges'):
+        h['ranges'] = skin['ranges']
+    head = json.dumps(h, indent=1).encode()
     return b'DSKN' + struct.pack('<I', len(head)) + head + b''.join(blobs)
 
 
@@ -208,8 +210,11 @@ def skin_from_bytes(d):
     n = struct.unpack_from('<I', d, 4)[0]
     head = json.loads(d[8:8 + n])
     base = 8 + n
-    return {'info': head.get('info', ''), 'slots': head['slots'],
-            'blobs': {k: d[base + o: base + o + s] for k, (o, s) in head['blobs'].items()}}
+    sk = {'info': head.get('info', ''), 'slots': head['slots'],
+          'blobs': {k: d[base + o: base + o + s] for k, (o, s) in head['blobs'].items()}}
+    if head.get('ranges'):
+        sk['ranges'] = _rng(head['ranges'])
+    return sk
 
 
 def _grp_blobs(m, grp, prefix, out):
@@ -230,7 +235,7 @@ def extract_skin(gmo_bytes, info='', weapons=None):
     _grp_blobs(m, s['body'], 'body.', blobs)
     for k, g in enumerate(s['ghosts']):
         _grp_blobs(m, g, 'ghost%d.' % k, blobs)
-    sk = {'info': info, 'slots': s, 'blobs': blobs}
+    sk = {'info': info, 'slots': s, 'blobs': blobs, 'ranges': model_ranges(m)}   # its parts are in this model's ranges
     if weapons:
         add_weapons(sk, extract_weapons(gmo_bytes, weapons))
     return sk
@@ -242,12 +247,17 @@ def _parse_one(data):
 
 def apply_skin(gmo_bytes, skin):
     gmo_bytes = own_body_slots(gmo_bytes)[0]                 # the slots skins are made for (same bytes when nothing is shared)
+    if skin.get('ranges'):                                   # its parts are in a wider range: the model's others go there too
+        gmo_bytes = rerange_model(gmo_bytes, _rng(skin['ranges']))
     m = Model(gmo_bytes)
     s = m.slots()
     ss = skin['slots']
-    assert len(ss['ghosts']) == len(s['ghosts']), 'skin has %d ghosts, model %d' % (len(ss['ghosts']), len(s['ghosts']))
+    # ghosts by Part: a model may keep fewer ghosts than the skin carries (Noctis keeps warp_ghost1 only, 2026-10-29)
+    sk = {g['part']: k for k, g in enumerate(ss['ghosts'])}
+    missing = [g['part'] for g in s['ghosts'] if g['part'] not in sk]
+    assert not missing, 'skin has no ghost for Part(s) %s (it carries %s)' % (missing, sorted(sk))
     for grp, sgrp, prefix in [(s['body'], ss['body'], 'body.')] + [
-            (g, sg, 'ghost%d.' % k) for k, (g, sg) in enumerate(zip(s['ghosts'], ss['ghosts']))]:
+            (g, ss['ghosts'][sk[g['part']]], 'ghost%d.' % sk[g['part']]) for g in s['ghosts']]:
         assert grp == sgrp, 'skin was made for other slots: %s vs %s' % (sgrp, grp)
         B = skin['blobs']
         m.mm.children[m.mm.children.index(m.parts[grp['part']])] = _parse_one(B[prefix + 'part'])
@@ -332,6 +342,106 @@ def requantize_part(part_bytes, src_r, dst_r, what=''):
     return p.to_bytes(), worst
 
 
+# Widening: a body (or weapon) that reaches past the rig's range gets a wider one instead of an error or clipping.
+# The skin records the range its parts are encoded in (skin['ranges']); apply_skin re-encodes the model's other parts
+# into it and writes it into the model's 0x8015 commands. The normalised limits of each stored width (kind 1: 8 bit,
+# 2: 16 bit; 3: float has none):
+_KLIM = {'pos': {1: (-1.0, 127 / 128), 2: (-1.0, 32767 / 32768)}, 'uv': {1: (0.0, 255 / 128), 2: (0.0, 65535 / 32768)}}
+RANGE_MARGIN = 0.02
+
+
+def _arrays(part_bytes):
+    """-> [(range key, format kind, normalised values (n, dims))] of a part's vertex arrays"""
+    import numpy as np
+    gmo = _vertex_format()
+    out = []
+    for c in _parse_one(part_bytes).find(C.ARRAYS):
+        word, count, nmorph, flags = struct.unpack_from('<IIII', c.payload, 0)
+        fmt = gmo.VertexFormat(word)
+        off, st = fmt.layout()
+        buf = np.frombuffer(bytes(c.payload[16:16 + count * st * nmorph]), np.uint8).reshape(count * nmorph, st)
+        for key, kind, n, table, rk in (('p', fmt.pos, 3, {1: (np.int8, 128.0), 2: (np.int16, 32768.0), 3: (np.float32, 1.0)}, 'pos'),
+                                        ('t', fmt.tc, 2, gmo._NORM, 'uv')):
+            if key not in off or not kind:
+                continue
+            dt, sc = table[kind]
+            sz = np.dtype(dt).itemsize
+            out.append((rk, kind, buf[:, off[key]:off[key] + n * sz].copy().view(dt).reshape(-1, n).astype(np.float64) / sc))
+    return out
+
+
+def part_extent(part_bytes, ranges):
+    """-> {range key: (min xyz, max xyz, (normalised lo, hi) its stored width allows)} of a part's positions / UVs in
+    model space (ranges: the ones it is encoded in). Float arrays have no limit (None)."""
+    import numpy as np
+    out = {}
+    for rk, kind, v in _arrays(part_bytes):
+        if rk not in ranges or not len(v):
+            continue
+        o, sc = np.array(ranges[rk][0]), np.array(ranges[rk][1])
+        a = v * sc + o
+        lo, hi, lim = a.min(0), a.max(0), _KLIM[rk].get(kind)
+        if rk in out:
+            plo, phi, plim = out[rk]
+            lo, hi = np.minimum(lo, plo), np.maximum(hi, phi)
+            lim = plim if lim is None else lim if plim is None else (max(lim[0], plim[0]), min(lim[1], plim[1]))
+        out[rk] = (lo, hi, lim)
+    return out
+
+
+def widen_ranges(ranges, extents, margin=RANGE_MARGIN):
+    """ranges grown (about their middle) to hold extents as well as what they held; unchanged when they already do"""
+    import numpy as np
+    new = dict(ranges)
+    for rk, (lo, hi, lim) in extents.items():
+        if rk not in ranges or lim is None:                     # float arrays need no range
+            continue
+        o, sc = np.array(ranges[rk][0], np.float64), np.array(ranges[rk][1], np.float64)
+        nlo, nhi = lim
+        cur_lo, cur_hi = o + sc * nlo, o + sc * nhi
+        if (lo >= cur_lo - 1e-6).all() and (hi <= cur_hi + 1e-6).all():
+            continue
+        a, b = np.minimum(lo, cur_lo), np.maximum(hi, cur_hi)
+        span = (b - a) * (1 + margin)
+        span = np.where(span > 0, span, sc * (nhi - nlo))
+        s2 = span / (nhi - nlo)
+        o2 = a - (span - (b - a)) / 2 - s2 * nlo
+        new[rk] = (tuple(float(x) for x in o2), tuple(float(x) for x in s2))
+    return new
+
+
+def _rng(r):
+    """ranges as stored in a skin's JSON head -> the tuples model_ranges() gives"""
+    return {k: (tuple(float(x) for x in v[0]), tuple(float(x) for x in v[1])) for k, v in (r or {}).items()}
+
+
+def _same_ranges(a, b):
+    return all(k in b and all(abs(x - y) < 1e-6 for x, y in zip(a[k][0] + a[k][1], b[k][0] + b[k][1])) for k in a)
+
+
+def set_model_ranges(m, r):
+    for c in m.mm.find(0x8015):
+        sel = struct.unpack_from('<I', c.payload)[0]
+        if sel == 0x180 and 'pos' in r:
+            c.payload = struct.pack('<I6f', 0x180, *r['pos'][0], *r['pos'][1]) + c.payload[28:]
+        elif sel == 0x3 and 'uv' in r:
+            c.payload = struct.pack('<I4f', 0x3, *r['uv'][0], *r['uv'][1]) + c.payload[20:]
+
+
+def rerange_model(gmo_bytes, dst):
+    """the model with every part re-encoded into the ranges dst (wider ones: a skin's) and dst written into it"""
+    m = Model(gmo_bytes)
+    src = model_ranges(m)
+    dst = {k: v for k, v in dst.items() if k in src}
+    if _same_ranges(dst, src):
+        return gmo_bytes
+    for p in list(m.parts):
+        nb, _ = requantize_part(p.to_bytes(), src, dst, p.name)
+        m.mm.children[m.mm.children.index(p)] = _parse_one(nb)
+    set_model_ranges(m, dst)
+    return m.to_bytes()
+
+
 def _remap_part(part_bytes, mat_map, name=None, index=None, ranges=None):
     import re
     if ranges is not None:
@@ -373,7 +483,9 @@ def skin_from_body(rig_bytes, body_bytes, info=''):
             tex_img[b] = src.texture_image(a)
     for t in s['body']['textures']:
         tex_img.setdefault(t, tex_img[next(iter(tex_img))])   # a model body slot the new body does not use
-    rr = (model_ranges(src), model_ranges(rig))
+    r0 = model_ranges(rig)                                 # a body reaching past the rig's range: a wider one
+    dr = widen_ranges(r0, part_extent(src.parts[0].to_bytes(), model_ranges(src)))
+    rr = (model_ranges(src), dr)
     blobs = {'body.part': _remap_part(src.parts[0].to_bytes(), mat_map, ranges=rr),
              'body.blend_bones': src.bones[sb['owner']].first(BLEND_BONES).payload,
              'body.blend_offsets': src.bones[sb['owner']].first(BLEND_OFFSETS).payload}
@@ -421,7 +533,10 @@ def skin_from_body(rig_bytes, body_bytes, info=''):
             for t in g['textures']:
                 if pre + 'tex%d' % t not in blobs:
                     blobs[pre + 'tex%d' % t] = rig.texture_image(t)
-    return {'info': info, 'slots': s, 'blobs': blobs}
+    sk = {'info': info, 'slots': s, 'blobs': blobs}
+    if not _same_ranges(dr, r0):
+        sk['ranges'] = dr
+    return sk
 
 
 def skin_for_model(src_rig, skin, dst_rig, info=None):
@@ -469,12 +584,17 @@ def extract_weapons(gmo_bytes, spec):
         blobs[pre + 'blend_offsets'] = b.first(BLEND_OFFSETS).payload
     for t in ws['textures']:
         blobs['wep.tex%d' % t] = m.texture_image(t)
-    return {'slots': {'weapons': ws}, 'blobs': blobs}
+    return {'slots': {'weapons': ws}, 'blobs': blobs, 'ranges': model_ranges(m)}
 
 
 def add_weapons(skin, wsk):
+    """wsk's weapons into skin; weapon parts encoded in another range than the skin's are re-encoded into it"""
     skin['slots']['weapons'] = wsk['slots']['weapons']
-    skin['blobs'].update(wsk['blobs'])
+    src, dst = wsk.get('ranges'), skin.get('ranges')
+    for k, v in wsk['blobs'].items():
+        if src and dst and k.endswith('.part') and not _same_ranges(_rng(dst), _rng(src)):
+            v = requantize_part(v, _rng(src), _rng(dst), k)[0]
+        skin['blobs'][k] = v
     return skin
 
 
@@ -577,7 +697,7 @@ def weapons_default(rig_bytes, donor_bytes, spec, info=''):
     for t in ws['textures']:
         if t not in gtex:
             blobs['wep.tex%d' % t] = _grey_like(rig.texture_image(t))
-    return {'info': info, 'slots': {'weapons': ws}, 'blobs': blobs}
+    return {'info': info, 'slots': {'weapons': ws}, 'blobs': blobs, 'ranges': model_ranges(rig)}
 
 
 def weapons_from_model(rig_bytes, src_bytes, spec, info=''):
@@ -648,7 +768,7 @@ def weapons_from_model(rig_bytes, src_bytes, spec, info=''):
     for t in ws['textures']:
         if 'wep.tex%d' % t not in blobs:
             blobs['wep.tex%d' % t] = _grey_like(rig.texture_image(t))
-    return {'info': info, 'slots': {'weapons': ws}, 'blobs': blobs}
+    return {'info': info, 'slots': {'weapons': ws}, 'blobs': blobs, 'ranges': model_ranges(rig)}
 
 
 # ---------------------------------------------------------------- ghost tint (same as forge dfx/warp.py)

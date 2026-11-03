@@ -13,7 +13,8 @@ const MAGI_PARAMS = ['shots', 'first_delay', 'interval', 'fwd_dist', 'fwd_yaw', 
   'lifetime', 'hit_time', 'hit_delay'];
 const MF = { PIERCE: 0x1, NO_TERRAIN: 0x2, GROUND_HUG: 0x4, DEATH_EMIT: 0x20, BOUNCE: 0x800, HOMING_XZ: 0x2000,
   HOMING_Y: 0x4000, INHERIT_SIZE: 0x20000, STOP_ON_FAIL: 0x80000, PULL_FIELD: 0x400000, HOMING_STOP: 0x8000000 };
-const MAGI_LOCK_H = 1.0;            // GUESS: height of an actor's +0x100 / +0x110 points above its root (see README §2.3)
+const MAGI_LOCK_H = 0.9;            // fallback only: +0x100 = the kind-1 body volume's centre (0.9 m on Bartz / Noctis),
+                                     // +0x110 = the kind-10 target volume (waist, ~1.1 m) else +0x100 (FUN_08831994; open-questions/projectiles-camera-props.md)
 const MAGI_FOE = { lo: 0.25, hi: 1.45, r: 0.3 };   // the dummy's hurt capsule (as dummy.js)
 const MD2R = Math.PI / 180;
 
@@ -41,7 +42,7 @@ function magiDraw(rec, k, prev) {
   return P;
 }
 const aPt = (A, which) => which === 256 ? (A.centre || mAdd(A.pos, mv(0, MAGI_LOCK_H, 0)))
-  : which === 272 ? (A.aim || mAdd(A.pos, mv(0, MAGI_LOCK_H, 0))) : A.pos;
+  : which === 272 ? (A.aim || A.centre || mAdd(A.pos, mv(0, MAGI_LOCK_H, 0))) : A.pos;
 
 /* FUN_08AD70B0: the target point = target +0x110 + rotY(target facing * aim_dist, aim_yaw) + (0, aim_height, 0) */
 function magiTargetActor(rec, ctx) {

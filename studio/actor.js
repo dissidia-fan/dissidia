@@ -73,7 +73,8 @@ window.ACT = (() => {
       const f = ev.args || [];
       switch (ev.op) {
         case 'air_motion': case 'ground_follow': case 'landing_allowed': case 'floating_physics':
-        case 'keep_motion_when_falling': case 'no_body_collision': case 'root_motion_3d': a.flags[ev.op] = true; break;
+        case 'keep_motion_when_falling': case 'no_body_collision': case 'root_motion_3d': case 'ground_contact_switch':
+        case 'cant_be_pushed': case 'heavy_body': a.flags[ev.op] = true; break;   // the last two: body push-apart (dummy.js dmBodyPush)
         case 'stop_momentum': a.carry = v3(0, 0, 0); break;
         case 'gravity': a.gravMul = ev.multiplier ?? f[0]; break;
         case 'face_target': case 'turn_to_opponent': case 'turn_to_target': {
@@ -155,6 +156,7 @@ window.ACT = (() => {
     if (isAir(a) || a.state === 'air' || a.state === 'fall') {
       const canLand = a.flags.landing_allowed || a.state === 'fall';
       if (h <= 0 && canLand) { a.pos.y = 0; if (!a.flags.floating_physics) a.carry = v3(0, 0, 0); a.state = 'ground'; a.fall = null; a.landed = true; }
+      else if (h <= 0 && a.flags.ground_contact_switch) { a.pos.y = 0; a.groundContact = true; }   // 0x0070: the dummy plays the action's +0x12 script
       else if (h < 0) a.pos.y = 0;
     } else if (h >= 0.4) startFall(a);
     else a.pos.y = 0;

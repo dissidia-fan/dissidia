@@ -214,6 +214,56 @@ void heap_alloc_hook(uint8_t* rdram, recomp_context* ctx) {
     }
 }
 
+// ---- Effect pool (EFFECT_ALLOCATOR) ----
+// FUN_088A5054 at boot: sceKernelAllocMemoryBlock("EFFECT_ALLOCATOR", 0, 0x3DD000), then FUN_08867310(heap 0x09B4D420,
+// base, 0x3DD000, 0x40) makes it the handle heap that every character's effect package (objx effe: FEP + FEPA) and the
+// effect instances are allocated from (FUN_088673CC(heap, size) -> handle id, 0 = out of memory). Retail sizes it for two
+// retail fighters; a big modded package (Noctis with Alterna's baked sheets, 2.55 MB vs 1.75 MB) runs it out mid-battle:
+// new effects / projectiles fail to allocate and textures come out as garbage. The block is the last bump allocation
+// before the heap init, so the extra bytes are bump-allocated right behind it and the heap is initialised with the sum.
+// PSPRECOMP_EFFECT_POOL_EXTRA (bytes, 0 = retail).
+constexpr uint32_t kFxHeap = 0x09B4D420u, kFxRetail = 0x3DD000u;
+uint32_t g_fx_extra = 0x300000u;
+FuncPtr g_orig_fx_heap_init = nullptr, g_orig_fx_alloc = nullptr;
+void fx_heap_init_hook(uint8_t* rdram, recomp_context* ctx) {
+    const uint32_t heap = static_cast<uint32_t>(ctx->r[4]), base = static_cast<uint32_t>(ctx->r[5]);
+    const uint32_t size = static_cast<uint32_t>(ctx->r[6]);
+    if (heap == kFxHeap && size == kFxRetail && g_fx_extra) {
+        const uint32_t extra = (g_fx_extra + 0xFFu) & ~0xFFu;
+        const uint32_t ext = psp_kmem_bump_alloc_named(extra, "EFFECT_ALLOCATOR (extension)");
+        if (ext == base + size) {
+            ctx->r[6] = static_cast<int32_t>(size + extra);
+            std::fprintf(stderr, "[FXPOOL] effect pool 0x%08X: %u B (retail %u B + %u B)\n", base, size + extra, size, extra);
+        } else {
+            std::fprintf(stderr, "[FXPOOL] effect pool NOT extended: extension at 0x%08X, pool ends 0x%08X\n", ext, base + size);
+        }
+    }
+    g_orig_fx_heap_init(rdram, ctx);
+}
+void fx_alloc_hook(uint8_t* rdram, recomp_context* ctx) {
+    const uint32_t heap = static_cast<uint32_t>(ctx->r[4]), size = static_cast<uint32_t>(ctx->r[5]);
+    g_orig_fx_alloc(rdram, ctx);
+    if (heap != kFxHeap || size == 0) return;
+    static int nfail = 0, nbig = 0;
+    if (ctx->r[2] == 0) {
+        if (nfail++ < 50) {
+            // walk the block list (heap+12: first block {id(0 = free), size, ?, prev, next}) for the free total
+            uint32_t total = 0, free_b = 0, largest = 0, n = 0;
+            const uint32_t* h = reinterpret_cast<const uint32_t*>(rdram + (heap & 0x07FFFFFFu));
+            total = h[1];
+            for (uint32_t b = h[3]; b && n < 100000; ++n) {
+                const uint32_t* bk = reinterpret_cast<const uint32_t*>(rdram + (b & 0x07FFFFFFu));
+                if (bk[0] == 0) { free_b += bk[1]; largest = std::max(largest, bk[1]); }
+                b = bk[4];
+            }
+            std::fprintf(stderr, "[FXPOOL] effect pool alloc(%u) FAILED: pool %u B, free %u B, largest free %u B\n",
+                         size, total, free_b, largest);
+        }
+    } else if (size >= 0x40000u && nbig++ < 40) {
+        std::fprintf(stderr, "[FXPOOL] effect pool alloc(%u) -> id %d\n", size, ctx->r[2]);
+    }
+}
+
 // The effect allocator is the last big host-heap block requested at boot: print the final layout after it.
 void partition_alloc_observer(const char* name, uint32_t, uint32_t) {
     if (name && std::strcmp(name, "EFFECT_ALLOCATOR") == 0) psp_kmem_log_layout("final, after the effect allocator");
@@ -239,6 +289,15 @@ constexpr uint32_t dissidia_model_budget_retail() { return kRetailStaging; }
 
 void dissidia_models_install() {
     psp_kmem_set_partition_alloc_observer(partition_alloc_observer);
+    if (const char* e = std::getenv("PSPRECOMP_EFFECT_POOL_EXTRA")) g_fx_extra = static_cast<uint32_t>(std::strtoul(e, nullptr, 0));
+    g_orig_fx_heap_init = psp_dispatch_probe_lookup(0x08867310u);
+    g_orig_fx_alloc = psp_dispatch_probe_lookup(0x088673CCu);
+    if (g_orig_fx_heap_init && g_orig_fx_alloc) {
+        psp_dispatch_register(0x08867310u, fx_heap_init_hook);
+        psp_dispatch_register(0x088673CCu, fx_alloc_hook);
+    } else {
+        std::fprintf(stderr, "[FXPOOL] effect pool hooks NOT installed (a target function is missing)\n");
+    }
     if (const char* e = std::getenv("PSPRECOMP_MODEL_POOL_EXTRA")) { g_pool_extra = static_cast<uint32_t>(std::strtoul(e, nullptr, 0)); g_pool_extra_forced = true; }
     if (const char* e = std::getenv("PSPRECOMP_MODEL_BUDGET")) dissidia_model_budget_request(static_cast<uint32_t>(std::strtoul(e, nullptr, 0)));
     g_orig_alloc = psp_dispatch_probe_lookup(0x0888204Cu);

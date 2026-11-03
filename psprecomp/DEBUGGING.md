@@ -187,6 +187,7 @@ silently dropped. Full protocol details in the issue #35 section below.
 | `RAW <hexaddr> <decsize>` | Legacy v1 read — unframed | raw bytes only |
 | `W <hexaddr> <hexbytes>` | Write bytes into rdram (masked; whole range must be in bounds) | `OK 0` |
 | `B <hexmask> <decms>` | Inject button mask for duration (UP=10, CROSS=4000, START=8; clamped 60 s) | `OK 0` |
+| `FF <decms> [x]` | Fast-forward for up to that long (clamped 120 s; `FF 0` stops): the vblank wait moves the game's clock to the next vblank instead of sleeping, so the game runs as fast as frames render (menus: ~800-1500 frames/s). `x` (2-1000) caps it at x times real time (each frame takes at least 1/x of the game time it covers on the host clock, the clock makes up the rest; nothing is caught up after a slow frame): a screen with an idle timer still gives a script real seconds to press (uncapped, Dissidia's title went on to its attract movie ~10 s after launch, before a CROSS every 1.5 s got through). A movie keeps its own pace (its picture follows its sound, which plays in real time; the game just redraws each movie frame more often). A press held by `B` spans many frames meanwhile (menus repeat it): stop, press, resume | `OK 0` |
 | `S <path>` | Screenshot: render thread writes 480x272 TGA to `<path>` | `OK 0` (≤10 s) or `ERR timeout` |
 
 ```bash
@@ -316,8 +317,13 @@ what was added, how to use it, how it was verified, and any new failure modes di
 | `RAW` | same as `R` | raw bytes, **no header** (v1 behavior) | same as `R` |
 | `W` | `<hexaddr> <hexbytes>` (even-length hex, no spaces) | `OK 0` | `bad-addr`, `bad-bytes`, `out-of-range` (whole range must fit — no partial writes) |
 | `B` | `<hexmask> <decms>` (clamped 60 s) | `OK 0` | `bad-mask`, `bad-duration` |
+| `FF` | `<decms> [x]` (clamped 120 s; 0 = stop now; `x` 2..1000 caps the speed at x times real time, none/0/1 = uncapped) | `OK 0` | `bad-duration`, `bad-factor` |
 | `S` | `<path>` (rest of line, spaces allowed) | `OK 0` after the TGA is on disk | `bad-path`, `unsupported`, `timeout` (10 s; also covers pre-GL boot and a concurrent capture in flight) |
 | anything else | | | `unknown-command`, `empty`, `line-too-long` (>4095 chars; connection stays usable) |
+
+### Which scripts a fighter plays: `script_trace.py`
+
+`games/dissidia/tools/script_trace.py` (no options needed) polls the debug socket and logs every fighter's script id (actor list head `[[0x089D4958]+0x14]`, next `+0x1114`, script s16 `+0x180`) each time it changes, with how long the last one ran, to `work/script_trace.txt`. Start a battle, run it, do the move, Ctrl-C. `--moveset <folder>` names the motions.
 
 ### `I` JSON schema (one line, jq-able)
 
@@ -833,6 +839,25 @@ checks GPU-path triangles. `PSPRECOMP_GE_AB=1` catches this class (fast vs legac
 check is socket `G 0` (or `PSPRECOMP_GE_FAST=0`) while the glitch is on screen: if it goes away on the legacy path,
 look for per-PRIM state the fast path carries from one PRIM to the next (reused staging vectors, batch keys, cached
 uniforms/GL state).
+
+### 2 frames/s from boot, `[GE] DrawSync timeout: 1 lists still pending` every frame -- the render queue lost an unstall (fixed)
+
+Symptom (intermittent, timing-dependent: 2 of 7 boots fast-forwarded by the debug socket's `FF` in one session, possible
+at any speed): from the first frames the game runs at ~2 frames/s, and the log repeats `[GE] DrawSync timeout: 1 lists
+still pending` (each DrawSync waits out its 500 ms valve), starting right after the boot's only
+`sceGeListUpdateStallAddr(uid=2, ...)`. The rest of the log matches a good boot except where the first `[PRESENT]` line
+falls: the main thread was busy at the moment the stall moved.
+
+Cause: `render_queue_process` (main thread) copies the runnable lists, releases the queue lock for the GL work and
+writes each list's result back afterwards. A list that ran into its stall address came back `stalled`. When the
+game's `sceGeListUpdateStallAddr` landed in between (it sets the new stall and clears `stalled`, under the lock), the
+write-back set `stalled` again over it. The list then waited for another stall update that never came (the game moves
+this stall once), and the queue never drained for DrawSync.
+
+Fix (generic, `runtime/src/psp_render_queue.cpp`): the write-back leaves a list unstalled when its stall address
+changed while it ran. Regression test `test_stall_moved_while_running` in `runtime/tests/test_render_queue.cpp`
+(`test_render_queue`) fails on the old code. It makes the race deterministic: its stand-in GE interpreter moves the
+stall from inside the run, where the lock is released.
 
 ## GE stencil / texture diagnostics (ge-3d)
 

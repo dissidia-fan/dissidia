@@ -1,7 +1,8 @@
 /* Move Studio: a new character folder from a retail base (what `charmod.py new` makes), and the Character tab: who
-   it is (name, series, code, slot) and its menu / HUD pictures (avatars). Loaded after clip.js.
+   it is (name, series, code) and its menu / HUD pictures (avatars). Loaded after clip.js.
    The build (charmod.py build, or run.sh at game start) adds a new folder to the game: a roster slot, the menu ids,
-   and every menu picture cut from avatars.generated_from (the picture and its crop boxes). */
+   and every menu picture cut from avatars.generated_from (the picture and its crop boxes). The slot and menu ids stay
+   in the game's mods folder (readme_newchars.json), not in mod.json: characters made by different people never clash. */
 
 const NC_AVATARS = [                              // charmod_avatars.FILE_AVATARS / PACK_AVATARS as the shipped folders list them
   ['grid_tile', '32x64', 'Quick Battle character grid tile', null, ['tile']],
@@ -20,7 +21,6 @@ const NC_AVATARS = [                              // charmod_avatars.FILE_AVATAR
   ['talk_bottom', null, 'Talk-event portrait (bottom)', ['menu/jp/talkevent/tim2/chara/b_talk_{c}.gim']],
 ];
 const NC_CROPS = { slidein: [1, 1], grid_tile: [1, 2], hud: [1, 1], vs_face: [1, 1], face_strip: [4, 1] };   // the crop boxes the build reads (w : h)
-const NC_INFO = 'Pictures the menus and HUD show. "picture": null = the based-on character\'s picture. The build cuts them from generated_from (the picture and its crop boxes) the first time and whenever it changes. A PNG of your own in avatars/ with "picture" set replaces one.';
 
 /* ---------------------------------------------------------------- new character */
 async function ncCharIds() {                       // {code: charId} from main.bin's chrp (as retailAbilities reads it)
@@ -34,34 +34,12 @@ async function ncCharIds() {                       // {code: charId} from main.b
   }
   return (S.charIds = out);
 }
-async function ncUsed() {                          // codes and slots the mods folder and the disc already use
-  const codes = new Set(ROSTER.map(([c]) => c)), slots = new Set();
+async function ncUsed() {                          // codes the mods folder and the disc already use (the code names the files)
+  const codes = new Set(ROSTER.map(([c]) => c));
   for (const c of S.chars || []) {
-    try { const m = await FS.json(c.name + '/mod.json'); if (m.character) { codes.add(m.character.code); slots.add(m.character.slot); } } catch (e) { /* skip */ }
+    try { const m = await FS.json(c.name + '/mod.json'); if (m.character) codes.add(m.character.code); } catch (e) { /* skip */ }
   }
-  return { codes, slots };
-}
-/* roster slots: 1..32 retail, 33 SEV120's unused retail slot, 34 a spare retail slot, 35..42 extra (DISSIDIA_ROSTER_MAX 43) */
-const NC_SLOTS = [33, 34, 35, 36, 37, 38, 39, 40, 41, 42];
-const NC_SLOT_NOTE = { 33: 'a retail slot the game leaves off the grid', 34: 'a spare retail slot' };
-async function ncSlotsLoad() {                     // {slot: [character names]} of the other extra characters in the mods folder
-  const out = {}, me = ((S.mod || {}).character || {}).code;
-  for (const ch of S.chars || []) {
-    if (ch.kind === 'retail') continue;
-    try { const c = ((await FS.json(ch.name + '/mod.json')).character) || {}; if (c.code && c.code !== me && c.slot != null) (out[c.slot] = out[c.slot] || []).push(c.name || ch.name); } catch (e) { /* skip */ }
-  }
-  return (S.ncTaken = out);
-}
-function ncSlotOptions(cur) {
-  const T = S.ncTaken || {}, opt = (n) => `<option value="${n}"${n === cur ? ' selected' : ''} data-note="${esc([NC_SLOT_NOTE[n] ? NC_SLOT_NOTE[n].replace(/^./, (c) => c.toUpperCase()) : 'Extra slot', T[n] ? 'also ' + T[n].join(', ') : ''].filter(Boolean).join(' · '))}">Slot ${n}</option>`;
-  const free = NC_SLOTS.filter((n) => !T[n] || n === cur);
-  if (cur != null && !free.includes(cur)) free.unshift(cur);
-  return free.map(opt).join('');
-}
-function ncSlotClash(cur) {
-  const w = $('ncSlotClash'), T = S.ncTaken || {}; if (!w) return;
-  w.hidden = !T[cur];
-  if (T[cur]) w.textContent = `${T[cur].join(', ')} ${T[cur].length > 1 ? 'are' : 'is'} on slot ${cur} too: pick a free one, or the build moves one of you.`;
+  return { codes };
 }
 function ncCodeFor(name, used) {
   const base = (name.toLowerCase().replace(/[^a-z]/g, '') + 'xxx').slice(0, 3);
@@ -130,7 +108,6 @@ async function ncMake(o) {
   const code = o.code || ncCodeFor(o.name, used);
   if (!code || used.codes.has(code) || isoHas(`obj/p_${code}.objx`)) { toast(`Code ${code} is already used: pick another.`); return false; }
   let slug = slugOf(o.name), k = 2; while (await FS.exists(slug)) slug = slugOf(o.name) + '-' + k++;
-  const slot = [35, 36, 37, 38, 39, 40, 41, 42, 34, 33].find((n) => !used.slots.has(n)) ?? 42;   // the extra slots first, then the spare retail ones
   const like = o.like;
   let likeId = null; try { likeId = (await ncCharIds())[like] ?? null; } catch (e) { /* the build fills it in */ }
   const c = S.retailChars.find((x) => x.code === like);
@@ -138,7 +115,7 @@ async function ncMake(o) {
     // the moves, unpacked (charmod_objx.unpack's layout), and the battle models
     const dec = await retailDecoded(`obj/p_${like}.objx`, `obj/p_${like}_1p.gmo`);
     for (const [p, v] of Object.entries(dec)) await FS.write(`${slug}/moveset/p_${code}/${p}`, v instanceof Uint8Array ? v : wjText(v));
-    const files = { _auto: true, _info: 'game path -> folder path (moveset/..., models/..., files/...) or {"like": retail path}. _auto: every file of the based-on character not listed here is used as it is.', [`obj/p_${code}.objx`]: `moveset/p_${code}` };
+    const files = { _auto: true, [`obj/p_${code}.objx`]: `moveset/p_${code}` };
     // one model: the costume slots show it until you add a costume (Character tab > Costumes)
     if (isoHas(`obj/p_${like}_1p.gmo`)) {
       await FS.write(`${slug}/models/p_${code}_1p.gmo`, await isoGet(`obj/p_${like}_1p.gmo`));
@@ -150,7 +127,7 @@ async function ncMake(o) {
     else bytes = await ncPlaceholder();
     await FS.write(`${slug}/${picRel}`, bytes);
     const sz = await ncImageSize(bytes, type);
-    const avatars = { _info: NC_INFO };
+    const avatars = {};
     for (const [key, size, shows, pats, ids] of NC_AVATARS) {
       const e = { picture: null, size, shows };
       if (!size) delete e.size;
@@ -158,19 +135,13 @@ async function ncMake(o) {
       if (ids) e._menu_ids = ids;
       avatars[key] = e;
     }
-    avatars.generated_from = { _info: 'what the avatars are made from: picture (full body), optional portrait (head and shoulders), crop boxes x0,y0,x1,y1 in picture pixels per avatar. Change them in the Move Studio (Character tab): the next build cuts the pictures again',
-      picture: picRel, portrait: o.pic ? picRel : null, logo: null, crops: o.pic ? ncDefaultCrops(sz.w, sz.h) : {}, options: { tile_cutout: true, hud_flip: true, hud_from: 'slidein', art_faces: 'left' } };
+    avatars.generated_from = { picture: picRel, portrait: o.pic ? picRel : null, logo: null, crops: o.pic ? ncDefaultCrops(sz.w, sz.h) : {}, options: { tile_cutout: true, hud_flip: true, hud_from: 'slidein', art_faces: 'left' } };
     const mod = {
-      _read_me: ['One extra character, made in the Move Studio. Edit it there or in Blender, then start the game: run.sh builds every character folder in.',
-        'character: who it is (slot = its roster slot; the build moves it to a free one if taken). based_on = the retail character it is built on (skeleton, animations, moves).',
-        'avatars: the menu / HUD pictures, cut from avatars.generated_from at the first build. body: "as_is" = the models in models/ as they are; give it a body with a skin (Blender: Character mods > Make skin).',
-        'move_names: in-game name and help text per ability. Moves: moveset/p_' + code + '/. Full guide: mods/README.md'],
-      character: { name: o.name, full_name: o.full || o.name, series: o.series, code, slot, based_on: like, based_on_id: likeId },
+      character: { name: o.name, full_name: o.full || o.name, series: o.series, code, based_on: like, based_on_id: likeId },
       avatars,
-      body: { _info: '"as_is" = the models in models/ as they are. Another body: a skin made in Blender (Character mods > Make skin), then "skin": its name.', skin: 'as_is', models: [] },
-      move_names: { _info: 'Rename moves: key = the ability\'s number (hex), cmd = its command id in moveset/p_' + code + '/moves.json. Keys starting with _ are ignored.', ...Object.fromEntries(Object.entries(S.abilities[like] || {}).map(([kk, v]) => [kk, { cmd: v.cmd, was: v.name }])) },
+      body: { skin: 'as_is', models: [] },
+      move_names: { ...Object.fromEntries(Object.entries(S.abilities[like] || {}).map(([kk, v]) => [kk, { cmd: v.cmd, was: v.name }])) },
       runtime_hooks: [],
-      menu_ids: { _info: 'entry ids in the shared menu pack; filled in by the build when the character is added; leave as they are' },
       files,
     };
     if (mod.character.based_on_id == null) delete mod.character.based_on_id;
@@ -210,35 +181,54 @@ async function ncRetailLogoGim(f2) {               // its picture: menu_pk_free_
 const ncAvRows = () => Object.entries(ncMod().avatars || {}).filter(([k, e]) => !k.startsWith('_') && e && e.shows);
 function ncLeft(L) {
   const m = ncMod(), c = m.character || {}, av = m.avatars || {};
-  if (!S.modPath || m.kind === 'retail') { L.innerHTML = `<p class="note" style="padding:10px">${S.rig && S.rig.retail ? 'A retail character: its pictures are the game\'s.' : m.kind === 'retail' ? 'A changed retail character: it keeps the retail pictures and roster place.' : 'No mod.json.'}</p>`; return; }
+  if (ncRetailBody()) return ncLeftRetail(L);
+  if (!S.modPath || m.kind === 'retail') { L.innerHTML = `<p class="note" style="padding:10px">${S.rig && S.rig.retail ? 'A retail character: its pictures are the game\'s. Set the mods folder to change its body.' : m.kind === 'retail' ? 'A changed retail character: it keeps the retail pictures and roster place.' : 'No mod.json.'}</p>`; return; }
   if (S.ncSel === 'crops' || (S.ncSel && av[S.ncSel])) S.ncSel = 'art';          // the menu art is one screen now
   const rows = ncAvRows(), own = rows.filter(([, e]) => e._own && !e._cut).length;
   const like = (S.retailChars || []).find((x) => x.code === c.based_on), base = (p) => String(p || '').split('/').pop();
   const dash = (m.runtime_hooks || []).find((t) => typeof t === 'string' && t.startsWith('dash='));
-  const item = (key, title, sub) => `<button type="button" class="nc-item${S.ncSel === key ? ' sel' : ''}" data-nc="${esc(key)}"><span>${esc(title)}</span><small>${esc(sub)}</small></button>`;
+  const item = (key, title, sub, ro) => `<button type="button" class="nc-item${S.ncSel === key ? ' sel' : ''}" data-nc="${esc(key)}"${ro ? ' title="A mod can\'t change these yet: shown for reference"' : ''}><span>${esc(title)}${ro ? ` <small class="nc-ro">${esc(ro)}</small>` : ''}</span><small>${esc(sub)}</small></button>`;
   const gameBody = skinLabel(skinGameChoice()), shown = skinLabel(S.skinShown);
   const art = base((av.generated_from || {}).picture);
   L.innerHTML = `<div class="nc-who"><b>${esc(c.name || '')}</b><small>${esc(c.full_name || '')}${c.series ? ' · ' + esc(c.series) : ''}</small>
-      <div class="nc-chips"><span class="mono">${esc(c.code || '')}</span><span>slot ${esc(c.slot ?? '?')}</span><span>built on ${esc(like ? like.label : c.based_on || '?')}</span></div></div>
+      <div class="nc-chips"><span class="mono">${esc(c.code || '')}</span><span>built on ${esc(like ? like.label : c.based_on || '?')}</span></div></div>
     <div class="nc-group">Character</div>
-    ${item('who', 'Name and roster', `${c.name || ''} · slot ${c.slot ?? '?'}`)}
-    ${item('physics', 'Jump, gravity, dash', dash ? 'dash ×' + dash.slice(5) : 'as ' + (like ? like.label : 'the built-on character'))}
+    ${item('who', 'Name', c.name || '')}
+    ${item('physics', 'Jump, gravity, dash', dash ? 'dash ×' + dash.slice(5) : 'as ' + (like ? like.label : 'the built-on character'), '(read-only)')}
     <div class="nc-group">Look</div>
-    ${item('skin', 'Body', gameBody + (shown !== gameBody ? ' · showing ' + shown : ''))}
+    ${item('skin', 'Body', skinTitle(skinGameChoice()) + (shown !== gameBody ? ' · showing ' + skinTitle(S.skinShown) : ''))}
     ${typeof costumePanel === 'function' ? item('costumes', 'Costumes', cstSummary()) : ''}
     ${item('art', 'Menu art', `${rows.length} pictures · ${art ? 'from ' + art : 'no art yet'}${own ? ' · ' + own + ' your own' : ''}`)}`;
   L.querySelectorAll('[data-nc]').forEach((r) => r.onclick = () => { S.ncSel = r.dataset.nc; S.step = null; S.sel = null; renderLeft(); renderInspector(); });
 }
+/* a retail character, changed (mods/<name>, "kind": "retail") or from the ISO: it keeps the retail pictures and roster
+   place, but its body can be swapped (mod.json body.skin; "retail" is the game's own). From the ISO the first change
+   makes its mod folder (openRetailMod). */
+const ncRetailBody = () => !!(S.rig && S.rig.retail ? S.modsBase !== undefined : S.modPath && ncMod().kind === 'retail');
+function ncLeftRetail(L) {
+  const m = ncMod(), c = m.character || {}, iso = !!(S.rig && S.rig.retail);
+  const sub = iso ? (typeof retailModOf === 'function' && retailModOf(c.code) ? 'the original; changes go to your modded copy' : 'from the ISO; a change makes its mod folder') : 'a changed retail character';
+  const gameBody = skinLabel(skinGameChoice()), shown = skinLabel(S.skinShown);
+  S.ncSel = 'skin';
+  L.innerHTML = `<div class="nc-who"><b>${esc(c.name || '')}</b><small>${esc(sub)}</small>
+      <div class="nc-chips"><span class="mono">${esc(c.code || '')}</span><span>retail roster place</span></div></div>
+    <p class="note" style="padding:0 10px">It keeps the retail pictures and roster place.</p>
+    <div class="nc-group">Look</div>
+    <button type="button" class="nc-item sel" data-nc="skin"><span>Body</span><small>${esc(gameBody + (shown !== gameBody ? ' · showing ' + shown : ''))}</small></button>`;
+  L.querySelectorAll('[data-nc]').forEach((r) => r.onclick = () => { S.ncSel = 'skin'; S.step = null; S.sel = null; renderLeft(); renderInspector(); });
+}
 function ncInspector(I) {
-  const m = ncMod(), c = m.character || {}, sel = S.ncSel || 'who';
+  const m = ncMod(), c = m.character || {};
+  if (ncRetailBody() && typeof skinPanel === 'function') { S.ncSel = 'skin'; return skinPanel(I); }
+  const sel = S.ncSel || 'who';
   if (sel === 'who') {
     const av = m.avatars || {};
     if (S.ncArtKey && av[S.ncArtKey] && NC_DRAWN.includes(S.ncArtKey)) return ncArtInspector(I);   // a picture card picked in the middle
     I.innerHTML = `<div class="sec" id="ncSec"><h3>${esc(c.name || 'Character')}</h3>
-      <div class="row2"><div class="field fact"><label>Code</label><span class="mono">${esc(c.code || '?')}</span></div><div class="field fact"><label>Roster slot</label><span>${esc(c.slot ?? '?')}</span></div></div>
+      <div class="row2"><div class="field fact"><label>Code</label><span class="mono">${esc(c.code || '?')}</span></div><div class="field fact"><label>Roster slot</label><span>picked by the build</span></div></div>
       <div class="field fact"><label>Built on</label><span>${esc(((S.retailChars || []).find((x) => x.code === c.based_on) || {}).label || '')} <span class="mono">${esc(c.based_on || '?')}</span>${c.based_on_id ? ` <small>charId ${esc(c.based_on_id)}</small>` : ''}</span></div>
       <p class="note">The name, full name and series go into the menus when the build adds the character; the code names its files, so it stays. The skeleton, animations and moves start as the built-on character's.</p>
-      ${typeof ckCharRecomp === 'function' ? ckCharRecomp().map((t) => `<p class="note rt-note"><b>Needs the recomp:</b> ${esc(t)}</p>`).join('') : ''}</div>`;
+      ${((rc) => rc.length ? `<div class="field fact"><label>Runs on</label><span><em class="mvk rt" title="${esc('Needs the recomp:\n' + rc.join('\n\n'))}">recomp</em></span></div>` : '')(typeof ckCharRecomp === 'function' ? ckCharRecomp() : [])}</div>`;
     return;
   }
   if (sel === 'skin' && typeof skinPanel === 'function') return skinPanel(I);
@@ -314,7 +304,7 @@ function ncArtInspector(I) {
     <div class="lbl">Now</div><p class="note"><span class="art-st st-${st.kind}">${esc(st.label)}</span> ${esc(st.long)}</p>
     <div class="lbl">Where it goes</div><p class="note mono" style="word-break:break-all">${e._files ? e._files.map(esc).join('<br>') : 'the shared menu pack (' + esc((e._menu_ids || []).join(', ') || '?') + ')'}</p></div>`;
 }
-/* what the middle shows on the Character tab: Name and roster and Menu art are pages of their own (no 3D view or
+/* what the middle shows on the Character tab: Name and Menu art are pages of their own (no 3D view or
    timeline); Jump, gravity, dash previews them in the 3D view; Body and Costumes show the model in its rest pose */
 function ncArtSync() {
   const C = document.querySelector('.center'); if (!C) return;
@@ -329,10 +319,11 @@ function ncArtSync() {
   else if (pane === 'who') ncWhoPane();
   else if (was) window.dispatchEvent(new Event('resize'));
   phSync(mine && sel === 'physics');
-  ncModelSync(mine && (sel === 'skin' || sel === 'costumes'));
+  const retailMod = S.tab === 'char' && !!S.moves && ncRetailBody();
+  ncModelSync(mine && (sel === 'skin' || sel === 'costumes') || retailMod);
   // the Character tab has nothing for the dummy: it and its card go while it's open, and come back with the move after
   const charTab = S.tab === 'char' && !!S.moves;
-  if (charTab) { if (typeof dmShow === 'function') dmShow(false); const di = $('dmInfo'); if (di) di.hidden = true; }
+  if (charTab) { if (typeof dmShow === 'function') dmShow(false); const di = $('dmCard'); if (di) di.hidden = true; }
   else if (S.ncWasChar && S.gmo) pose();
   S.ncWasChar = charTab;
 }
@@ -346,24 +337,21 @@ function ncModelSync(on) {                         // Body / Costumes: the 3D vi
   }
   pose(); window.dispatchEvent(new Event('resize'));
 }
-function ncWhoPane() {                             // Name and roster, as a page
+function ncWhoPane() {                             // Name, as a page
   const P = $('artPane'); if (!P) return;
   const m = ncMod(), c = m.character || {}, av = m.avatars || {}, ro = S.readOnly ? ' disabled' : '';
   const shows = NC_DRAWN.filter((k) => av[k] && av[k].shows);
-  P.innerHTML = `<div class="art-bar"><b>Name and roster</b><span class="meta">${esc(c.name || '')}${c.code ? ' · <span class="mono">' + esc(c.code) + '</span>' : ''}</span></div>
+  P.innerHTML = `<div class="art-bar"><b>Name</b><span class="meta">${esc(c.name || '')}${c.code ? ' · <span class="mono">' + esc(c.code) + '</span>' : ''}</span></div>
     <div class="art-body who-body">
       <div class="who-form">
         <div class="field"><label for="ncWName">Name</label><input type="text" id="ncWName" data-c="name" maxlength="28" value="${esc(c.name || '')}"${ro}><small class="ui-hint">Menus, the character select grid and the name plate.</small></div>
         <div class="field"><label for="ncWFull">Full name</label><input type="text" id="ncWFull" data-c="full_name" value="${esc(c.full_name || '')}"${ro}><small class="ui-hint">The VS screen and the banner when a battle starts.</small></div>
         <div class="field"><label for="ncWSeries">Series</label><input type="text" id="ncWSeries" data-c="series" value="${esc(c.series || '')}"${ro}><small class="ui-hint">The logo plate. FINAL FANTASY I to XIII use the game's own logo.</small></div>
-        <div class="field"><label for="ncSlot">Roster slot</label><select id="ncSlot" data-c="slot"${ro}>${ncSlotOptions(c.slot)}</select><small class="ui-hint">The free slots (33–42). Two characters on one slot are split up at the build: the later one moves to the next free slot.</small></div>
-        <p class="warnline" id="ncSlotClash" hidden></p>
+        <p class="note">The roster slot and menu entries are picked by the build when the character goes into the game, and kept by the game's mods folder, not by mod.json: characters made by different people never have to agree on them.</p>
       </div>
       <div class="art-list" id="artList">${shows.length ? `<div class="art-group"><h4>Where they show</h4><small>As the last build drew them</small></div>${shows.map(ncArtCard).join('')}` : ''}</div></div>`;
-  if (typeof fancySelect === 'function') fancySelect($('ncSlot'), { noteInButton: true, className: 'fsel-wide' });
-  ncSlotsLoad().then(() => { const sel = $('ncSlot'); if (sel && (S.ncSel || 'who') === 'who') { sel.innerHTML = ncSlotOptions(ncMod().character.slot); ncSlotClash(ncMod().character.slot); } });
   P.querySelectorAll('[data-c]').forEach((el) => el.onchange = () => {
-    edit([S.modPath], () => { const k = el.dataset.c; S.mod.character[k] = k === 'slot' ? parseInt(el.value, 10) : el.value; });
+    edit([S.modPath], () => { S.mod.character[el.dataset.c] = el.value; });
     renderLeft(); renderInspector();
   });
   ncArtWire(P); ncArtThumbs(P);
@@ -587,11 +575,21 @@ function ncCropEditor(img) {                        // the art and its boxes, as
       const [a, c] = toC(b[0], b[1]), [e, d] = toC(b[2], b[3]);
       g.strokeStyle = NC_COL[k] || '#ddd'; g.lineWidth = k === S.ncBox ? 2.5 : 1.5; g.strokeRect(a, c, e - a, d - c);
       g.fillStyle = NC_COL[k] || '#ddd'; g.fillRect(e - 6, d - 6, 12, 12);
-      g.font = '12px sans-serif'; const t = k.replace(/_/g, ' '), tw = g.measureText(t).width;
-      g.fillStyle = 'rgba(0,0,0,.55)'; g.fillRect(a + 1, c + 1, tw + 8, 16); g.fillStyle = NC_COL[k] || '#ddd'; g.fillText(t, a + 5, c + 13);
+    }
+    // the names inside each box's bottom-right corner (left of its handle); the picked and hovered boxes' first, and a
+    // name that would cover one already drawn is left out (2026-11-01: vs face / grid tile / face strip overlapped)
+    g.font = '12px sans-serif';
+    const taken = [], pri = (k) => (k === S.ncBox ? 0 : k === hov ? 1 : 2);
+    for (const [k, b] of boxes().sort((x, y) => pri(x[0]) - pri(y[0]))) {
+      const [a, c] = toC(b[0], b[1]), [e, d] = toC(b[2], b[3]), t = k.replace(/_/g, ' '), tw = g.measureText(t).width;
+      const r = { x: Math.max(a + 1, e - 10 - tw - 8), y: Math.max(c + 1, d - 10 - 16), w: tw + 8, h: 16 };
+      if (pri(k) > 1 && taken.some((q) => r.x < q.x + q.w && q.x < r.x + r.w && r.y < q.y + q.h && q.y < r.y + r.h)) continue;
+      taken.push(r);
+      g.fillStyle = 'rgba(0,0,0,.6)'; g.fillRect(r.x, r.y, r.w, r.h); g.fillStyle = NC_COL[k] || '#ddd'; g.fillText(t, r.x + 4, r.y + 12);
     }
     ncArtPreviews(img);
   };
+  let hov = null;
   if ((S.ncZoom || 1) > 1 && S.ncFocus && S.ncScrollFor !== S.ncFocus) {   // zoomed: bring a newly picked box into view
     const b = ncBoxOf(ncAllCrops(), S.ncFocus);
     if (b) { const [a, c] = toC(b[0], b[1]), [e, d] = toC(b[2], b[3]); requestAnimationFrame(() => { host.scrollLeft = (a + e) / 2 - host.clientWidth / 2; host.scrollTop = (c + d) / 2 - host.clientHeight / 2; }); }
@@ -614,13 +612,14 @@ function ncCropEditor(img) {                        // the art and its boxes, as
     drag = { ...h, px, py, b0: h.b.slice() }; S.ncBox = h.k; cv.setPointerCapture(ev.pointerId);
   };
   cv.onpointermove = (ev) => {
-    if (!drag) { const r = cv.getBoundingClientRect(), h = hit(ev.clientX - r.left, ev.clientY - r.top); cv.style.cursor = h && !S.readOnly ? (h.mode === 'size' ? 'nwse-resize' : 'move') : 'default'; return; }
+    if (!drag) { const r = cv.getBoundingClientRect(), h = hit(ev.clientX - r.left, ev.clientY - r.top); cv.style.cursor = h && !S.readOnly ? (h.mode === 'size' ? 'nwse-resize' : 'move') : 'default'; if ((h ? h.k : null) !== hov) { hov = h ? h.k : null; draw(); } return; }
     const r = cv.getBoundingClientRect(), dx = (ev.clientX - r.left - drag.px) / sc, dy = (ev.clientY - r.top - drag.py) / sc, b = drag.b0.slice();
     if (drag.mode === 'move') { b[0] += dx; b[2] += dx; b[1] += dy; b[3] += dy; }
     else { const [aw, ah] = ncAspect(drag.k) || [drag.b0[2] - drag.b0[0], drag.b0[3] - drag.b0[1]], w = Math.max(8, b[2] - b[0] + dx); b[2] = b[0] + w; b[3] = b[1] + w * ah / aw; }
     ncSetBox(drag.k, b.map(Math.round).join(','));
     draw();
   };
+  cv.onpointerleave = () => { if (hov && !drag) { hov = null; draw(); } };
   cv.onpointerup = () => { if (!drag) return; const k = drag.k; drag = null; markDirty([S.modPath]); S.gen = (S.gen || 0) + 1; if (ncStudioKey(k)) ncStudioCut(k); };
   const fb = $('ncFocusNote');
   if (fb) {

@@ -9,6 +9,8 @@
 //   g++ -std=c++17 -I<repo>/runtime/include -I<repo>/work/output/include -I<repo>/games/dissidia/runtime
 //       -o /tmp/test_arm_trail test_arm_trail.cpp; /tmp/test_arm_trail
 #include "../runtime/roster.cpp"
+int dissidia_frame_ticks() { return 2; }              // framerate.cpp (30 fps logic) is not linked into this host test
+float dissidia_own_clock_scale() { return 1.0f; }
 #include <map>
 #include <cstdlib>
 
@@ -17,6 +19,7 @@
 static std::vector<uint8_t> g_ram(0x08000000u);
 std::string dissidia_mods_dir() { return "/nonexistent"; }
 FuncPtr ovl_menu_lookup(uint32_t) { return nullptr; }
+FuncPtr ovl_extra_lookup(uint32_t) { return nullptr; }
 FuncPtr ovl_battle_lookup(uint32_t) { return nullptr; }
 thread_local uint32_t g_func_ring[32];
 thread_local uint32_t g_func_ring_pos;
@@ -103,7 +106,10 @@ int main() {
     setenv("PSPRECOMP_ARMTRAIL_LOG", "1", 1);
     setenv("PSPRECOMP_ROSTER", "34 noc100 9 nm=Noctis armtrail=7700,4,12,168:12:0:180,81:1:23:160,181:11:12:73;"
                                "33 viv100 21 armtrail=7700,3,12,168:12:0;35 ysh100 28 armtrail=7700,4,13,168:12:0;"
-                               "36 aaa100 9 armtrail=7700,4,4,168:12;37 bbb100 9 armtrail=7700,4,4,168:12:0:180:5", 1);
+                               "36 aaa100 9 armtrail=7700,4,4,168:12;37 bbb100 9 armtrail=7700,4,4,168:12:0:180:5;"
+                               // Noctis's live token since the trident (5 sets, 31 arms; 2026-10-30 the cap was 4 sets) and 9 sets (too many)
+                               "38 ccc100 9 armtrail=7700,5,11,168:12:0:180,170:6:24:80,81:1:23:230,181:11:12:73,233:1:30:234;"
+                               "39 ddd100 9 armtrail=7700,5,11,1:1:0,2:1:1,3:1:2,4:1:3,5:1:4,6:1:5,7:1:6,8:1:7,9:1:8", 1);
     dissidia_roster_init(g_ram.data());
     dissidia_roster_grid_install();
     CHECK(g_hooks.count(0x0884E660u) && g_hooks.count(0x0880EA20u));
@@ -111,7 +117,8 @@ int main() {
     const Entry* en = nullptr;
     for (const Entry& e : g_entries) {
         if (e.charId == 34) en = &e;
-        if (e.charId == 33 || e.charId == 35 || e.charId == 36 || e.charId == 37) CHECK(e.at_nset == 0);   // slot 3 / 4+13 > 16 / no bit / 5 fields
+        if (e.charId == 33 || e.charId == 35 || e.charId == 36 || e.charId == 37 || e.charId == 39) CHECK(e.at_nset == 0);   // slot 3 / 4+13 > 16 / no bit / 5 fields / 9 sets
+        if (e.charId == 38) CHECK(e.at_nset == 5 && e.at_bone0[4] == 233 && e.at_count[4] == 1 && e.at_bit0[4] == 30 && e.at_draw[4] == 234);
     }
     CHECK(en && en->at_id == 7700 && en->at_slot0 == 4 && en->at_nslot == 12 && en->at_nset == 3);
     CHECK(en->at_bone0[0] == 168 && en->at_count[0] == 12 && en->at_bit0[0] == 0 && en->at_draw[0] == 180);

@@ -131,8 +131,10 @@ const sameSlots = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 function applySkin(gmoBytes, skin) {
   const m = new SkinModel(gmoBytes); m.ownBodySlots();
   const s = m.slots(), ss = skin.slots, B = skin.blobs;
-  if (ss.ghosts.length !== s.ghosts.length) throw new Error(`the skin has ${ss.ghosts.length} ghosts, the model ${s.ghosts.length}`);
-  const groups = [[s.body, ss.body, 'body.'], ...s.ghosts.map((g, k) => [g, ss.ghosts[k], `ghost${k}.`])];
+  // ghosts by Part: a model may keep fewer ghosts than the skin carries (Noctis keeps warp_ghost1 only, 2026-10-29)
+  const sk = new Map(ss.ghosts.map((g, k) => [g.part, k])), missing = s.ghosts.filter((g) => !sk.has(g.part)).map((g) => g.part);
+  if (missing.length) throw new Error(`the skin has no ghost for part ${missing.join(', ')}`);
+  const groups = [[s.body, ss.body, 'body.'], ...s.ghosts.map((g) => [g, ss.ghosts[sk.get(g.part)], `ghost${sk.get(g.part)}.`])];
   for (const [g, sg, pre] of groups) {
     if (!sameSlots({ part: g.part, owner: g.owner, materials: g.materials, textures: g.textures }, { part: sg.part, owner: sg.owner, materials: sg.materials, textures: sg.textures })) throw new Error('the skin was made for other slots');
     m.replacePart(g.part, B[pre + 'part']);
@@ -161,16 +163,20 @@ async function skinsOfRig() {                      // [{name, path}] that have a
   for (const it of await FS.list(S.charDir + 'skins').catch(() => [])) {
     if (it.kind !== 'directory' || SKIN_HIDDEN.has(it.name)) continue;
     const p = `${S.charDir}skins/${it.name}/${stem}.skin`;
-    if (await FS.exists(p)) out.push({ name: it.name, path: p });
+    if (!(await FS.exists(p))) { console.warn('studio: skin ' + it.name + ' has no ' + stem + '.skin (' + p + ')'); continue; }
+    let info = {};                                 // skin.json (Blender writes it): tris, texture, recomp_only (why)
+    try { info = JSON.parse(new TextDecoder().decode(new Uint8Array(await FS.read(`${S.charDir}skins/${it.name}/skin.json`)))); } catch (e) { /* older skins have none */ }
+    out.push({ name: it.name, path: p, info });
   }
   return out;
 }
-const skinGameChoice = () => (S.mod && S.mod.body && S.mod.body.skin) || 'manikin';
+const skinRetailMod = () => !!(S.mod && S.mod.kind === 'retail' || S.rig && S.rig.retail);   // a retail character (changed or from the ISO): its default body is the game's
+const skinGameChoice = () => (S.mod && S.mod.body && S.mod.body.skin) || (skinRetailMod() ? 'retail' : 'manikin');
 async function skinSetup() {                       // after loadRig: the skins this rig has; show the one the game uses
   S.skins = []; S.skinShown = null; S.rigBytes = null;
   const tag = $('skinTag'); if (tag) tag.hidden = true;
   if (!S.gmo || !S.rig || S.rig.retail) return;
-  try { S.skins = await skinsOfRig(); } catch (e) { S.skins = []; }
+  try { S.skins = await skinsOfRig(); } catch (e) { S.skins = []; console.error('studio: skins', e); toast('Could not list ' + (S.char || '') + '\'s skins (' + (e && e.message || e) + '): showing the rig as stored.', 'bad'); }
   if (!S.skins.length) return;
   S.rigBytes = S.files[S.rig.gmo] && S.files[S.rig.gmo].bin ? S.files[S.rig.gmo].bin : new Uint8Array(await FS.read(S.rig.gmo));
   const want = skinGameChoice();
@@ -182,7 +188,7 @@ async function skinShow(name, quiet) {
   if (name) {
     const s = S.skins.find((x) => x.name === name);
     try { bytes = applySkin(S.rigBytes, skinFromBytes(new Uint8Array(await FS.read(s.path)))); }
-    catch (e) { if (!quiet) toast(`Could not put on the ${name} skin: ${e.message}`, 'bad'); console.warn('studio: skin', name, e); return; }
+    catch (e) { toast(`Could not put on the ${name} skin: ${e.message}`, 'bad'); console.warn('studio: skin', name, e); return; }   // (quiet or not: a body that silently stays the manikin looks like a lost model)
   }
   try { S.gmo = parseGMO(bytes); } catch (e) { toast('Could not read the skinned model: ' + e.message, 'bad'); return; }
   S.skinShown = name;
@@ -196,8 +202,8 @@ function skinHud() {                               // the skins live in the Char
   if (S.ncSel === 'skin' && typeof renderInspector === 'function') renderInspector();
 }
 async function skinUseInGame(name) {               // mod.json body.skin: takes effect at the next build or game start
-  const v = name || 'manikin', have = [];
-  if (name && name !== 'as_is' && name !== 'manikin') {           // every model the skin has a file for (assists too)
+  const v = name || (skinRetailMod() ? 'retail' : 'manikin'), have = [];
+  if (name && name !== 'as_is' && name !== 'manikin' && name !== 'retail') {           // every model the skin has a file for (assists too)
     for (const it of await FS.list(`${S.charDir}skins/${name}`).catch(() => [])) {
       const gp = it.name.endsWith('.skin') ? 'obj/' + it.name.replace(/\.skin$/, '.gmo') : null;
       if (gp && S.mod.files && S.mod.files[gp]) have.push(gp);
@@ -207,21 +213,33 @@ async function skinUseInGame(name) {               // mod.json body.skin: takes 
   skinHud(); refreshStatus();
   toast(`The game will use ${v} after you save and build (or start the game: run.sh builds it).`);
 }
-/* the rig as it is stored: "as_is" for characters made in the Studio, "manikin" (the based-on character's) for others */
-const skinStored = () => (S.mod && S.mod.body && S.mod.body.skin === 'as_is' ? 'as_is' : 'manikin');
-const skinLabel = (name) => (!name || name === 'as_is' || name === 'manikin' ? (skinStored() === 'as_is' ? 'as stored' : 'manikin') : name);
+/* the rig as it is stored: "retail" (the game's own body) for a changed retail character, "as_is" for characters made
+   in the Studio, "manikin" (the based-on character's) for others */
+const skinStored = () => (skinRetailMod() ? 'retail' : S.mod && S.mod.body && S.mod.body.skin === 'as_is' ? 'as_is' : 'manikin');
+const skinLabel = (name) => (!name || name === 'as_is' || name === 'manikin' || name === 'retail' ? ({ as_is: 'as stored', retail: 'retail' }[skinStored()] || 'manikin') : name);
+/* what a body is called on screen (skinLabel stays its id): the manikin is "Bare rig (no skin)", a skin its skin.json
+   name when Blender wrote one (2026-11-01: not FF15ncts_00 / "manikin · the rig as stored") */
+function skinTitle(name) {
+  const id = skinLabel(name); if (id === 'manikin') return 'Bare rig (no skin)';
+  const sk = (S.skins || []).find((x) => x.name === id), inf = (sk && sk.info) || {};
+  return inf.display_name || inf.name || inf.label || id;
+}
 function skinPanel(I) {                            // Character tab > Body: preview a skin on the model, pick the game's
   const game = skinLabel(skinGameChoice()), shown = skinLabel(S.skinShown);
-  const rows = [{ name: null, label: skinLabel(null), note: skinStored() === 'as_is' ? 'the models in models/' : 'the rig as stored' }].concat((S.skins || []).map((s) => ({ name: s.name, label: s.name, note: s.path.split('/').slice(-2, -1)[0] === s.name ? '' : s.path })));
+  const rows = [{ name: null, label: skinLabel(null), note: { as_is: 'the models in models/', retail: 'the game\'s own body' }[skinStored()] || '' }].concat((S.skins || []).map((s) => ({ name: s.name, label: s.name, recomp: (s.info || {}).recomp_only, note: [(s.info || {}).tris ? Number(s.info.tris).toLocaleString() + ' triangles' : '', (s.info || {}).hd ? 'HD texture' : '', s.path.split('/').slice(-2, -1)[0] === s.name ? '' : s.path].filter(Boolean).join(' · ') })));
+  const gameSkin = (S.skins || []).find((s) => s.name === skinGameChoice()), why = gameSkin && (gameSkin.info || {}).recomp_only;
   I.innerHTML = `<div class="sec"><h3>Body</h3>
     <p class="note">Click one to see it on the model. The game uses the one marked <b>in game</b>.</p>
     <div class="skin-list">${rows.map((r) => { const id = r.label, on = id === shown, ing = id === game;
-      return `<button type="button" class="skin-row${on ? ' sel' : ''}" data-skin="${esc(r.name || '')}" aria-pressed="${on}"><span class="mono">${esc(r.label)}</span>${r.note ? `<small>${esc(r.note)}</small>` : ''}${ing ? '<em class="skin-game">in game</em>' : ''}</button>`; }).join('')}</div>
-    ${shown !== game && S.modPath && !S.readOnly ? `<button type="button" id="skinUseBtn" class="primary">Use ${esc(shown)} in game</button>` : ''}</div>${skinOwnHTML()}${skinWepHTML()}`;
+      return `<button type="button" class="skin-row${on ? ' sel' : ''}" data-skin="${esc(r.name || '')}" aria-pressed="${on}"><span${skinTitle(r.name) === r.label && r.name ? ' class="mono"' : ''} title="${esc(r.label)}">${esc(skinTitle(r.name))}</span>${r.note ? `<small>${esc(r.note)}</small>` : ''}${r.recomp ? `<small class="mono" title="${esc(r.recomp)}">recomp</small>` : ''}${ing ? '<em class="skin-game">in game</em>' : ''}</button>`; }).join('')}</div>
+    ${why ? `<p class="note rt-note"><b>Needs the recomp:</b> the body in game has ${esc(why)}. A stock game (PSP, PPSSPP, a patched ISO) can't load it; pick a skin reduced for the PSP (or ${esc(skinLabel(null))}) for those.</p>` : ''}
+    ${shown !== game && S.modPath && !S.readOnly ? `<button type="button" id="skinUseBtn" class="primary">Use ${esc(skinTitle(S.skinShown))} in game</button>` : ''}</div>${typeof litHTML === 'function' ? litHTML() : ''}${skinOwnHTML()}${skinWepHTML()}`;
   I.querySelectorAll('[data-skin]').forEach((b) => b.onclick = () => skinShow(b.dataset.skin || null));
   const u = I.querySelector('#skinUseBtn'); if (u) u.onclick = () => skinUseInGame(S.skinShown || (skinStored() === 'as_is' ? 'as_is' : null));
   skinOwnWire();
   I.querySelectorAll('[data-own-wep]').forEach((b) => b.onclick = () => skinOwnStart(b.dataset.ownWep));
+  I.querySelectorAll('[data-ex-wep]').forEach((b) => b.onclick = () => skinToggleEx(b.dataset.exWep));
+  if (typeof litWire === 'function') litWire(I);
 }
 
 /* ---------------------------------------------------------------- your own model as the body (Blender does the fitting)
@@ -229,28 +247,43 @@ function skinPanel(I) {                            // Character tab > Body: prev
    character there and asks for the model file; it is fitted onto the skeleton and saved as skins/<name>/; /job tells
    how it is going. When it is done the Studio points mod.json at the new skin (body.skin, body.models). */
 const OWN = { job: null, state: '', message: '', timer: null, name: '', slot: '' };
-function skinOwnHTML() {
-  if (!S.modPath || S.readOnly || !S.mod || S.mod.kind === 'retail' || !S.rig || S.rig.retail) return '';
+function skinOwnHTML() {                          // retail characters too: from the ISO, the first change makes their mod folder
+  const iso = S.rig && S.rig.retail && S.modsBase !== undefined;
+  if (!iso && (!S.modPath || S.readOnly || !S.mod || !S.rig || S.rig.retail)) return '';
   const busy = OWN.job && (OWN.state === 'picking' || OWN.state === 'working');
   if (OWN.slot) return `<div class="sec"><h3>Your own model</h3><div class="btnrow"><button type="button" id="ownBtn" class="primary"${busy ? ' disabled' : ''}>Replace with my model…</button></div></div>`;
   return `<div class="sec"><h3>Your own model</h3>
     ${S.mod.body && S.mod.body.model_hint ? `<p class="note"><b>Body:</b> ${esc(S.mod.body.model_hint)}</p>` : ''}
-    <p class="note">Blender asks for an FBX, glTF, VRM, OBJ or .blend model and fits it onto the skeleton.</p>
+    <p class="note">Blender asks for an FBX, glTF, VRM, OBJ or .blend model and fits it onto the skeleton.${skinRetailMod() ? ' It goes on the first costume (and its assist); the other costumes keep theirs. Pick <b>retail</b> above and use it in game to switch back.' : ''}</p>
     <div class="btnrow"><button type="button" id="ownBtn" class="primary"${busy ? ' disabled' : ''}>Replace with my model…</button></div>
     ${OWN.job || OWN.message ? `<p class="note own-status ${OWN.state === 'error' ? 'bad' : ''}" id="ownStatus">${esc(skinOwnText())}</p>` : ''}
     <p class="note">Needs Blender open with the Dissidia add-on.</p></div>`;
 }
 /* a weapon of your own: the same, for one wepN part (Blender lines it up with the old one, gives it one picture and
    puts it into the skin the game uses, or own-weapons) */
+const skinExParts = () => new Set((S.mod && S.mod.body && S.mod.body.ex_parts) || []);
+/* mod.json body.ex_parts: mark / unmark a weapon as the EX Mode one (from the ISO: into its mod folder first) */
+async function skinToggleEx(part) {
+  if (S.rig && S.rig.retail && !(await openRetailMod())) return;
+  edit([S.modPath], () => {
+    S.mod.body = S.mod.body || {};
+    const ex = skinExParts();
+    if (ex.has(part)) ex.delete(part); else ex.add(part);
+    if (ex.size) S.mod.body.ex_parts = [...ex].sort(); else delete S.mod.body.ex_parts;
+  });
+  refreshStatus(); updateParts(); renderInspector();
+}
 const skinWeapons = () => (S.gmo && S.gmo.parts ? S.gmo.parts.map((p) => p.name).filter((n) => /^wep\d+$/.test(n)) : []);
-function skinWepHTML() {
-  if (!S.modPath || S.readOnly || !S.mod || S.mod.kind === 'retail' || !S.rig || S.rig.retail) return '';
-  const have = new Set(skinWeapons()), gs = ((S.mod.body && S.mod.body.weapon_groups) || []).filter((g) => (g.parts || []).some((p) => have.has(p)));
+function skinWepHTML() {                          // retail characters too: from the ISO, the first change makes their mod folder
+  const iso = S.rig && S.rig.retail && S.modsBase !== undefined;
+  if (!iso && (!S.modPath || S.readOnly || !S.mod || !S.rig || S.rig.retail)) return '';
+  const have = new Set(skinWeapons()), gs = (((S.mod || {}).body && S.mod.body.weapon_groups) || []).filter((g) => (g.parts || []).some((p) => have.has(p)));
   const ws = gs.length ? gs : [...have].map((n) => ({ name: n, parts: [n] })); if (!ws.length) return '';
   const busy = OWN.job && (OWN.state === 'picking' || OWN.state === 'working');
   return `<div class="sec"><h3>Weapons</h3>
-    <p class="note">Blender asks for an FBX, glTF or OBJ model and puts it where the old weapon is, hilt in the hand. Weapons drawn with the same picture change together.</p>
-    <div class="skin-list">${ws.map((g) => `<div class="skin-row wep-row"><span class="wep-name"><b>${esc(g.name)}</b>${g.parts.length > 1 || g.name !== g.parts[0] || g.hint ? `<small>${esc([g.hint, g.parts.join(', ')].filter(Boolean).join(' · '))}</small>` : ''}</span><span class="grow"></span><button type="button" class="mini" data-own-wep="${esc(g.parts[0])}"${busy ? ' disabled' : ''}>Use my model…</button></div>`).join('')}</div>
+    <p class="note">Blender asks for an FBX, glTF or OBJ model and puts it where the old weapon is, hilt in the hand. Weapons drawn with the same picture change together. A weapon already in Blender (one that came with a ripped model): select it there and press <b>Use selected</b> beside the weapon in the Character mods panel.</p>
+    <div class="skin-list">${ws.map((g) => `<div class="skin-row wep-row"><span class="wep-name"><b>${esc(g.name)}</b>${g.parts.length > 1 || g.name !== g.parts[0] || g.hint ? `<small>${esc([g.hint, g.parts.join(', ')].filter(Boolean).join(' · '))}</small>` : ''}</span><span class="grow"></span><button type="button" class="mini" data-own-wep="${esc(g.parts[0])}"${busy ? ' disabled' : ''}>Use my model…</button><button type="button" class="mini${skinExParts().has(g.parts[0]) ? ' on' : ''}" data-ex-wep="${esc(g.parts[0])}" aria-pressed="${skinExParts().has(g.parts[0])}" title="Drawn in EX Mode only, in place of the other weapons (the game swaps them itself; this tells the preview)">EX</button></div>`).join('')}</div>
+    ${skinExParts().size ? '<p class="note">EX weapons show with <b>EX Mode</b> ticked above the view, in place of the others.</p>' : ''}
     ${OWN.slot && (OWN.job || OWN.message) ? `<p class="note own-status ${OWN.state === 'error' ? 'bad' : ''}" id="ownStatus">${esc(skinOwnText())}</p>` : ''}
     <p class="note">Needs Blender open with the Dissidia add-on (0.29 or later).</p></div>`;
 }
@@ -269,6 +302,7 @@ function skinOwnRefresh() {
 }
 async function skinOwnStart(slot) {
   slot = typeof slot === 'string' ? slot : '';
+  if (S.rig && S.rig.retail && !(await openRetailMod())) return;   // from the ISO: into its mod folder first (made if needed)
   const rf = S.files[S.rig.gmo];
   if (rf && rf.gmo && fileChanged(rf)) { toast('Save first: Blender reads the rig from the folder.'); return; }
   const rig1p = (S.rigs.find((r) => /_1p\.gmo$/.test(r.gmo)) || S.rig).gmo, rig = rig1p.slice(S.charDir.length);

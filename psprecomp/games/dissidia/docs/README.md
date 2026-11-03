@@ -8,6 +8,7 @@ Everything about the game itself, the native build and the modding tools, in one
 - [native-build.md](native-build.md): what each setup step does, the work folder, every runtime option (window, scaling, input, camera).
 - [loose-file-mods.md](loose-file-mods.md): how loose files replace `PACKAGE.BIN` entries, the model size budget, package index internals.
 - [texture-packs.md](texture-packs.md): HD texture replacement: dumping, upscaling, the built-in upscaler.
+- [frame-rate.md](frame-rate.md): native 60 fps battles (how the game paces itself, what was patched), and the in-game settings menu.
 
 ## Making characters
 Short guides next to the tools, and the full reference here:
@@ -23,6 +24,7 @@ Short guides next to the tools, and the full reference here:
 - [effects.md](effects.md): how the game draws effects (placement, timing, colour and blending, every component), and corrections to the FEP notes.
 - [audio.md](audio.md): extra BGM tracks, voice banks.
 - [recomp-status.md](recomp-status.md): how the native build came together, and soak-test findings.
+- [character-lighting.md](character-lighting.md): live key and rim lighting on character bodies in the native build (`body.lighting`).
 - Custom effect shaders are an engine feature: [psprecomp/FX_SHADERS.md](../../../FX_SHADERS.md).
 - Engine docs: [ARCHITECTURE](../../../ARCHITECTURE.md), [DEBUGGING](../../../DEBUGGING.md), [ENV_FLAGS](../../../docs/ENV_FLAGS.md), [GRAPHICS](../../../docs/GRAPHICS.md), [TROUBLESHOOTING](../../../docs/TROUBLESHOOTING.md).
 

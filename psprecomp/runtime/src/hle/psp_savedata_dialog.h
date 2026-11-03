@@ -88,6 +88,10 @@ struct SdTheme {
     SdSprite corner[4];                 // frame corner ornaments: TL, TR, BL, BR
     SdSprite glyph_cross, glyph_circle;     // face-button glyphs
     SdSprite dpad_up, dpad_down;
+    // Settings menu (optional): d-pad left/right glyphs for the hint bar, and the
+    // value arrows in two colours (on the silver rows / on the selected bar).
+    SdSprite dpad_left, dpad_right;
+    SdSprite arrow_left, arrow_right, arrow_left_hi, arrow_right_hi;
     // Colours (RGBA8, same packing as SdImage).
     uint32_t text = 0xFF56362E;             // row title
     uint32_t text_dim = 0xFF8C6460;         // row detail
@@ -161,12 +165,70 @@ private:
     void move(int d);
 };
 
+// ---------------------------------------------------------------------------
+// Settings menu page (driven by psp_settings.cpp): a title, a tab label and up
+// to MENU_ROWS rows of label + value in the save dialog's style (the game's
+// theme when one is installed), with a help line in the information panel.
+// ---------------------------------------------------------------------------
+constexpr int MENU_ROWS = 5;   // more than 4 are drawn closer together
+struct MenuRow {
+    std::string label;
+    std::string value;          // shown right-aligned; empty for an action row
+    std::string help;           // information panel text while selected
+    bool can_dec = false, can_inc = false;   // draws the left / right arrows
+};
+void render_menu(Canvas& c, const std::string& title, const std::string& tab,
+                 const std::vector<MenuRow>& rows, int sel, bool confirm_cross);
+
 // Cross-thread overlay hand-off (game thread publishes, GL thread fetches).
 void overlay_publish(const Canvas& c);   // activates the overlay
 void overlay_clear();                    // deactivates it
 // Copies the current overlay into `out` (w*h uint32, top row first). Returns
-// false when no dialog is active.
+// false when no dialog is active. The menu overlay (below) wins while active.
 bool overlay_fetch(std::vector<uint32_t>& out, int* w = nullptr, int* h = nullptr);
+// Settings-menu overlay: a second slot drawn over (instead of) the dialog one,
+// so opening the menu during a save dialog does not disturb it.
+void menu_overlay_publish(const Canvas& c);
+void menu_overlay_clear();
+
+// ---------------------------------------------------------------------------
+// On-screen keyboard (sceUtilityOsk, e.g. naming the player): a text field and
+// a grid of keys in the save dialog's style. Pad: d-pad / stick moves, the
+// confirm button types the key, the cancel button deletes, Triangle = space,
+// Square = upper / lower case, Start = done. The host keyboard types directly
+// (the event loop forwards its text through osk_push_key while it is open).
+// ---------------------------------------------------------------------------
+class KeyboardDialog {
+public:
+    void begin(const std::u16string& title, const std::u16string& initial, int max_chars, bool confirm_cross);
+    Result update(uint32_t buttons, int64_t now_ms);   // Selected = Done (never Cancelled)
+    const std::u16string& text() const { return text_; }
+    uint32_t revision() const { return rev_; }
+    void render(Canvas& c) const;
+
+private:
+    std::u16string title_, text_;
+    int max_ = 16;
+    bool confirm_cross_ = true, armed_ = false, lower_ = false;
+    int row_ = 1, col_ = 0;
+    uint32_t prev_ = 0, held_dir_ = 0;
+    int64_t next_repeat_ = 0;
+    uint32_t rev_ = 0;
+    bool done_ = false;
+    void move(int dr, int dc);
+    void press();
+    void type(char16_t ch);
+    void erase();
+};
+// Host keyboard -> open keyboard dialog (event loop thread -> HLE thread).
+void osk_set_active(bool on);
+bool osk_active();
+void osk_push_key(uint32_t cp);   // printable code point; 8 = delete; 13 = done
+
+// Performance overlay box: `text` in white on a dark box, rendered at `scale`
+// (1..MAX_SCALE) into `out` (w*h, top row first, opaque). Uses its own FreeType
+// instance, so the GL thread can call it while a dialog renders elsewhere.
+bool render_hud_box(const std::string& text, int scale, std::vector<uint32_t>& out, int* w, int* h);
 
 }  // namespace psp_sddialog
 

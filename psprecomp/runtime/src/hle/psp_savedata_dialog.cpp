@@ -1032,11 +1032,265 @@ void ListDialog::render(Canvas& c) const {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Settings menu page
+// ---------------------------------------------------------------------------
+namespace {
+
+// Small solid arrow (left or right) centred on (cx, cy), design units.
+void menu_arrow(Painter& P, float cx, float cy, bool right, Col col) {
+    Poly p;
+    const float w = 3.2f, h = 4.2f;
+    if (right) { p.add(cx + w, cy); p.add(cx - w, cy - h); p.add(cx - w, cy + h); }
+    else { p.add(cx - w, cy); p.add(cx + w, cy + h); p.add(cx + w, cy - h); }
+    P.poly(p, 0, [&](float, float) { return col; });
+}
+
+// Value column: "<  value  >" right-aligned at `right`.
+void menu_value(Painter& P, FT_Face f, float size, float right, float base, const MenuRow& r, Col col, Col dim) {
+    if (r.value.empty()) return;
+    const float aw = 10.f;
+    float x = right;
+    menu_arrow(P, x - 3.2f, base - 3.6f, true, r.can_inc ? col : dim);
+    x -= aw;
+    const float tw = P.text(f, size, x, base, r.value, col, 0, 1);
+    x -= tw + 7.f;
+    menu_arrow(P, x - 3.2f, base - 3.6f, false, r.can_dec ? col : dim);
+}
+// Themed: the game's selector triangles (white on the selected bar, blue on the silver rows), the value between.
+void menu_value_themed(Canvas& c, Painter& P, const SdTheme& T, FT_Face f, float size, float right, float cy,
+                       float base, const MenuRow& r, bool on_bar, Col col) {
+    if (r.value.empty()) return;
+    const SdSprite& L = on_bar ? T.arrow_left_hi : T.arrow_left;
+    const SdSprite& R = on_bar ? T.arrow_right_hi : T.arrow_right;
+    if (!L.valid() || !R.valid()) { menu_value(P, f, size, right, base, r, col, {col.r, col.g, col.b, 0.35f}); return; }
+    float x = right - float(R.w);
+    draw_sprite(c, R, x, cy - float(R.h) / 2, float(R.w), float(R.h), r.can_inc ? 1.f : 0.3f);
+    x -= 5.f;
+    const float tw = P.text(f, size, x, base, r.value, col, 0, 1);
+    x -= tw + 5.f + float(L.w);
+    draw_sprite(c, L, x, cy - float(L.h) / 2, float(L.w), float(L.h), r.can_dec ? 1.f : 0.3f);
+}
+
+void render_menu_themed(const SdTheme& T, Canvas& c, const std::string& title, const std::string& tab,
+                        const std::vector<MenuRow>& rows, int sel, bool confirm_cross) {
+    const Fonts& F = fonts();
+    ThemeFaces& TF = theme_faces(T);
+    FT_Face body = TF.reg ? TF.reg : F.body;
+    FT_Face bodyb = TF.bold ? TF.bold : (TF.reg ? TF.reg : F.bodyb);
+    const float fs = T.font_scale;
+    Painter P(c);
+
+    c.clear(Canvas::rgba(200, 204, 232));
+    draw_sprite(c, T.background, 0, 0, float(SCREEN_W), float(SCREEN_H), 1.f, true);
+    themed_title(P, F.bodyb ? F.bodyb : body, 14, 31, title, unpack(T.title), unpack(T.title_edge));
+    {   // the silver band under the heading (as the save dialog)
+        const int by = 36;
+        for (int row = 0; row < 4; ++row) {
+            static const float ay[4] = {0.95f, 0.75f, 0.45f, 0.25f};
+            static const uint8_t lum[4] = {250, 214, 168, 128};
+            Col k = rgb(lum[row], lum[row] + (255 - lum[row]) / 4, 255, ay[row]);
+            for (int xx = 0; xx < SCREEN_W * c.scale; ++xx) {
+                float fade = 1.f - 0.65f * float(xx) / float(SCREEN_W * c.scale);
+                int y0 = (by + row) * c.scale, y1 = (by + row + 1) * c.scale;
+                for (int yy = y0; yy < y1; ++yy) P.put(xx, yy, k, fade);
+            }
+        }
+    }
+    draw_sprite(c, T.tab, 12, 43, 146, 21);
+    themed_hint(P, bodyb, 9.5f * fs, 12 + 146 / 2.f, 43 + 14.f, tab, unpack(T.hint_text), 2);
+
+    const int n = std::min<int>(MENU_ROWS, int(rows.size()));
+    // 4 rows use the save dialog's spacing; more are packed into the same 140 units above the information panel.
+    const float ROW_Y0 = 70, PITCH = n > 4 ? 140.f / float(n) : 35.f, BAR_H = PITCH - 3.f, BAR_X = 46, BAR_W = 410;
+    const Col c_text = unpack(T.text), c_dim = unpack(T.text_dim), c_sel = unpack(T.text_selected),
+              c_seld = unpack(T.text_selected_dim);
+    for (int i = 0; i < n; ++i) {
+        const MenuRow& r = rows[size_t(i)];
+        const bool is_sel = i == sel;
+        const float y = ROW_Y0 + float(i) * PITCH;
+        if (is_sel) draw_sprite(c, T.row_selected, BAR_X - 4, y - 3, BAR_W + 8, BAR_H + 6);
+        else if (T.row_normal.valid()) draw_sprite(c, T.row_normal, BAR_X - 4, y - 3, BAR_W + 8, BAR_H + 6);
+        const Col tc = is_sel ? c_sel : c_text, dc = is_sel ? c_seld : c_dim;
+        const float base = y + BAR_H / 2 + 4.2f;
+        P.text(bodyb, 11.f * fs, BAR_X + 22, base, r.label, tc, 200);
+        (void)dc;
+        menu_value_themed(c, P, T, bodyb, 10.5f * fs, BAR_X + BAR_W - 20, y + BAR_H / 2, base, r, is_sel, tc);
+        if (is_sel && T.cursor.valid())
+            draw_sprite(c, T.cursor, 10.f, y + (BAR_H - float(T.cursor.h)) / 2 + 1.f, float(T.cursor.w), float(T.cursor.h));
+    }
+
+    {   // information panel: the selected row's help
+        const float px = 16, py = 214, pw = 448, ph = 31;
+        const Col fill = unpack(T.panel_fill), edge = unpack(T.panel_edge);
+        P.shadow(px, py, pw, ph, 3, 3.f, 0.22f);
+        P.rrect(px - 1.2f, py - 1.2f, pw + 2.4f, ph + 2.4f, 3, edge);
+        P.rrect(px, py, pw, ph, 2, Ramp(fill, fill, py, py + ph), 0.f, fill.a);
+        P.hline(px + 1, px + pw - 1, py + ph - 1.2f, 1.f, rgb(120, 128, 180, 0.55f));
+        if (T.corner[0].valid()) {
+            const SdSprite* q = T.corner;
+            const float o = 3.5f;
+            draw_sprite(c, q[0], px - o, py - o, float(q[0].w), float(q[0].h));
+            draw_sprite(c, q[1], px + pw + o - float(q[1].w), py - o, float(q[1].w), float(q[1].h));
+            draw_sprite(c, q[2], px - o, py + ph + o - float(q[2].h), float(q[2].w), float(q[2].h));
+            draw_sprite(c, q[3], px + pw + o - float(q[3].w), py + ph + o - float(q[3].h), float(q[3].w), float(q[3].h));
+        }
+        const Col pt = unpack(T.panel_text);
+        if (sel >= 0 && sel < n) {
+            const std::string& h = rows[size_t(sel)].help;
+            const size_t nl = h.find('\n');
+            if (nl == std::string::npos) P.text(body, 9.f * fs, px + 16, py + 19.f, h, pt, pw - 32);
+            else {
+                P.text(bodyb, 9.f * fs, px + 16, py + 13.f, h.substr(0, nl), pt, pw - 32);
+                P.text(body, 8.f * fs, px + 16, py + 24.5f, h.substr(nl + 1), {pt.r, pt.g, pt.b, 0.85f}, pw - 32);
+            }
+        }
+    }
+
+    {   // hint bar
+        const float by = 250, bh = 20, bx = 12, bw = 456;
+        draw_sprite(c, T.tab, bx, by, bw, bh);
+        const Col wh = unpack(T.hint_text);
+        const float base = by + bh / 2 + 3.3f;
+        float x = bx + 24;
+        const SdSprite& g1 = confirm_cross ? T.glyph_cross : T.glyph_circle;
+        const SdSprite& g2 = confirm_cross ? T.glyph_circle : T.glyph_cross;
+        auto glyph = [&](const SdSprite& g, float gx) {
+            if (g.valid()) draw_sprite(c, g, gx, by + (bh - float(g.h)) / 2, float(g.w), float(g.h));
+            return float(g.w);
+        };
+        x += glyph(g1, x) + 3;
+        themed_hint(P, bodyb, 8.8f * fs, x, base, "Select", wh);
+        x += P.text_width(bodyb, 8.8f * fs, "Select") + 22;
+        x += glyph(g2, x) + 3;
+        themed_hint(P, bodyb, 8.8f * fs, x, base, "Back", wh);
+        // right: "<d-pad up/down> Choose   <d-pad left/right> Change", the game's d-pad glyphs
+        const float dk = 0.78f;
+        auto pad = [&](const SdSprite& g, float gx) {
+            draw_sprite(c, g, gx, by + (bh - dk * float(g.h)) / 2, dk * float(g.w), dk * float(g.h));
+            return dk * float(g.w);
+        };
+        float rx = bx + bw - 28;
+        const float tw = P.text_width(bodyb, 8.8f * fs, "Change");
+        themed_hint(P, bodyb, 8.8f * fs, rx - tw, base, "Change", wh);
+        rx -= tw + 4;
+        if (T.dpad_left.valid() && T.dpad_right.valid()) {
+            rx -= dk * float(T.dpad_left.w + T.dpad_right.w);
+            float gx = rx;
+            gx += pad(T.dpad_left, gx);
+            pad(T.dpad_right, gx);
+        } else {
+            menu_arrow(P, rx - 4, by + bh / 2, true, wh);
+            menu_arrow(P, rx - 14, by + bh / 2, false, wh);
+            rx -= 18;
+        }
+        rx -= 16;
+        const float tw2 = P.text_width(bodyb, 8.8f * fs, "Choose");
+        themed_hint(P, bodyb, 8.8f * fs, rx - tw2, base, "Choose", wh);
+        rx -= tw2 + 4;
+        if (T.dpad_up.valid() && T.dpad_down.valid()) {
+            rx -= dk * float(T.dpad_up.w + T.dpad_down.w);
+            float gx = rx;
+            gx += pad(T.dpad_up, gx);
+            pad(T.dpad_down, gx);
+        }
+    }
+}
+
+// Built-in look (no game theme): the generic lavender page of the save dialog.
+void render_menu_plain(Canvas& c, const std::string& title, const std::string& tab, const std::vector<MenuRow>& rows,
+                       int sel, bool confirm_cross) {
+    const Fonts& F = fonts();
+    c.px = background(c.scale);
+    Painter P(c);
+    P.text_shadowed(F.cinzel, 21.f, 16, 31, title, rgb(26, 30, 108), rgb(255, 255, 255, 0.9f), 0, 1.0f);
+    for (int i = 0; i < 2; ++i) {
+        float y = 36.f + float(i) * 1.0f;
+        Col a = i ? rgb(255, 255, 255, 0.9f) : rgb(120, 128, 190, 0.85f);
+        const int nseg = 34;
+        for (int k = 0; k < nseg; ++k) {
+            float x0 = 10.f + float(k) * (460.f / float(nseg)), x1 = 10.f + float(k + 1) * (460.f / float(nseg));
+            Col kc = a; kc.a *= 1.f - 0.85f * float(k) / float(nseg);
+            P.hline(x0, x1, y, 1.f, kc);
+        }
+    }
+    header_tab(P, F.cinzel, 16, 41, 150.f, 16, tab);
+    P.shadow(PANEL_X, PANEL_Y, PANEL_W, PANEL_H, 7, 4.5f, 0.28f);
+    P.rrect(PANEL_X, PANEL_Y, PANEL_W, PANEL_H, 7, EDGE);
+    P.rrect(PANEL_X + 1.1f, PANEL_Y + 1.1f, PANEL_W - 2.2f, PANEL_H - 2.2f, 6,
+            Ramp(rgb(255, 255, 255), rgb(244, 243, 252), PANEL_Y, PANEL_Y + PANEL_H));
+    const float ry0 = PANEL_Y + 4;
+    const int n = std::min<int>(MENU_ROWS, int(rows.size()));
+    const float rh = n > 4 ? float(4 * ROW_H) / float(n) : float(ROW_H);
+    for (int i = 0; i < n; ++i) {
+        const MenuRow& r = rows[size_t(i)];
+        const bool is_sel = i == sel;
+        const float y = ry0 + float(i) * rh, h = rh - 4.f;
+        if (is_sel) {
+            Poly p = chevron(ROW_X, y, ROW_W, h, 7);
+            P.poly(p, 1.0f, [](float, float) { return rgb(206, 210, 238); });
+            Ramp rp(ROYAL_T, ROYAL_M, ROYAL_B, y, y + h);
+            P.poly(p, 0, [&](float yy, float) { return rp.at(yy); });
+            draw_hand(P, PANEL_X + 2.f, y + (h - 16.f * 1.3f) / 2 + 0.5f);
+        } else if (i + 1 < n && i + 1 != sel) {
+            P.hline(ROW_X + 10, ROW_X + ROW_W - 10, y + h + 2.f, 1.f, rgb(206, 208, 232, 0.9f));
+        }
+        const Col tc = is_sel ? rgb(255, 255, 255) : INK, dc = is_sel ? rgb(214, 220, 255) : INK_DIM;
+        const float base = y + h / 2 + 5.f;
+        P.text(F.bodyb, 14.f, ROW_X + 22, base, r.label, tc, 200);
+        menu_value(P, F.bodyb, 13.f, ROW_X + ROW_W - 16, base, r, tc, {dc.r, dc.g, dc.b, 0.35f});
+    }
+    // (no room for the help line in this layout: the list panel fills the page)
+    const float by = SCREEN_H - 28.f, bh = 18.f;
+    Poly p = chevron(14, by, PANEL_W, bh, 9);
+    P.poly(p, 0.9f, [](float, float) { return rgb(214, 218, 240); });
+    Ramp rp(rgb(76, 80, 158), rgb(40, 42, 116), rgb(22, 24, 80), by, by + bh);
+    P.poly(p, 0, [&](float yy, float) { return rp.at(yy); });
+    const Col wh = rgb(255, 255, 255);
+    float x = 38;
+    const float base = by + bh / 2 + 3.9f;
+    draw_btn_glyph(P, confirm_cross, x + 5.5f, by + bh / 2, wh);
+    x += 14;
+    x += P.text(F.cinzel, 10.5f, x, base, "Select", wh) + 18;
+    draw_btn_glyph(P, !confirm_cross, x + 5.5f, by + bh / 2, wh);
+    x += 14;
+    P.text(F.cinzel, 10.5f, x, base, "Back", wh);
+    const float rx = PANEL_X + PANEL_W - 26;
+    const float tw = P.text_width(F.cinzel, 10.5f, "Change");
+    P.text(F.cinzel, 10.5f, rx - tw, base, "Change", wh);
+    menu_arrow(P, rx - tw - 8, by + bh / 2, true, wh);
+    menu_arrow(P, rx - tw - 18, by + bh / 2, false, wh);
+}
+
+}  // namespace
+
+void render_menu(Canvas& c, const std::string& title, const std::string& tab, const std::vector<MenuRow>& rows,
+                 int sel, bool confirm_cross) {
+    if (std::shared_ptr<const SdTheme> th = theme()) render_menu_themed(*th, c, title, tab, rows, sel, confirm_cross);
+    else render_menu_plain(c, title, tab, rows, sel, confirm_cross);
+}
+
 // ---- overlay hand-off ----
 static std::mutex g_ovl_mu;
 static std::vector<uint32_t> g_ovl;
 static int g_ovl_w = 0, g_ovl_h = 0;
 static bool g_ovl_active = false;
+static std::vector<uint32_t> g_menu;
+static int g_menu_w = 0, g_menu_h = 0;
+static bool g_menu_active = false;
+
+void menu_overlay_publish(const Canvas& c) {
+    std::lock_guard<std::mutex> g(g_ovl_mu);
+    g_menu = c.px;
+    g_menu_w = c.w;
+    g_menu_h = c.h;
+    g_menu_active = true;
+}
+void menu_overlay_clear() {
+    std::lock_guard<std::mutex> g(g_ovl_mu);
+    g_menu_active = false;
+    g_menu.clear();
+}
 
 void overlay_publish(const Canvas& c) {
     std::lock_guard<std::mutex> g(g_ovl_mu);
@@ -1052,10 +1306,283 @@ void overlay_clear() {
 }
 bool overlay_fetch(std::vector<uint32_t>& out, int* w, int* h) {
     std::lock_guard<std::mutex> g(g_ovl_mu);
+    if (g_menu_active) {
+        out = g_menu;
+        if (w) *w = g_menu_w;
+        if (h) *h = g_menu_h;
+        return true;
+    }
     if (!g_ovl_active) return false;
     out = g_ovl;
     if (w) *w = g_ovl_w;
     if (h) *h = g_ovl_h;
+    return true;
+}
+
+// ---- On-screen keyboard ------------------------------------------------------
+namespace {
+constexpr uint32_t K_START = 0x0008, K_TRIANGLE = 0x1000, K_SQUARE = 0x8000;
+constexpr int OSK_COLS = 10, OSK_CHAR_ROWS = 4, OSK_ROWS = 5;
+const char* const k_osk_rows[OSK_CHAR_ROWS] = {"1234567890", "QWERTYUIOP", "ASDFGHJKL'", "ZXCVBNM-.!"};
+// Bottom row: four wide keys over the ten columns.
+enum { SK_CASE, SK_SPACE, SK_DELETE, SK_DONE };
+const int k_sk_first[4] = {0, 2, 7, 9}, k_sk_span[4] = {2, 5, 2, 1};
+int special_of(int col) { return col < 2 ? SK_CASE : col < 7 ? SK_SPACE : col < 9 ? SK_DELETE : SK_DONE; }
+
+std::mutex g_osk_mu;
+std::vector<uint32_t> g_osk_keys;
+std::atomic<bool> g_osk_active{false};
+
+std::string to_utf8(const std::u16string& s) {
+    std::string o;
+    for (char16_t ch : s) {
+        uint32_t c = ch;
+        if (c < 0x80) o += char(c);
+        else if (c < 0x800) { o += char(0xC0 | (c >> 6)); o += char(0x80 | (c & 63)); }
+        else { o += char(0xE0 | (c >> 12)); o += char(0x80 | ((c >> 6) & 63)); o += char(0x80 | (c & 63)); }
+    }
+    return o;
+}
+}  // namespace
+
+void osk_set_active(bool on) {
+    g_osk_active = on;
+    std::lock_guard<std::mutex> g(g_osk_mu);
+    g_osk_keys.clear();
+}
+bool osk_active() { return g_osk_active.load(std::memory_order_relaxed); }
+void osk_push_key(uint32_t cp) {
+    if (!g_osk_active.load()) return;
+    std::lock_guard<std::mutex> g(g_osk_mu);
+    if (g_osk_keys.size() < 256) g_osk_keys.push_back(cp);
+}
+
+void KeyboardDialog::begin(const std::u16string& title, const std::u16string& initial, int max_chars,
+                           bool confirm_cross) {
+    title_ = title;
+    max_ = max_chars < 1 ? 1 : (max_chars > 64 ? 64 : max_chars);
+    text_ = initial.substr(0, size_t(max_));
+    confirm_cross_ = confirm_cross;
+    armed_ = false;
+    lower_ = !text_.empty();
+    row_ = 1; col_ = 0;
+    prev_ = held_dir_ = 0;
+    done_ = false;
+    ++rev_;
+}
+
+void KeyboardDialog::type(char16_t ch) {
+    if (int(text_.size()) >= max_) return;
+    const bool was_empty = text_.empty();
+    text_.push_back(ch);
+    if (was_empty && ch != u' ') lower_ = true;   // capital first letter, then lower case (like a phone)
+    ++rev_;
+}
+void KeyboardDialog::erase() {
+    if (text_.empty()) return;
+    text_.pop_back();
+    if (text_.empty()) lower_ = false;
+    ++rev_;
+}
+
+void KeyboardDialog::move(int dr, int dc) {
+    if (dr) {
+        row_ = (row_ + dr + OSK_ROWS) % OSK_ROWS;
+        if (row_ == OSK_CHAR_ROWS) col_ = k_sk_first[special_of(col_)];
+    }
+    if (dc) {
+        if (row_ == OSK_CHAR_ROWS) col_ = k_sk_first[(special_of(col_) + dc + 4) % 4];
+        else col_ = (col_ + dc + OSK_COLS) % OSK_COLS;
+    }
+    ++rev_;
+}
+
+void KeyboardDialog::press() {
+    if (row_ < OSK_CHAR_ROWS) {
+        char ch = k_osk_rows[row_][col_];
+        if (lower_ && ch >= 'A' && ch <= 'Z') ch = char(ch - 'A' + 'a');
+        type(char16_t(ch));
+        return;
+    }
+    switch (special_of(col_)) {
+    case SK_CASE: lower_ = !lower_; ++rev_; break;
+    case SK_SPACE: type(u' '); break;
+    case SK_DELETE: erase(); break;
+    case SK_DONE: done_ = true; break;
+    }
+}
+
+Result KeyboardDialog::update(uint32_t b, int64_t now_ms) {
+    {   // the host keyboard
+        std::vector<uint32_t> keys;
+        {
+            std::lock_guard<std::mutex> g(g_osk_mu);
+            keys.swap(g_osk_keys);
+        }
+        for (uint32_t cp : keys) {
+            if (cp == 8) erase();
+            else if (cp == 13) done_ = true;
+            else if (cp >= 32 && cp < 0x250) type(char16_t(cp));
+        }
+    }
+    if (done_) return Result::Selected;
+    const uint32_t action = BTN_CROSS | BTN_CIRCLE | K_START | K_TRIANGLE | K_SQUARE;
+    if (!armed_) {   // the press that opened the dialog is usually still held
+        if ((b & action) == 0) armed_ = true;
+        prev_ = b;
+        return Result::Running;
+    }
+    const uint32_t pressed = b & ~prev_;
+    prev_ = b;
+    const uint32_t confirm = confirm_cross_ ? BTN_CROSS : BTN_CIRCLE;
+    const uint32_t cancel = confirm_cross_ ? BTN_CIRCLE : BTN_CROSS;
+    if (pressed & confirm) press();
+    if (pressed & cancel) erase();
+    if (pressed & K_TRIANGLE) type(u' ');
+    if (pressed & K_SQUARE) { lower_ = !lower_; ++rev_; }
+    if (pressed & K_START) done_ = true;
+    if (done_) return Result::Selected;
+    uint32_t dir = b & (BTN_UP | BTN_DOWN | BTN_LEFT | BTN_RIGHT);
+    if (dir & BTN_UP) dir = BTN_UP;          // one direction at a time
+    else if (dir & BTN_DOWN) dir = BTN_DOWN;
+    else if (dir & BTN_LEFT) dir = BTN_LEFT;
+    else if (dir & BTN_RIGHT) dir = BTN_RIGHT;
+    auto step = [&](uint32_t d) {
+        move(d == BTN_UP ? -1 : d == BTN_DOWN ? 1 : 0, d == BTN_LEFT ? -1 : d == BTN_RIGHT ? 1 : 0);
+    };
+    if (dir == 0) held_dir_ = 0;
+    else if (dir != held_dir_) { held_dir_ = dir; step(dir); next_repeat_ = now_ms + 380; }
+    else if (now_ms >= next_repeat_) { step(dir); next_repeat_ = now_ms + 90; }
+    return Result::Running;
+}
+
+void KeyboardDialog::render(Canvas& c) const {
+    const std::shared_ptr<const SdTheme> th = theme();
+    const SdTheme* T = th.get();
+    const Fonts& F = fonts();
+    FT_Face body = F.body, bold = F.bodyb ? F.bodyb : F.body;
+    float fs = 1.f;
+    if (T) {
+        ThemeFaces& TF = theme_faces(*T);
+        if (TF.reg) body = TF.reg;
+        if (TF.bold) bold = TF.bold; else if (TF.reg) bold = TF.reg;
+        fs = T->font_scale;
+    }
+    // Colours: the theme's when there is one, else the built-in lavender look.
+    const Col c_text = T ? unpack(T->text) : INK, c_dim = T ? unpack(T->text_dim) : INK_DIM;
+    const Col c_sel = T ? unpack(T->text_selected) : rgb(255, 255, 255);
+    const Col c_fill = T ? unpack(T->panel_fill) : rgb(250, 250, 255), c_edge = T ? unpack(T->panel_edge) : EDGE;
+    const Col c_ptext = T ? unpack(T->panel_text) : INK;
+    const Col c_hint = T ? unpack(T->hint_text) : rgb(255, 255, 255);
+
+    Painter P(c);
+    if (T) {
+        c.clear(Canvas::rgba(200, 204, 232));
+        draw_sprite(c, T->background, 0, 0, float(SCREEN_W), float(SCREEN_H), 1.f, true);
+    } else {
+        c.px = background(c.scale);
+    }
+    const std::string title = title_.empty() ? std::string("Enter Text") : to_utf8(title_);
+    if (T) {
+        themed_title(P, F.bodyb ? F.bodyb : body, 14, 31, title, unpack(T->title), unpack(T->title_edge));
+        draw_sprite(c, T->tab, 12, 38, 146, 18);
+        themed_hint(P, bold, 9.f * fs, 12 + 146 / 2.f, 38 + 12.5f, "Keyboard", c_hint, 2);
+    } else {
+        P.text_shadowed(F.cinzel, 19.f, 16, 31, title, rgb(26, 30, 108), rgb(255, 255, 255, 0.9f), 0, 1.0f, 440);
+    }
+
+    {   // text field
+        const float x = 46, y = 60, w = 388, h = 26;
+        P.shadow(x, y, w, h, 3, 3.f, 0.22f);
+        P.rrect(x - 1.2f, y - 1.2f, w + 2.4f, h + 2.4f, 3, c_edge);
+        P.rrect(x, y, w, h, 2, c_fill);
+        const std::string t = to_utf8(text_);
+        const float tw = P.text(bold, 13.f * fs, x + 10, y + 18.f, t, c_ptext, w - 70);
+        P.rrect(x + 11 + tw, y + 5.f, 1.4f, h - 10.f, 0.4f, c_ptext);   // caret
+        char cnt[16];
+        std::snprintf(cnt, sizeof cnt, "%d / %d", int(text_.size()), max_);
+        P.text(body, 8.5f * fs, x + w - 8, y + 17.f, cnt, {c_ptext.r, c_ptext.g, c_ptext.b, 0.6f}, 0, 1);
+    }
+
+    // key grid
+    const float gx = 46, gy = 96, kw = 36, kh = 22, gap = 3;
+    auto key = [&](float x, float y, float w, const std::string& label, bool sel, bool small) {
+        if (sel && T && T->row_selected.valid()) draw_sprite(c, T->row_selected, x - 2, y - 2, w + 4, kh + 4);
+        else if (sel) P.rrect(x, y, w, kh, 3, Ramp(ROYAL_T, ROYAL_M, ROYAL_B, y, y + kh));
+        else {
+            P.rrect(x - 0.8f, y - 0.8f, w + 1.6f, kh + 1.6f, 3, c_edge);
+            P.rrect(x, y, w, kh, 3, c_fill);
+        }
+        P.text(bold, (small ? 9.f : 11.5f) * fs, x + w / 2, y + kh / 2 + (small ? 3.5f : 4.5f), label,
+               sel ? c_sel : c_text, w - 4, 2);
+    };
+    for (int r = 0; r < OSK_CHAR_ROWS; ++r)
+        for (int col = 0; col < OSK_COLS; ++col) {
+            char ch = k_osk_rows[r][col];
+            if (lower_ && ch >= 'A' && ch <= 'Z') ch = char(ch - 'A' + 'a');
+            key(gx + float(col) * (kw + gap), gy + float(r) * (kh + gap), kw, std::string(1, ch),
+                row_ == r && col_ == col, false);
+        }
+    static const char* const sk_label[4] = {"Aa", "Space", "Delete", "Done"};
+    for (int k = 0; k < 4; ++k) {
+        const float x = gx + float(k_sk_first[k]) * (kw + gap);
+        const float w = float(k_sk_span[k]) * kw + float(k_sk_span[k] - 1) * gap;
+        key(x, gy + float(OSK_CHAR_ROWS) * (kh + gap), w, k == SK_CASE ? (lower_ ? "abc" : "ABC") : sk_label[k],
+            row_ == OSK_CHAR_ROWS && special_of(col_) == k, true);
+    }
+    (void)c_dim;
+
+    {   // hint bar
+        const float by = 250, bh = 20, bx = 12, bw = 456;
+        if (T && T->tab.valid()) draw_sprite(c, T->tab, bx, by, bw, bh);
+        else {
+            Poly p = chevron(14, by, PANEL_W, bh - 2, 9);
+            Ramp rp(rgb(76, 80, 158), rgb(40, 42, 116), rgb(22, 24, 80), by, by + bh);
+            P.poly(p, 0, [&](float yy, float) { return rp.at(yy); });
+        }
+        const float base = by + bh / 2 + 3.3f;
+        float x = bx + 22;
+        auto glyph = [&](bool cross, float gxp) {
+            const SdSprite* g = T ? (cross ? &T->glyph_cross : &T->glyph_circle) : nullptr;
+            if (g && g->valid()) {
+                draw_sprite(c, *g, gxp, by + (bh - float(g->h)) / 2, float(g->w), float(g->h));
+                return float(g->w);
+            }
+            draw_btn_glyph(P, cross, gxp + 5.5f, by + bh / 2, c_hint);
+            return 11.f;
+        };
+        x += glyph(confirm_cross_, x) + 3;
+        themed_hint(P, bold, 8.8f * fs, x, base, "Enter", c_hint);
+        x += P.text_width(bold, 8.8f * fs, "Enter") + 16;
+        x += glyph(!confirm_cross_, x) + 3;
+        themed_hint(P, bold, 8.8f * fs, x, base, "Delete", c_hint);
+        themed_hint(P, bold, 8.8f * fs, bx + bw - 24, base, "Triangle: Space    Square: Aa    Start: Done", c_hint, 1);
+    }
+}
+
+bool render_hud_box(const std::string& text, int scale, std::vector<uint32_t>& out, int* w, int* h) {
+    static FT_Library lib = nullptr;
+    static FT_Face face = nullptr;
+    static std::once_flag once;
+    std::call_once(once, [] {
+        if (FT_Init_FreeType(&lib)) { lib = nullptr; return; }
+        if (FT_New_Memory_Face(lib, psp_ui_font_bodyb, FT_Long(psp_ui_font_bodyb_len), 0, &face)) face = nullptr;
+    });
+    if (!face) return false;
+    Canvas c(scale);
+    c.clear(Canvas::rgba(14, 16, 36));
+    Painter P(c);
+    const float size = 9.f, pad = 5.f, bh = 14.f;
+    const float tw = P.text_width(face, size, text);
+    const float bw = std::min(float(SCREEN_W) - 8.f, std::ceil(tw + 2.f * pad));
+    P.hline(0.f, bw, bh - 0.5f, 1.f, rgb(120, 128, 200, 0.9f));   // thin accent line along the bottom edge
+    P.text(face, size, pad, 10.5f, text, rgb(255, 255, 255));
+    const int pw = std::min(c.w, int(std::ceil(bw * float(c.scale)))), ph = std::min(c.h, int(std::ceil(bh * float(c.scale))));
+    out.resize(size_t(pw) * size_t(ph));
+    for (int y = 0; y < ph; ++y)
+        std::memcpy(&out[size_t(y) * size_t(pw)], &c.px[size_t(y) * size_t(c.w)], size_t(pw) * 4);
+    *w = pw;
+    *h = ph;
     return true;
 }
 

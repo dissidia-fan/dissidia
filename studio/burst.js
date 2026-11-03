@@ -75,5 +75,5 @@ function gcamRelease() {
 }
 (function gcamWire() {
   const cb = $('gcamOn'); if (!cb) return;
-  cb.onchange = () => { GCAM.on = cb.checked; if (!GCAM.on) gcamRelease(); pose(); };
+  cb.onchange = () => { GCAM.on = cb.checked; if (!GCAM.on) gcamRelease(); pose(); const w = $('camkWatch'); if (w) w.setAttribute('aria-pressed', String(cb.checked)); };
 })();

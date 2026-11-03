@@ -13,6 +13,7 @@
 #include "hle/psp_hle_io.h"
 #include "psp_debug_socket.h"
 #include "psp_game_module.h"
+#include "psp_settings.h"
 #include "psp_vfpu.h"  // vfpu_init_context — VFPU prefix reset default
 
 // Build fingerprint of the output/ this binary was generated from (issue #36).
@@ -98,6 +99,10 @@ int main(int argc, char* argv[]) {
             "manifest id '%s'. Game hooks may target the wrong binary.\n",
             game->id, RECOMP_GAME_ID);
     }
+
+    // 0. Saved settings (settings.ini) become PSPRECOMP_* variables before
+    //    anything reads them (game module, window, renderer).
+    psp_settings_load_early();
 
     // 1. Install SIGTERM/SIGINT signal handlers
     psp_install_signal_handlers();

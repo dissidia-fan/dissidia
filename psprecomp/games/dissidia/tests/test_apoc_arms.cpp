@@ -16,7 +16,10 @@
 
 static std::vector<uint8_t> g_ram(0x08000000u);
 std::string dissidia_mods_dir() { return "/nonexistent"; }
+int dissidia_frame_ticks() { return 2; }              // framerate.cpp (30 fps logic) is not linked into this host test
+float dissidia_own_clock_scale() { return 1.0f; }
 FuncPtr ovl_menu_lookup(uint32_t) { return nullptr; }
+FuncPtr ovl_extra_lookup(uint32_t) { return nullptr; }
 static int g_fx_calls = 0;
 void orig_fxdir(uint8_t*, recomp_context* ctx) { g_fx_calls++; ctx->r[4] = ctx->r[5] = 0; }   // clobbers a0/a1 like real code
 FuncPtr ovl_battle_lookup(uint32_t a) { return a == 0x08AD20BCu ? orig_fxdir : nullptr; }
@@ -141,14 +144,14 @@ int main() {
     CHECK(!g_hooks.count(0x08AD20BCu));
     // with the token (and the other Noctis tokens around it)
     g_hooks.clear(); g_entries.clear();
-    setenv("PSPRECOMP_ROSTER", "34 noc100 9 nm=Noctis warp=69,12.5,1.8,0.5 apocarms=168,12,2220,2222,2223,2228 warpfx=83,5,1.0,1.124,84;33 viv100 21;"
+    setenv("PSPRECOMP_ROSTER", "34 noc100 9 nm=Noctis warp=69,12.5,1.8,0.5 apocarms=168,12,2220,2222,2223,2228 armtrailhold=6 warpfx=83,5,1.0,1.124,84;33 viv100 21;"
                                "35 ysh100 28 apocarms=1,0,5", 1);
     dissidia_roster_init(g_ram.data());
     dissidia_roster_grid_install();
     CHECK(g_hooks.count(0x08AD20BCu) && g_hooks.count(0x0880EA20u));
     const Entry* en = nullptr;
     for (const Entry& e : g_entries) if (e.charId == 34) en = &e;
-    CHECK(en && en->apoc_arm0 == 168 && en->apoc_narm == 12 && en->apoc_nids == 4 && en->apoc_ids[3] == 2228 && en->warp_sword == 83);
+    CHECK(en && en->at_hold == 6 && en->apoc_arm0 == 168 && en->apoc_narm == 12 && en->apoc_nids == 4 && en->apoc_ids[3] == 2228 && en->warp_sword == 83);
     for (const Entry& e : g_entries) if (e.charId == 35) CHECK(e.apoc_narm == 0);          // bad token ignored
     W32(OVL_WORD, 1u);                                                                       // battle overlay resident
     W32(NOC + 0x2F8u, INFO_N); R(INFO_N)[6] = 34;
@@ -166,7 +169,8 @@ int main() {
     arm_of_bullet[11] = 1;                                                      // bone 1 = slot 0, the greatsword
     float bp[13][3], bd[13][3];
     bool alive[13] = {};
-    float prevY[NARM][3] = {}, prevX[NARM][3] = {};
+    float prevY[NARM][3] = {}, prevX[NARM][3] = {}, lastP[NARM][3] = {};
+    int heldN[NARM] = {};
     const float target[3] = {g_pos[0] + 10.0f * std::sin(g_yaw), 1.1f, g_pos[2] + 10.0f * std::cos(g_yaw)};
     for (int f = 0; f < 90; f++) {
         engine_pose(BONES_N, f);
@@ -216,9 +220,13 @@ int main() {
                     CHECK(dot3(a.y, prevY[k]) > 0.8f);                             // test's bullets turn <= ~26 deg a
                     CHECK(dot3(a.x, prevX[k]) >= dot3(a.y, prevY[k]) - 0.02f);     // frame pair; X turns no more than Y
                 }
-                std::memcpy(prevY[k], a.y, sizeof a.y); std::memcpy(prevX[k], a.x, sizeof a.x);
+                std::memcpy(prevY[k], a.y, sizeof a.y); std::memcpy(prevX[k], a.x, sizeof a.x); std::memcpy(lastP[k], a.pos, sizeof a.pos);
             }
-            if (f >= dies + 4) CHECK(a.scale < 1e-6f);                             // gone: let go, hidden
+            if (f >= dies && a.scale < 0.5f && a.scale > 1e-6f) {                  // armtrailhold=6: a speck where the flight ended
+                CHECK(near(a.scale, kArmHoldScale) && dist3(a.pos, lastP[k]) < 1.0f); heldN[k]++;
+            }
+            if (f >= dies + 4 + 6) CHECK(a.scale < 1e-6f);                         // then let go, hidden
+            if (f == 89) CHECK(heldN[k] >= 5 && heldN[k] <= 7);
         }
         if (f == 45) {                                                             // exact while the visual ran first
             for (int i = 0; i < 11; i++) {
@@ -255,6 +263,18 @@ int main() {
         W32(OVL_WORD, 1u);
     }
     CHECK(g_fx_calls > 0 && g_bone_orig > 0);
+    {   // six tokens, one with nine records (Noctis: the elemancy orb rides any of its nine flasks)
+        g_hooks.clear(); g_entries.clear();
+        setenv("PSPRECOMP_ROSTER", "34 noc100 9 apocarms=81,1,2230 apocarms=168,12,2220,2222,2223,2228 apocarms=170,6,2231,2234 "
+                                   "apocarms=222,1,2283 apocarms=224,1,2285,2286,2287,2291,2292,2293,2294,2295,2296 apocarms=1,1,7 apocarms=2,1,8", 1);
+        dissidia_roster_init(g_ram.data());
+        const Entry* e6 = nullptr;
+        for (const Entry& e : g_entries) if (e.charId == 34) e6 = &e;
+        CHECK(e6);
+        ApocSet sets[kApocSets];
+        const int n = apoc_sets_of(*e6, sets);
+        CHECK(n == 6 && sets[4].arm0 == 224 && sets[4].nids == 9 && sets[4].ids[8] == 2296 && apoc_set_has(sets[4], 2291) && sets[5].arm0 == 1);
+    }
     std::printf("ok test_apoc_arms (%d visual calls, %d bone passes)\n", g_fx_calls, g_bone_orig);
     return 0;
 }

@@ -2,10 +2,10 @@
    (0x0315), sound-if-part-visible (0x0311), sound-if-form (0x0312) and footsteps (0x060F) play as the playhead passes
    them. The character's own bank plays without the ISO; shared banks (battle, voices, floors) need it.
    Footsteps: in game the floor under the fighter picks the bank (map_sound_param.bin: material x 7 kinds x 4 footwear
-   classes, docs/archive/event-ops/E.md); the preview stands on stone (snd_stone, bank 50000, 28 slots) with footwear 0.
+   classes, docs/archive/event-ops/E.md); the preview stands on stone (snd_stone) with footwear 0: the cue table below.
    Also here: folding the 3D view's option row. Loaded after soundshare.js. */
 'use strict';
-const PSND = { last: null, audio: null, live: new Set(), tabKey: '' };
+const PSND = { last: null, audio: null, live: new Set(), tabKey: '', play: false };   // play: the pose comes from playback (app.js tick)
 function psndTrack(src, fromPlayback) {          // every sound the Studio starts, so a tab change / pause can stop it
   src._pb = !!fromPlayback; PSND.live.add(src); src.addEventListener('ended', () => PSND.live.delete(src));
 }
@@ -15,20 +15,31 @@ setInterval(() => {                               // another tab or the effect e
   if (key !== PSND.tabKey) { if (PSND.tabKey) psndStop(false); PSND.tabKey = key; }
   if (!S.playing || !($('sndOn') || {}).checked) psndStop(true);
 }, 150);
-const PSND_FLOOR = 5000000;                       // snd_stone: slot = kind * 4 + footwear (GUESS: the table's own order)
+/* map_sound_param.bin (docs/archive/open-questions/dummy-and-sound.md §5): 0x90-byte records {name[0x20], u32 cue[7 kinds][4
+   footwear]}, full cue ids (FUN_08896B40 reads records + material·0x90 + kind·0x10 + footwear·4 + 0x20). snd_stone below;
+   other materials use their own bank (50000–52900) with the same slots, and sand, grass, wire_net, cloth, orgamic,
+   black_cloud and water give footwear 3 their own footwear-1 slot (3 / 15) instead of snd_common 10016 / 10019. */
+const PSND_FLOOR = [                               // [kind][footwear]: 0 step, 1 landing, 2 impact, 3 second impact, 4, 5, 6 step
+  [5000011, 5000003, 5000007, 10016], [5000017, 5000015, 5000016, 10019], [5000027, 5000025, 5000026, 5000025],
+  [5000022, 5000020, 5000021, 5000020], [100027, 100027, 100027, 100027], [1100054, 1100054, 1100054, 1100054],
+  [5000011, 5000003, 5000007, 10016]];
+const PSND_FOOTWEAR = 0;                           // the preview's footwear class
 function psndCue(e) {                              // the cue an event plays, or null
   const c = opCode(e.op), a = argsOf(e), n = (v) => (typeof v === 'number' && v >= 0 && v !== 0xFFFF && v !== 0xFFFFFFFF ? v : null);
   if (c === 0x0303) return n(e.sound ?? a[0]);
   if (c === 0x0315) return n(e.voice ?? a[0]);
   if (c === 0x0311 || c === 0x0312) return n(e.sound ?? a[1]);
-  if (c === 0x060F) { const k = e.kind ?? a[0]; return typeof k === 'number' && k >= 0 && k < 7 ? PSND_FLOOR + k * 4 : null; }
+  if (c === 0x060F) { const k = e.kind ?? a[0]; return typeof k === 'number' && k >= 0 && k < 7 ? PSND_FLOOR[k][PSND_FOOTWEAR] : null; }
   return null;
 }
 async function psndDecode(cue) {                  // {pcm, rate} from the character's bank, else a shared one (needs the ISO)
-  const b = typeof edBank === 'function' ? edBank() : null, base = b ? SndBank.cueBase(b) : -1;
+  const b = typeof edBank === 'function' ? edBank() : null, base = b ? edTlBase(b) : -1;
   if (b && cue - base >= 0 && cue - base < b.slots.length) return SndBank.decodeSlot(b, cue - base);
-  if (!ISO.index || typeof SharedSnd === 'undefined' || !SharedSnd.cueLocation(cue)) return null;
-  return SharedSnd.decodeCue(cue, isoGet, { pick: 'random' });
+  const vx = typeof voxSlotOf === 'function' ? voxSlotOf(cue) : null;      // this character's own voice set (custom lines too)
+  if (vx) return SndBank.decodeSlot(voxNow().bank, vx.slot);
+  const g = typeof edGameCue === 'function' ? edGameCue(cue) : cue;       // the assist's voice / bank ids are +50000 in game
+  if (!ISO.index || typeof SharedSnd === 'undefined' || !SharedSnd.cueLocation(g)) return null;
+  return SharedSnd.decodeCue(g, isoGet, { pick: 'random' });
 }
 async function psndPlay(cue, preview) {          // preview: a one-off (the sound browser), not stopped when playback pauses
   if (cue == null) return;
@@ -44,7 +55,7 @@ async function psndPlay(cue, preview) {          // preview: a one-off (the soun
 function psndAfterPose() {
   const cb = $('sndOn'), now = { m: S.motion, t: ticks(S.frame), k: S.step ? S.step.move + ':' + S.step.i : '', on: !!S.playing };
   const L = PSND.last; PSND.last = now;
-  if (!cb || !cb.checked || !S.playing || S.fxEdit || S.motion < 0 || !L) return;
+  if (!cb || !cb.checked || !S.playing || !PSND.play || S.fxEdit || S.motion < 0 || !L) return;   // scrubbing: silent (2026-10-28)
   const t = curTL(); if (!t) return;
   let spans;
   if (L.m !== now.m || L.k !== now.k || (!L.on && L.t === 0)) spans = [[-1, now.t]];   // a new animation / press, or play from frame 0: from its start                         // a new animation / press: from its start
@@ -67,10 +78,13 @@ function psndAfterPose() {
   const set = (k, v) => { try { localStorage.setItem(k, v); } catch (e) { /* per-viewer only */ } };
   if (cb) { cb.checked = get('studio.sound') !== '0'; cb.onchange = () => set('studio.sound', cb.checked ? '1' : '0'); }
   if (!hud || !tog) return;
-  const apply = (folded) => {
-    hud.classList.toggle('folded', folded); tog.setAttribute('aria-expanded', String(!folded));
-    tog.title = folded ? 'Show the view options' : 'Hide the view options';
-  };
-  apply(get('studio.hudFold') === '1');
-  tog.onclick = () => { const f = !hud.classList.contains('folded'); set('studio.hudFold', f ? '1' : '0'); apply(f); };
+  // a menu now (2026-11-01): the button opens the list; it stays open while you tick, a click outside or Esc closes it
+  // fixed to the window, so it lies over the panes instead of being cut off by the 3D view (2026-11-01)
+  const menu = $('hudMenu');
+  const place = () => { if (!menu || !hud.classList.contains('open')) return; const r = tog.getBoundingClientRect(); menu.style.left = r.left + 'px'; menu.style.top = (r.bottom + 6) + 'px'; menu.style.maxHeight = (window.innerHeight - r.bottom - 14) + 'px'; };
+  const open = (on) => { hud.classList.toggle('open', on); tog.setAttribute('aria-expanded', String(on)); place(); };
+  window.addEventListener('resize', place);
+  tog.onclick = () => open(!hud.classList.contains('open'));
+  document.addEventListener('pointerdown', (e) => { if (hud.classList.contains('open') && !hud.contains(e.target) && !(e.target.closest && e.target.closest('.fsel-pop'))) open(false); });
+  hud.addEventListener('keydown', (e) => { if (e.key === 'Escape' && hud.classList.contains('open')) { e.stopPropagation(); open(false); tog.focus(); } });
 })();

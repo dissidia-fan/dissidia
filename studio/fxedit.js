@@ -672,8 +672,10 @@ function fxeEncodeTex(rgba, w, h) {
 }
 /* a flipbook from one texture: cols x rows cells played left to right, top to bottom, `dur` frames each
    (C §1); blend: 'add' 0x000A0600, 'alpha' 0x00070600, 'sub' 0x000A0602 */
-function fxeMakeAnm(texId, cols, rows, dur, loop, size, blend, frames) {
-  const n = Math.max(1, Math.min(frames || cols * rows, cols * rows)), word = { add: 0x000A0600, alpha: 0x00070600, sub: 0x000A0602 }[blend] || 0x000A0600;
+/* a grid flipbook: frames `first`.. of a cols x rows grid read left to right, top to bottom, `dur` ticks each */
+function fxeMakeAnm(texId, cols, rows, dur, loop, size, blend, frames, first) {
+  first = Math.max(0, Math.min(first || 0, cols * rows - 1));
+  const n = Math.max(1, Math.min(frames || cols * rows - first, cols * rows - first)), word = { add: 0x000A0600, alpha: 0x00070600, sub: 0x000A0602 }[blend] || 0x000A0600;
   const oTex = 0x50, oClip = fxeAl16(oTex + 8), oSeq = fxeAl16(oClip + 12 * n), oList = fxeAl16(oSeq + 12 * n), oPart = fxeAl16(oList + 4 * n), oVtx = fxeAl16(oPart + 28 * n);
   const out = new Uint8Array(fxeAl16(oVtx + 20 * n)).fill(FXE_PAD), dv = fxeDV(out), U = (o, v) => dv.setUint32(o, v >>> 0, true), F = (o, v) => dv.setFloat32(o, v, true);
   out.set([0x41, 0x4E, 0x4D, 0]); U(8, 1); U(12, 1); U(0x10, loop ? 0x80 : 0); U(0x14, 0); U(0x18, 0); U(0x1C, n * dur);
@@ -684,7 +686,7 @@ function fxeMakeAnm(texId, cols, rows, dur, loop, size, blend, frames) {
     U(oClip + 12 * i, loop && i === n - 1 ? 0x80 : 0); U(oClip + 12 * i + 4, i); U(oClip + 12 * i + 8, dur);
     U(oSeq + 12 * i, 0); U(oSeq + 12 * i + 4, 1); U(oSeq + 12 * i + 8, oList + 4 * i); U(oList + 4 * i, i);
     const p = oPart + 28 * i; U(p, 0); out.set([128, 128, 128, 128], p + 4); U(p + 8, 4); U(p + 12, oVtx + 20 * i); U(p + 16, word); U(p + 20, 0); U(p + 24, 0xFFFFFF);
-    const c = i % cols, r = Math.floor(i / cols), u0 = Math.round(128 * c / cols), u1 = Math.round(128 * (c + 1) / cols), v0 = Math.round(128 * r / rows), v1 = Math.round(128 * (r + 1) / rows);
+    const cell = first + i, c = cell % cols, r = Math.floor(cell / cols), u0 = Math.round(128 * c / cols), u1 = Math.round(128 * (c + 1) / cols), v0 = Math.round(128 * r / rows), v1 = Math.round(128 * (r + 1) / rows);
     [[u0, v0, -127, 127], [u1, v0, 127, 127], [u0, v1, -127, -127], [u1, v1, 127, -127]].forEach(([u, v, x, y], k) => { const o = oVtx + 20 * i + 5 * k; out[o] = u; out[o + 1] = v; dv.setInt8(o + 2, x); dv.setInt8(o + 3, y); dv.setInt8(o + 4, 127); });
   }
   return out;

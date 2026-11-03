@@ -9,7 +9,12 @@
      - Build writes one Effect event per layer into the animation's timeline (frame + the layer's start, its length
        as the event's lifetime), tagged "_comp": <file name> so building again replaces exactly those.
    The file: mods/<character>/effects/<name>.json  {name, plays: {motion, frame}, layers: [{name, part, id, start,
-   life}]}, frames at 30 per second. */
+   life}]}, frames at 30 per second.
+   A layer can instead be a projectile of the moveset ({name, projectile: <projectiles.json id>, start, life}): it plays
+   as a fire_projectile event does (the shot's look and every effect it hands on to), and Build writes a fire_projectile
+   event. Its parts are edited one by one ("Edit how it looks" on each); life only sets the bar's length.
+   A layer with "preview": true (or a reason string) only plays in the preview: the game spawns it by itself (an on-hit
+   child, say), so Build writes nothing for it. */
 'use strict';
 const COMP = { busy: false };
 const compDir = () => (S.charDir && S.rig && !S.rig.retail ? S.charDir + 'effects/' : null);
@@ -17,8 +22,26 @@ const compObj = () => (S.comp && S.files[S.comp.path] ? S.files[S.comp.path].obj
 const compSlug = (p) => p.split('/').pop().replace(/\.json$/, '');
 const compCode = (s) => (s || '').toUpperCase().normalize('NFD').replace(/[^A-Z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 20) || 'EFFECT';
 function compPartNi(l) { return S.fx ? S.fx.fep.names.findIndex((n) => n.name === l.part) : -1; }
-function compRec(l) { return S.fx ? S.fx.fepa.find((r) => r.id === l.id) : null; }
-function compMotion(o) { if (!S.gmo) return -1; const i = S.gmo.motions.findIndex((m) => m.name === o.plays.motion); return i; }
+function compRec(l) { return S.fx && l.projectile == null ? S.fx.fepa.find((r) => r.id === l.id) : null; }
+function compProj(l) { return l.projectile != null && S.fx && S.fx.magi ? S.fx.magi.get(l.projectile) || null : null; }
+function compLayerOk(l) { return l.projectile != null ? !!compProj(l) : compPartNi(l) >= 0 && !!compRec(l); }
+/* every effect part a projectile layer shows: the shot's and those of the projectiles it hands on to (birth, timed,
+   hit, miss, terrain, fall, clash), each once -> [{ni, name, proj, role}] */
+function compProjParts(l) {
+  const fx = S.fx, out = [], seen = new Set(), q = [l.projectile];
+  while (q.length) {
+    const id = q.shift(); if (id == null || id < 0 || seen.has(id)) continue; seen.add(id);
+    const pr = fx.magi.get(id); if (!pr) continue;
+    for (const r of projVisuals(fx, pr)) if (!out.some((x) => x.ni === r.effect)) out.push({ ni: r.effect, name: (fx.fep.names[r.effect] || {}).name || 'effect ' + r.effect, proj: id, role: r.role });
+    for (const k of ['link_emit', 'link_hit', 'link_terrain', 'link_terrain_1', 'link_terrain_2', 'link_terrain_4', 'link_fall', 'link_clash']) if (pr[k] >= 0) q.push(pr[k]);
+  }
+  return out;
+}
+function compMotion(o) {   // plays.motion: the animation's name (a number = its index; a hand-written file may use either)
+  if (!S.gmo) return -1;
+  if (typeof o.plays.motion === 'number') { const i = o.plays.motion; if (!S.gmo.motions[i]) return -1; o.plays.motion = motionName(i); return i; }
+  return S.gmo.motions.findIndex((m) => m.name === o.plays.motion);
+}
 
 /* ------------------------------------------------------------------ loading */
 async function compLoad() {
@@ -41,7 +64,7 @@ function compLeftHTML() {
   if (!S.comps.length) h += '<p class="note">None yet. An effect is a set of layers (glows, meshes, flashes, shaders) timed together on one frame of a move.</p>';
   for (const p of S.comps) {
     const o = S.files[p].obj, sel = S.comp && S.comp.path === p;
-    h += `<div class="anim-row comp-row${sel ? ' sel' : ''}" data-comp="${esc(p)}"><span>${esc(o.name || compSlug(p))}</span><small>${esc(o.plays.motion)} · frame ${o.plays.frame}</small><small>${o.layers.length} layer${o.layers.length === 1 ? '' : 's'}</small></div>`;
+    h += `<div class="anim-row comp-row${sel ? ' sel' : ''}" data-comp="${esc(p)}" data-q="${esc([o.name || compSlug(p), o.plays.motion, 'layers', ...(o.layers || []).map((l) => l.name || l.kind || '')].join(' ').toLowerCase())}"><span>${esc(o.name || compSlug(p))}</span><small>${esc(o.plays.motion)} · frame ${o.plays.frame}</small><small>${o.layers.length} layer${o.layers.length === 1 ? '' : 's'}</small></div>`;
   }
   return h + '<div class="fxu-parts lbl" title="What the game stores: every effect of the package. The layers of your effects are among them.">Parts</div>';
 }
@@ -77,6 +100,7 @@ function compInsts() {
   const out = [];
   o.layers.forEach((l, i) => {
     if (l.hidden) return;
+    if (l.projectile != null) { out.push(...fxProjInsts(S.fx, l.projectile, Math.round((o.plays.frame + l.start) * 2), 'comp', i, 0)); return; }
     const rec = compRec(l); if (!rec) return;
     out.push({ type: 'fx', tick: Math.round((o.plays.frame + l.start) * 2), recs: [rec], life: l.life > 0 ? Math.round(l.life * 2) : null, kind: 'comp', idx: i });
   });
@@ -100,14 +124,14 @@ function compTimeline() {
     <div class="ev key comp-at" data-compbar="at" style="left:${X(o.plays.frame)}px;background:var(--ember)" title="The effect starts here (drag)"></div></div>`;
   h += `<div class="lane cat" style="width:${width}px"><span class="lane-label" style="width:${LABEL_W}px">Layers</span></div>`;
   o.layers.forEach((l, i) => {
-    const ok = compPartNi(l) >= 0 && compRec(l), sel = S.comp.sel === i;
-    h += `<div class="lane${sel ? ' selrow' : ''}" style="width:${width}px"><span class="lane-label" style="width:${LABEL_W}px" data-layer="${i}" title="${esc(l.part)}">${l.hidden ? '<s>' : ''}${esc(l.name)}${l.hidden ? '</s>' : ''}${l.shader ? ' <small>shader</small>' : ''}${ok ? '' : ' <small class="bad">part missing</small>'}</span>
+    const ok = compLayerOk(l), sel = S.comp.sel === i;
+    h += `<div class="lane${sel ? ' selrow' : ''}" style="width:${width}px"><span class="lane-label" style="width:${LABEL_W}px" data-layer="${i}" title="${esc(l.part)}">${l.hidden ? '<s>' : ''}${esc(l.name)}${l.hidden ? '</s>' : ''}${l.shader ? ' <small>shader</small>' : ''}${l.projectile != null ? ' <small>projectile</small>' : ''}${ok ? '' : ' <small class="bad">' + (l.projectile != null ? 'projectile missing' : 'part missing') + '</small>'}</span>
       <div class="ev${sel ? ' sel' : ''}" data-compbar="layer" data-i="${i}" style="left:${X(o.plays.frame + l.start)}px;width:${Math.max(3, l.life * px)}px;background:var(--c-fx);${l.hidden ? 'opacity:.3' : ''}" title="${esc(l.name)}: frames ${l.start}–${l.start + l.life} after the start (drag to move, drag the end for its length)"><span class="h r"></span></div></div>`;
   });
   if (!o.layers.length) h += `<div class="lane" style="width:${width}px"><span class="lane-label" style="width:${LABEL_W}px">No layers yet: + Layer in the inspector</span></div>`;
   h += `<div class="endline" style="left:${X(L)}px"></div><div class="playhead" id="playhead"></div>`;
   inner.innerHTML = h; inner.style.width = width + 'px';
-  if ($('mvStrip')) $('mvStrip').hidden = true;
+  if (typeof mvStrip === 'function') mvStrip();   // drops the presses row and the move length
   updatePlayhead();
   inner.querySelectorAll('[data-layer]').forEach((el) => el.onclick = () => { S.comp.sel = +el.dataset.layer; renderTimeline(); renderInspector(); });
   inner.querySelectorAll('[data-compbar]').forEach((el) => el.addEventListener('pointerdown', (ev) => compDrag(ev, el)));
@@ -153,7 +177,7 @@ function compInspector(I) {
     <div class="btnrow"><button type="button" id="compBuild" class="primary" title="Write one Effect event per layer into ${esc(o.plays.motion)} (replaces what an earlier build wrote)">${built === 'yes' ? 'Built ✓ (build again)' : built === 'stale' ? 'Build (changed since)' : 'Build into ' + esc(o.plays.motion)}</button>
       <button type="button" id="compPlay">▶ Play from the start</button></div></div>
     <div class="sec"><h3>Layers <small>${o.layers.length}</small> <span class="btnrow"><button type="button" id="compAdd">+ Layer</button></span></h3>
-    <div class="comp-layers">${o.layers.map((l, i) => `<button type="button" class="comp-layer${S.comp.sel === i ? ' sel' : ''}" data-layer="${i}"><span>${esc(l.name)}</span><small>${l.start}–${l.start + l.life}${l.shader ? ' · shader' : ''}</small></button>`).join('') || '<p class="note">No layers yet.</p>'}</div></div>`;
+    <div class="comp-layers">${o.layers.map((l, i) => `<button type="button" class="comp-layer${S.comp.sel === i ? ' sel' : ''}" data-layer="${i}"><span>${esc(l.name)}</span><small>${l.start}–${l.start + l.life}${l.shader ? ' · shader' : ''}${l.projectile != null ? ' · projectile' : ''}</small></button>`).join('') || '<p class="note">No layers yet.</p>'}</div></div>`;
   if (lay) h += compLayerHTML(lay);
   I.innerHTML = h;
   $('compBack').onclick = compClose;
@@ -169,7 +193,30 @@ function compInspector(I) {
 function compUsedBy(o) {
   return `In game it starts at frame ${o.plays.frame} of <span class="mono">${esc(o.plays.motion)}</span>${(S.usedBy && S.usedBy.get(compMotion(o)) || []).length ? ' (' + esc(S.usedBy.get(compMotion(o)).join(', ')) + ')' : ''}. The preview plays it with the animation: press play or scrub.`;
 }
+function compProjLayerHTML(l) {
+  const pr = compProj(l), parts = pr ? compProjParts(l) : [];
+  let h = `<div class="sec" id="compLayerSec"><h3>${esc(l.name)} <small class="mono">projectile ${l.projectile}</small></h3>
+    <div class="field"><label>Layer name</label><input type="text" id="clName" value="${esc(l.name)}"></div>
+    <div class="row2"><div class="field"><label>Fired at (frames after the effect)</label><input type="number" step="0.5" id="clStart" value="${l.start}"></div>
+      <div class="field"><label>Bar length (frames)</label><input type="number" step="0.5" min="0.5" id="clLife" value="${l.life}"></div></div>`;
+  if (!pr) h += '<p class="warnline">That projectile is not in projectiles.json any more.</p>';
+  if (l.preview) h += `<p class="note">Preview only: ${esc(l.preview === true ? 'the game spawns this projectile by itself' : l.preview)}. Build writes no event for it.</p>`;
+  else h += `<p class="note">Plays like the move's fire_projectile: the shot flies, and each part below plays where the game plays it (the shot's birth and body, then what it hands on to). How long it lasts is the projectiles' own timing.</p>
+    <div class="comp-layers">${parts.map((x) => `<button type="button" class="comp-part" data-ni="${x.ni}" title="Edit how it looks"><span>${esc(fxuShort(x.name))}</span><small>projectile ${x.proj} · ${x.role === 1 ? 'birth' : 'body'} · effect ${x.ni}</small></button>`).join('')}</div>`;
+  h += `<div class="btnrow" style="margin-top:8px"><button type="button" id="clHide">${l.hidden ? 'Show' : 'Hide'}</button><button type="button" id="clDel" class="danger" title="Takes the layer out of this effect; the projectile and its parts stay in the moveset">Remove layer</button></div>`;
+  return h + '</div>';
+}
+function compProjLayerWire(l) {
+  const o = compObj(), i = o.layers.indexOf(l);
+  $('clName').onchange = (e) => { const nm = e.target.value.trim(); if (nm) compEdit(() => { l.name = nm; }); };
+  $('clStart').onchange = (e) => compEdit(() => { l.start = Math.round(+e.target.value * 2) / 2; });
+  $('clLife').onchange = (e) => compEdit(() => { l.life = Math.max(0.5, Math.round(+e.target.value * 2) / 2); });
+  document.querySelectorAll('#compLayerSec .comp-part').forEach((b) => b.onclick = () => { S.tab = 'fx'; fxuOpen(+b.dataset.ni); });
+  $('clHide').onclick = () => compEdit(() => { l.hidden = !l.hidden; if (!l.hidden) delete l.hidden; });
+  $('clDel').onclick = () => compEdit(() => { o.layers.splice(i, 1); S.comp.sel = null; });
+}
 function compLayerHTML(l) {
+  if (l.projectile != null) return compProjLayerHTML(l);
   const r = compRec(l), ni = compPartNi(l), bones = ['root', ...S.boneNames.filter((b) => b !== 'root')];
   let h = `<div class="sec" id="compLayerSec"><h3>${esc(l.name)} <small class="mono">${ni >= 0 ? 'effect ' + ni : 'missing'} · id ${l.id}</small></h3>
     <div class="field"><label>Layer name</label><input type="text" id="clName" value="${esc(l.name)}"></div>
@@ -184,6 +231,7 @@ function compLayerHTML(l) {
   return h + '</div>';
 }
 function compLayerWire(l) {
+  if (l.projectile != null) { compProjLayerWire(l); return; }
   const o = compObj(), i = o.layers.indexOf(l), r = compRec(l), ni = compPartNi(l);
   $('clName').onchange = (e) => {
     const nm = e.target.value.trim(); if (!nm) return;
@@ -225,8 +273,20 @@ function compAddMenu(anchor) {
   const items = [];
   for (const [k, lab] of FXT_KINDS) items.push({ label: lab, cat: 'A template part', tpl: k });
   items.push({ label: 'Copy an effect from…', cat: 'From the game or a mod', copy: true, note: 'any character’s effect, with its textures' });
+  if (S.fx && S.fx.magi && S.fx.magi.size) items.push({ label: 'A projectile of this moveset…', cat: 'From the game or a mod', proj: true, note: 'fires it, as the move’s fire_projectile does' });
   if (typeof compShaderTemplates === 'function') for (const t of compShaderTemplates()) items.push({ label: t.label, cat: 'A shader layer (needs the recomp)', shader: t, note: t.note });
   fxuMenu(anchor, 'Add a layer…', items, async (it) => {
+    if (it.proj) {
+      const list = [...S.fx.magi.values()].filter((pr) => projVisuals(S.fx, pr).length).map((pr) => {
+        const r = projVisuals(S.fx, pr)[0], nm = (S.fx.fep.names[r.effect] || {}).name || '';
+        return { label: pr.id + '  ' + fxuShort(nm), cat: 'Projectiles', pr };
+      });
+      fxuMenu(anchor, 'Projectile to fire', list, (x) => {
+        const o = compObj(), now = Math.max(0, Math.round((S.frame - o.plays.frame) * 2) / 2);
+        compEdit(() => { o.layers.push({ name: fxuShort(x.label.replace(/^\d+\s+/, '')).toLowerCase().replace(/_/g, ' ') || 'projectile ' + x.pr.id, projectile: x.pr.id, start: now, life: 30 }); S.comp.sel = o.layers.length - 1; });
+      });
+      return;
+    }
     if (it.copy) {
       fxuMenu(anchor, 'Copy an effect from…', fxuCharItems(), async (ch) => {
         let list; try { list = await fxuEffectItems(ch.src); } catch (e) { toast('Could not read that character’s effects: ' + e.message, 'bad'); return; }
@@ -269,15 +329,20 @@ function compAddLayer(x) {
 
 /* ------------------------------------------------------------------ build: the layers' events in the animation */
 function compEvents(o, slug) {
-  return o.layers.filter((l) => !l.hidden && compRec(l)).map((l) => ({ frame: Math.max(0, Math.round((o.plays.frame + l.start) * 2)), op: 'effect', effect: l.id, args: [Math.round(l.life * 2)], _comp: slug }));
+  return o.layers.filter((l) => !l.hidden && !l.preview && compLayerOk(l)).map((l) => {   // preview: the game spawns it by itself
+    const frame = Math.max(0, Math.round((o.plays.frame + l.start) * 2));
+    if (l.projectile != null) return { frame, op: 'fire_projectile', projectile: l.projectile, args: [0], ...(l.note ? { _note: l.note } : {}), _comp: slug };
+    return { frame, op: 'effect', effect: l.id, args: [Math.round(l.life * 2)], _comp: slug };
+  });
 }
+const compEvKey = (e) => [e.frame, e.op === 'fire_projectile' ? 'p' + e.projectile : e.effect, e.op === 'fire_projectile' ? 0 : (e.args || [])[0]].join(':');
 function compBuilt(o) {
   const mi = compMotion(o), p = mi >= 0 && S.tlOfMotion && S.tlOfMotion.get(mi), slug = compSlug(S.comp.path);
-  const mine = (t) => t.keyed.filter((e) => e._comp === slug).map((e) => [e.frame, e.effect, (e.args || [])[0]].join(':')).sort().join('|');
+  const mine = (t) => t.keyed.filter((e) => e._comp === slug).map(compEvKey).sort().join('|');
   let any = false;
   for (const q of S.tlPaths || []) { const t = F(q); if (t && t.keyed.some((e) => e._comp === slug)) any = true; }
   if (!any) return 'no';
-  const want = compEvents(o, slug).map((e) => [e.frame, e.effect, e.args[0]].join(':')).sort().join('|');
+  const want = compEvents(o, slug).map(compEvKey).sort().join('|');
   return p && mine(F(p)) === want ? 'yes' : 'stale';
 }
 function compBuild() {
@@ -293,7 +358,7 @@ function compBuild() {
     F(p).keyed.sort((a, b) => a.frame - b.frame);
   });
   renderAll();
-  toast(`${evs.length} Effect event${evs.length === 1 ? '' : 's'} in ${o.plays.motion} from frame ${o.plays.frame}. Save, then start the game.`);
+  toast(`${evs.length} event${evs.length === 1 ? '' : 's'} in ${o.plays.motion} from frame ${o.plays.frame}. Save, then start the game.`);
 }
 
 /* ------------------------------------------------------------------ hooks */

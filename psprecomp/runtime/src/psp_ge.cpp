@@ -5,6 +5,7 @@
 #include "psp_ge_vertex.h"
 #include "recomp.h"
 #include "hle/psp_hle_kernel.h"  // psp_alloc_stack (needs recomp.h first)
+#include "hle/psp_hle.h"         // psp_kmem_bump_alloc_named (spline scratch)
 
 #include <algorithm>
 #include <array>
@@ -49,6 +50,104 @@ static uint32_t ge_cb_stack(uint8_t* rdram) {
             g_ge_cb_stack_top);
     }
     return g_ge_cb_stack_top;
+}
+
+// -- Spline patches (GE_CMD_SPLINE, sceGuDrawSpline) --
+// The GE evaluates a cubic B-spline surface from ucount x vcount control points at VADDR (PATCHDIVISION sets the
+// subdivisions per span, PATCHPRIMITIVE triangles / lines / points). Here the patch is tessellated on the CPU
+// (ge_spline_tessellate) into plain float vertices in a guest scratch ring and drawn as an ordinary PRIM, so it goes
+// through the same pipeline, state and FX matching as every other draw. Dissidia draws every FEP "locus" weapon trail
+// this way (ch105, FUN_089656D8: 4 x n control points, open/open edges); before this they were never drawn.
+// PSPRECOMP_GE_SPLINE=0 skips spline patches again; PSPRECOMP_GE_SPLINE_LOG=<n> logs the first n.
+static int g_patch_div_u = 4, g_patch_div_v = 4, g_patch_prim = 0;
+static bool g_patch_facing = false;
+static uint32_t g_spline_buf = 0, g_spline_pos = 0;
+static constexpr uint32_t kSplineBuf = 512u * 1024u;
+
+static uint32_t spline_scratch(uint32_t bytes) {
+    if (bytes == 0 || bytes > kSplineBuf) return 0;
+    if (g_spline_buf == 0) {
+        static bool tried = false;
+        if (tried) return 0;
+        tried = true;
+        g_spline_buf = psp_kmem_bump_alloc_named(kSplineBuf, "GE_SPLINE_SCRATCH");
+        std::fprintf(stderr, "[GE] spline patches: %u KiB vertex scratch %s 0x%08X\n", kSplineBuf / 1024u,
+                     g_spline_buf ? "at" : "NOT allocated (no host heap left), patches not drawn;", g_spline_buf);
+        if (g_spline_buf == 0) return 0;
+    }
+    if (g_spline_pos + bytes > kSplineBuf) g_spline_pos = 0;   // ring: a draw consumes its vertices before returning
+    const uint32_t at = g_spline_buf + g_spline_pos;
+    g_spline_pos += (bytes + 15u) & ~15u;
+    return at;
+}
+
+static void ge_draw_spline(uint8_t* rdram, uint32_t data) {
+    static const bool off = [] { const char* e = std::getenv("PSPRECOMP_GE_SPLINE"); return e && e[0] == '0'; }();
+    static int log_left = [] { const char* e = std::getenv("PSPRECOMP_GE_SPLINE_LOG"); return e ? std::atoi(e) : 0; }();
+    if (off) return;
+    const int uc = static_cast<int>(data & 0xFF), vc = static_cast<int>((data >> 8) & 0xFF);
+    const int ut = static_cast<int>((data >> 16) & 3), vt = static_cast<int>((data >> 18) & 3);
+    if (uc < 4 || vc < 4) return;
+    int du = std::max(1, g_patch_div_u), dv = std::max(1, g_patch_div_v);
+    while ((uc - 3) * du * (vc - 3) * dv > 8000 && (du > 1 || dv > 1)) {   // PRIM counts are 16-bit: <= 48000 vertices
+        if (du >= dv && du > 1) du--; else dv--;
+    }
+    static thread_local std::vector<DecodedVertex> cps, grid;
+    ge_decode_vertices(rdram, g_ge_state, GE_PRIM_TRIANGLES, uc * vc, cps);
+    int nu = 0, nv = 0;
+    if (!ge_spline_tessellate(cps, uc, vc, ut, vt, du, dv, grid, &nu, &nv)) return;
+
+    const uint32_t src = g_ge_state.vertex_type;
+    const bool tc = ge_vtype_tc(src) != GE_VTYPE_TC_NONE, col = ge_vtype_col(src) != GE_VTYPE_COL_NONE,
+               nrm = ge_vtype_nrm(src) != GE_VTYPE_NRM_NONE;
+    const uint32_t vtype = (tc ? (GE_VTYPE_TC_FLOAT << GE_VTYPE_TC_SHIFT) : 0u) | (col ? (GE_VTYPE_COL_8888 << GE_VTYPE_COL_SHIFT) : 0u) |
+                           (nrm ? (GE_VTYPE_NRM_FLOAT << GE_VTYPE_NRM_SHIFT) : 0u) | (GE_VTYPE_POS_FLOAT << GE_VTYPE_POS_SHIFT) |
+                           (src & GE_VTYPE_THROUGH);
+    const int stride = (tc ? 8 : 0) + (col ? 4 : 0) + (nrm ? 12 : 0) + 12;
+    if (ge_vertex_stride(vtype) != stride) return;
+
+    static thread_local std::vector<int> order;
+    order.clear();
+    int prim = GE_PRIM_TRIANGLES;
+    if (g_patch_prim == 2) {                       // points
+        prim = GE_PRIM_POINTS;
+        for (int i = 0; i < nu * nv; i++) order.push_back(i);
+    } else if (g_patch_prim == 1) {                // lines along u and v
+        prim = GE_PRIM_LINES;
+        for (int v = 0; v < nv; v++) for (int u = 0; u + 1 < nu; u++) { order.push_back(v * nu + u); order.push_back(v * nu + u + 1); }
+        for (int u = 0; u < nu; u++) for (int v = 0; v + 1 < nv; v++) { order.push_back(v * nu + u); order.push_back((v + 1) * nu + u); }
+    } else {                                       // two triangles per cell; PATCHFACING flips the winding
+        for (int v = 0; v + 1 < nv; v++)
+            for (int u = 0; u + 1 < nu; u++) {
+                const int a = v * nu + u, b = a + 1, c = a + nu, d = c + 1;
+                const int t[6] = {a, c, b, b, c, d};
+                for (int k = 0; k < 6; k++) order.push_back(t[g_patch_facing ? (k / 3) * 3 + 2 - k % 3 : k]);
+            }
+    }
+    const int count = static_cast<int>(order.size());
+    if (count == 0 || count > 0xFFFF) return;
+    const uint32_t at = spline_scratch(static_cast<uint32_t>(count * stride));
+    if (at == 0) return;
+    uint8_t* out = rdram + (at & 0x07FFFFFFu);
+    for (int i = 0; i < count; i++) {
+        const DecodedVertex& v = grid[static_cast<size_t>(order[i])];
+        uint8_t* o = out + static_cast<size_t>(i) * stride;
+        if (tc) { std::memcpy(o, v.uv, 8); o += 8; }
+        if (col) { std::memcpy(o, v.color, 4); o += 4; }
+        if (nrm) { std::memcpy(o, v.normal, 12); o += 12; }
+        std::memcpy(o, v.pos, 12);
+    }
+    if (log_left > 0) {
+        log_left--;
+        std::fprintf(stderr, "[GE] SPLINE %dx%d edges %d/%d div %d/%d (asked %d/%d) prim %d vtype %06X -> %dx%d grid, %d vertices at %08X\n",
+                     uc, vc, ut, vt, du, dv, g_patch_div_u, g_patch_div_v, g_patch_prim, src & 0xFFFFFF, nu, nv, count, at);
+    }
+    const uint32_t keep_type = g_ge_state.vertex_type, keep_addr = g_ge_state.vertex_addr;
+    g_ge_state.vertex_type = vtype;
+    g_ge_state.vertex_addr = at;
+    ge_draw_prim(rdram, prim, count);
+    g_ge_state.vertex_type = keep_type;
+    g_ge_state.vertex_addr = keep_addr;
 }
 
 // -- Call stack entry for CALL/RET --
@@ -941,11 +1040,26 @@ GeListResult ge_process_display_list(
         case GE_CMD_MORPHWEIGHT2: case GE_CMD_MORPHWEIGHT3:
         case GE_CMD_MORPHWEIGHT4: case GE_CMD_MORPHWEIGHT5:
         case GE_CMD_MORPHWEIGHT6: case GE_CMD_MORPHWEIGHT7:
-        case GE_CMD_PATCHDIVISION: case GE_CMD_PATCHPRIMITIVE:
-        case GE_CMD_PATCHFACING:
-        case GE_CMD_BEZIER: case GE_CMD_SPLINE:
         case GE_CMD_BOUNDINGBOX:
             break;  // ignored (must not fall into MATERIALSPECULAR)
+        case GE_CMD_PATCHDIVISION:
+            g_patch_div_u = static_cast<int>(data & 0x7F);
+            g_patch_div_v = static_cast<int>((data >> 8) & 0x7F);
+            break;
+        case GE_CMD_PATCHPRIMITIVE:
+            g_patch_prim = static_cast<int>(data & 3);
+            break;
+        case GE_CMD_PATCHFACING:
+            g_patch_facing = (data & 1) != 0;
+            break;
+        case GE_CMD_SPLINE:
+            ge_draw_spline(rdram, data);
+            break;
+        case GE_CMD_BEZIER: {
+            static bool seen = false;   // not drawn yet; say so once
+            if (!seen) { seen = true; std::fprintf(stderr, "[GE] BEZIER patch (0x%06X) not drawn: unimplemented\n", data & 0xFFFFFF); }
+            break;
+        }
         case GE_CMD_MATERIALSPECULAR:
             g_ge_state.material_specular = data;
             break;

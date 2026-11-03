@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Dissidia 012 Character Tools (GMO)",
     "author": "dissidia_fan & Claude",
-    "version": (0, 31, 0),
+    "version": (0, 40, 0),
     "blender": (4, 4, 0),
     "location": "File > Import/Export, and View3D > Sidebar > Dissidia",
     "description": "Import/export Dissidia 012 [duodecim] character models, textures and animations",

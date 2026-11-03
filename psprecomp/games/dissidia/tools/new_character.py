@@ -73,6 +73,15 @@ PATH_TEMPLATES = [
     "voice/{L}/battle/voice_p_{c}_{N}.scd",
     "voice/{L}/battle/voice_p_{c}_a_{N}.scd",
 ]
+# A fighter's own battle voice set. The fighter loader (FUN_08845230) reads voice/<L>/battle/voice_<chrp +0x74 code>_00.scd
+# (the assist: _a_00) and voice/<L>/voice_load_<code>.bin (VOLD) only when the costume has its .cosx: the cosx data
+# pointer it keeps at obj+8 is the gate (0x08845778), and the cosx also carries the "_00" bank suffix. Retail fighters all
+# have one per costume; an extra without them loaded no voice bank at all. docs/audio.md "A character's own voice set".
+VOICE_SET = [
+    "obj/p_{c}_1p.cosx", "obj/p_{c}_2p.cosx", "obj/p_{c}_3p.cosx", "obj/p_{c}_zako.cosx",
+    "voice/{L}/battle/voice_p_{c}_00.scd", "voice/{L}/battle/voice_p_{c}_a_00.scd", "voice/{L}/voice_load_p_{c}.bin",
+]
+PATH_TEMPLATES += [t for t in VOICE_SET if t not in PATH_TEMPLATES and "{N}" not in t]
 
 
 def die(msg):

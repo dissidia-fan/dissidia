@@ -15,8 +15,9 @@ The setup script tells you if your disc is a different one.
 
 ## The short version
 
-The steps are in the top-level README: [Steam Deck](../../../../README.md#steam-deck). In short, in Desktop Mode, in
-Konsole: clone the repo, put your game at `~/dissidia/game.iso`, run `deck_setup.sh ~/dissidia/game.iso --check`, then
+The steps are in the top-level README: [Steam Deck](../../../../README.md#steam-deck). Without a terminal: in Desktop
+Mode, double-click `tools/deck_gui.sh` in Dolphin (Execute) and follow the dialogs; see "No terminal: `deck_gui.sh`"
+below. With one, in Konsole: clone the repo, put your game at `~/dissidia/game.iso`, run `deck_setup.sh ~/dissidia/game.iso --check`, then
 `deck_setup.sh ~/dissidia/game.iso --install-distrobox --add-to-steam`.
 
 The install step creates a build container, installs the compilers and libraries inside it, extracts and decrypts your
@@ -39,6 +40,31 @@ Disk: about 1 GB for the ISO, 1.6 GB for the extracted data, 0.5 GB for generate
 1.5-3 GB for the container and Rust, a few hundred MB for the Rust build of the recompiler. Budget 8 GB
 free; `--check` insists on 9. Compile jobs default to 3 (about 1.5 GB of RAM each on the Deck's 16 GB;
 `--jobs 2` if you leave other things open).
+
+## No terminal: `deck_gui.sh`
+
+`deck_gui.sh` is a point-and-click front end for `deck_setup.sh` (zenity dialogs, which SteamOS ships; kdialog if
+zenity is missing). Double-click it in Dolphin and choose Execute (Properties > Permissions > Is executable first,
+if it was downloaded on its own).
+
+* **First run.** If it is not inside a checkout (downloaded from GitHub on its own), it clones the project into
+  `~/dissidia/repo`, asking for the address (prefilled). An existing
+  `~/dissidia/repo` that predates the tool is pulled first. Then it starts the copy inside the checkout.
+* **Icons.** Every start writes a "Dissidia Trēdecim Setup" launcher to the desktop and to
+  `~/.local/share/applications` (Games), pointing at the checkout's copy, with the Steam icon.
+* **Install** asks for the game file if `~/dissidia/game.iso` is missing (checks it is an ISO9660 or CSO image;
+  hard-links it when it is on the same drive, copies it with a progress bar otherwise, e.g. from an SD card), then
+  runs `deck_setup.sh ~/dissidia/game.iso --install-distrobox --add-to-steam` (plus `--close-steam` after telling you
+  Steam closes for a moment, when it is running). **Update** adds `--update`. The output goes to
+  `~/dissidia/work/setup.log` (the run before is `setup.log.previous`); the progress bar and its label are read from
+  it. The job runs under `systemd-inhibit`, so the Deck does not sleep or dim during the build. **Stop** asks before
+  it kills the build; running Install or Update again continues where it stopped. On a failure the last 40 lines of
+  the log are shown.
+* **Change the look** is `--launcher-only --preset retro|crisp`; **Check** shows `--check`; **Show the last log**
+  shows `setup.log`.
+
+`--close-steam` is the one `deck_setup.sh` flag added for it: `steam_shortcut.py` asks in the terminal before closing
+Steam, and without a terminal that question cannot be answered; with the flag it closes Steam without asking.
 
 ## What `deck_setup.sh` does, and `--check`
 
@@ -95,15 +121,17 @@ rewrites just `play.sh`. Changing the package list in a later version of the scr
 
 ## Updating (new code and mods from the Mac)
 
-The repository also tracks the installed mods (`psprecomp/work/mods`), so one command brings both:
+The character mod folders (`mods/`) are in the repository; the installed mods are not. `run.sh` builds
+`<workdir>/mods` from the mod folders at every start, so one command brings both code and mods:
 
 ```bash
 ~/dissidia/repo/psprecomp/games/dissidia/tools/deck_setup.sh ~/dissidia/game.iso --update
 ```
 
-It runs `git pull --ff-only` in the checkout, then the usual steps: only what changed is recompiled, and `<workdir>/mods` is linked to the
-checkout's mods folder if it does not exist yet. If `<workdir>/mods` is a folder of its own (copied by hand
-earlier), the script leaves it alone and prints the two commands that swap it for the link.
+It runs `git pull --ff-only` in the checkout, then the usual steps: only what changed is recompiled, and `<workdir>/mods` is a folder of the
+workdir's own. A workdir set up before this change has `<workdir>/mods` as a link to the checkout's old
+`psprecomp/work/mods`; the script turns it into a real folder and fills it from the last commit that tracked
+those files, so the Deck keeps its roster slots and menu ids, and the next start rebuilds from the mod folders.
 
 ## Why a container, and why the game also runs in it
 
@@ -270,6 +298,12 @@ Input to any of the buttons above if you want them.
 * Fallback if the container does not see the Steam virtual pad: in the entry's Steam Input layout bind the
   Deck's buttons to the keyboard keys of the right-hand column. There is no keyboard quit key; leave with
   the Steam button > Exit Game, or close the window.
+
+## Settings menu and 60 fps
+
+In game, L3 + R3 (press both sticks) opens the settings menu (Esc / F1 on a keyboard): resolution, render scale,
+frame rate (30 or 60 fps battles) and Quit Game. Choices are saved in the work folder's `settings.ini` and win over
+the launch flags below. Details: [frame-rate.md](frame-rate.md).
 
 ## Window size and scaling (other options)
 

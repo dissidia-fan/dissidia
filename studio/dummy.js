@@ -10,17 +10,25 @@
      - projectiles fly as the game flies them (magi.js), but an origin-6 shot starts at its effect record's bone and
        offset (not the playing effect), and the target's aim point is 1 m above its feet (a guess in the note);
        forced_hit (0x0108) hits at once;
-     - the attacker moves as the game moves him (actor.js: root motion, homing dashes, lunges, slides, falls), but
-       with an even push-apart of the two kind-1 body spheres (the game's resolver wasn't read), and his landing
-       doesn't switch to the landing motion;
-     - no hit-stop; reactions 3, 14, 15, 17, 18, 20 are plain flinches;
+     - the attacker moves as the game moves him (actor.js: root motion, homing dashes, lunges, slides, falls), and his
+       landing doesn't switch to the landing motion;
+     - body push-apart (kind-1 spheres) is the game's resolver (docs/archive/open-questions/dummy-and-sound.md §1:
+       mass 100 / 1000 heavy_body, the whole overlap + 0.05 m in one tick, horizontal), but resolved once per tick
+       after both have moved (the attacker's pass, then the dummy's), with the dummy's sphere at the attacker's
+       standing kind-1 height; the attacker's no_body_collision skips both passes (in game it gates only the other
+       fighter's pass);
+     - reactions 3, 14, 15, 17, 18, 20 as traced (same note §2), but: 20 flies along the push direction (the game uses
+       the hit object's +0x10 vector, which the studio doesn't have); 601 / 610 / 611 can act only once landed (their
+       own timelines' can_act isn't read); 14's drop eases like 11's (cos), ending on the floor;
+     - no hit-stop;
      - guard, dodge and the wall (docs/archive/guard-dodge-walls): the dummy guards or dodges when it can act and a
        hit window or shot starts within a few ticks; the clash table decides a guarded hit; a blocked attacker recoils
-       (901/911) and its move ends there; recoil speed inputs and what re-arms the wall check are guesses.
+       (901/911, speed (2 + 3k)/16 from where it was in its latest hit window, note §3) and its move ends there; the
+       wall check re-arms when a flight or drag ends.
    The simulation is re-run from the start of the move (all its presses, as the whole-move strip plays them) whenever
    the move, its files or the dummy's settings change, and the dummy is drawn at the playhead. */
 
-const DM = { on: false, dist: 2.0, height: null, sim: null, key: '', group: null, does: 'none', wall: null };   // does: what the dummy does when it can act; wall: m behind it   // height null = from the move (midair: 4 m)
+const DM = { on: false, dist: 2.0, height: null, above: 0, sim: null, key: '', group: null, does: 'none', wall: null };   // above: the dummy's start height over the attacker (m)   // does: what the dummy does when it can act; wall: m behind it   // height null = from the move (midair: 4 m)
 const DMG = 2 * 3.75 / (42 * 42), DM_MAX_FALL = 0.6, DM_STUN = 50, DM_DOWN_ACT = 70;
 const DM_REACT = { 0: 'no movement', 1: 'flinch / launch', 2: 'slide + launch', 3: 'floor slide / down', 4: 'launch', 5: 'blown away', 6: 'blown up', 7: 'blown down',
   8: 'pushed away', 11: 'launched (arc)', 12: 'blown (dragged)', 13: 'stagger (held)', 14: 'dragged', 15: 'dragged', 17: 'floor slide', 18: 'timer', 19: 'launch (hang)', 20: 'vent' };
@@ -34,7 +42,7 @@ const vRotY = (v, a) => { const c = Math.cos(a), s = Math.sin(a); return v3(v.x 
 const dmFwd = (f) => v3(Math.sin(f.facing), 0, Math.cos(f.facing));
 
 /* ---------------------------------------------------------------- the foe (the note's section 8) */
-function dmFoe(pos, facing) { return { pos, facing, state: 'idle', motion: 0, motionT: 0, canActIn: 0, move: null, vel: v3(0, 0, 0), drag: 0.975, air: null, inv: 0 }; }
+function dmFoe(pos, facing) { return { pos, facing, state: 'idle', motion: 0, motionT: 0, canActIn: 0, move: null, vel: v3(0, 0, 0), drag: 0.975, air: null, inv: 0, freeze: 0 }; }
 function dmStartAir(f, h, maxDy = 0) { h = Math.min(Math.max(h, 0), 100); f.air = { t: 0, T: Math.sqrt(2 * h / DMG), y0: f.pos.y, h, maxDy }; }
 function dmAirDy(f) {
   const a = f.air; a.t += 1;
@@ -45,8 +53,10 @@ function dmAirDy(f) {
 }
 function dmApplyHit(f, k, A) {
   const R = k.reaction;
-  f.guard = null; f.dodge = null; f.wallRushed = false;
+  f.guard = null; f.dodge = null; f.freeze = 0;          // any later hit clears reaction 18's freeze (FUN_0883A150)
   if (R === 0 || R === 16) return;
+  if (R === 18) { f.freeze = 60; return; }               // no movement, no script: 60 ticks frozen in place (defender+0x31C)
+  if (f.move && (f.move.kind === 'line' || f.move.kind === 'drag')) f.wallRushed = false;   // leaving a flight / drag re-arms the wall
   let push = vSub(f.pos, A.pos); push.y = 0; push = vLen(push) ? vNorm(push) : vMul(dmFwd(f), -1);
   const ff = dmFwd(f), front = Math.acos(Math.max(-1, Math.min(1, ff.x * push.x + ff.z * push.z))) > Math.PI / 2;
   f.facing = Math.atan2(front ? -push.x : push.x, front ? -push.z : push.z);
@@ -54,25 +64,37 @@ function dmApplyHit(f, k, A) {
   const play = (m) => { f.motion = m; f.motionT = 0; };
   const fly = (dir, dist, speed, m) => { f.state = 'launched'; play(m); f.air = null; f.move = { kind: 'line', dir: vNorm(dir), speed, T: speed ? dist / speed : 0, t: 0 }; };
   const launch = (h, speed, m) => { f.state = 'air'; play(m); f.move = null; f.vel = vMul(push, speed); f.drag = 0.975; dmStartAir(f, h); };
+  const r1 = () => {
+    if (!k.kb_forward && !airborne) { f.state = 'stun'; play(front ? 500 : 501); f.air = null; f.move = { kind: 'slide', dir: push, S: k.stun }; }
+    else launch(k.kb_forward, k.kb_up, front ? 550 : 551);
+  };
+  const drag = (R2, m, extra = {}) => {          // the drags of 11–15 (FUN_08832BB0 / FUN_08A51750)
+    f.state = R2 === 13 ? 'stun' : 'launched'; f.air = null; play(m);
+    f.move = { kind: 'drag', start: { ...f.pos }, prev: { ...f.pos }, t: 1, phase: 0, arc: R2 === 11, linear: R2 !== 13, R: R2,
+      yaw: k.kb_yaw, fwd: k.kb_forward, up: k.kb_up, dur: k.stun > 0 ? k.stun : DM_STUN, follow: k.follow, bone: k.kb_bone, ...extra };
+    f.move.target = dmDragTarget(f.move, A);
+  };
+  const low = f.pos.y <= 2;                       // height above the floor ≤ 2.0 m (const 0x089C7EC8)
   switch (R) {
-    case 1:
-      if (!k.kb_forward && !airborne) { f.state = 'stun'; play(front ? 500 : 501); f.air = null; f.move = { kind: 'slide', dir: push, S: k.stun }; }
-      else launch(k.kb_forward, k.kb_up, front ? 550 : 551);
+    case 1: r1(); break;
+    case 3: case 17:                              // low: snap to the floor, script 601, slide +0x24, launch height +0x28
+      if (low) { f.pos.y = 0; f.state = 'air'; play(601); f.move = { kind: 'slide', dir: push, S: k.stun }; f.vel = v3(0, 0, 0); dmStartAir(f, k.follow); }
+      else if (R === 3) fly(v3(0, -1, 0), k.kb_yaw, k.kb_up, 700);   // high: reaction 7
+      else r1();                                  // 17 high: reaction 1
       break;
+    case 14: drag(14, 610, { arc: true, linear: false, dur: 64 }); break;
+    case 15:
+      if (!low) drag(12, front ? 700 : 750);      // high: reaction 12
+      else { f.pos.y = 0; drag(15, 611, { arc: true, linear: false, dur: 54, t: -9 }); }   // held 10 ticks, then dragged 54
+      break;
+    case 20: fly(push, k.kb_yaw, k.kb_up, front ? 700 : 750); break;   // game: along normalize(hit record +0x10); studio: the push
     case 4: case 19: launch(k.kb_forward, k.kb_up, 700); break;
     case 2: f.state = 'air'; play(600); f.move = { kind: 'slide', dir: push, S: k.stun }; f.vel = v3(0, 0, 0); dmStartAir(f, k.follow); break;
     case 5: fly(vSub(f.pos, A.pos), k.kb_yaw, k.kb_up, front ? 700 : 750); break;
     case 6: fly(v3(0, 1, 0), k.kb_yaw, k.kb_up, 700); break;
     case 7: fly(v3(0, -1, 0), k.kb_yaw, k.kb_up, 700); break;
     case 8: fly(push, k.kb_yaw, k.kb_up, front ? 700 : 750); break;
-    case 11: case 12: case 13: {
-      f.state = R === 13 ? 'stun' : 'launched'; f.air = null;
-      play(R === 13 ? (front ? 560 : 561) : (front ? 700 : 750));
-      f.move = { kind: 'drag', start: { ...f.pos }, prev: { ...f.pos }, t: 1, phase: 0, arc: R === 11, linear: R !== 13, R,
-        yaw: k.kb_yaw, fwd: k.kb_forward, up: k.kb_up, dur: k.stun > 0 ? k.stun : DM_STUN, follow: k.follow, bone: k.kb_bone };
-      f.move.target = dmDragTarget(f.move, A);
-      break;
-    }
+    case 11: case 12: case 13: drag(R, R === 13 ? (front ? 560 : 561) : (front ? 700 : 750)); break;
     default: f.state = 'stun'; play(front ? 500 : 501);
   }
   f.canActIn = f.motion >= 500 && f.motion <= 561 ? DM_STUN : Infinity;
@@ -90,47 +112,55 @@ function dmStep(f, m, p) {
   f.pos = vAdd(f.pos, d);
 }
 function dmEndDrag(f, m) {
-  f.move = null;
+  f.move = null; f.wallRushed = false;
   if (m.R === 13) { f.vel = v3(0, 0, 0); dmStartAir(f, 0); }
   else { const s = m.lastStep || v3(0, 0, 0); f.vel = v3(s.x, 0, s.z); f.drag = 0.95; f.state = 'air'; dmStartAir(f, 0, Math.min(0, s.y)); }
 }
 function dmLand(f) {
   f.pos.y = 0;
   if (f.motion >= 500 && f.motion <= 561 && f.motionT < DM_STUN) return;      // held: no landing before frame 50
+  if (f.move && (f.move.kind === 'line' || f.move.kind === 'drag')) f.wallRushed = false;
   f.air = null; f.vel = v3(0, 0, 0); f.move = null;
   if ([700, 701, 750, 751].includes(f.motion)) { f.motion = f.motion < 750 ? 702 : 752; f.motionT = 0; f.state = 'down'; f.canActIn = DM_DOWN_ACT; f.inv = 100; }
   else { f.motion = 102; f.motionT = 0; f.state = 'recovering'; f.canActIn = 14; }
 }
 function dmTickFoe(f, A) {
   f.motionT += 1; if (f.canActIn > 0) f.canActIn -= 1; if (f.inv > 0) f.inv -= 1;
+  if (f.freeze > 0) { f.freeze -= 1; return; }   // reaction 18: the whole move of the tick is dropped (FUN_0883AF80)
   const m = f.move;
-  if (m && m.kind === 'drag') {
+  if (m && m.kind === 'drag' && m.phase === 0 && m.t < 1) m.t += 1;   // reaction 15 low: held still while t < 0
+  else if (m && m.kind === 'drag') {
     if (m.phase === 0) {
       if (m.t <= m.follow && A) m.target = dmDragTarget(m, A);
       let u = Math.min(m.t / m.dur, 1); if (!m.linear) u = Math.sin(Math.PI / 2 * u);
       const p = vLerp(m.start, m.target, u); if (m.arc) p.y += m.up * Math.sin(Math.PI / 2 * u);
       dmStep(f, m, p);
       if (m.t > m.dur) {
-        if (f.motion === 700 || f.motion === 750) f.motion += 1;
-        if (m.arc && m.up > 0) { const d = vMul(vSub(m.target, m.start), 0.7); m.start = { ...m.target }; m.target = vAdd(m.target, d); m.dur = m.up / 0.09; m.t = 0; m.phase = 2; }
+        if ((f.motion === 700 || f.motion === 750) && m.R !== 14 && m.R !== 15) f.motion += 1;
+        if (m.arc && m.up > 0) { const d = vMul(vSub(m.target, m.start), m.R === 14 || m.R === 15 ? 0.1 : 0.7); m.start = { ...m.target }; m.target = vAdd(m.target, d); m.dur = m.up / 0.09; m.t = 0; m.phase = 2; }
         else dmEndDrag(f, m);
       }
     } else {
       const u = Math.min(m.t / m.dur, 1), p = vLerp(m.start, m.target, u); p.y += m.up * Math.cos(Math.PI / 2 * u);
-      dmStep(f, m, p); if (u >= 1) dmEndDrag(f, m);
+      dmStep(f, m, p); if (u >= 1 || ((m.R === 14 || m.R === 15) && f.pos.y <= 0)) dmEndDrag(f, m);   // 14/15: the drop ends on the floor
     }
     m.t += 1;
   } else if (m && m.kind === 'line') {
     m.t += 1; f.pos = vAdd(f.pos, vMul(m.dir, m.speed));
     if (m.t > m.T) {
       if (f.motion === 700 || f.motion === 750) f.motion += 1;
-      f.vel = v3(m.dir.x * m.speed, 0, m.dir.z * m.speed); f.drag = 0.975; f.move = null; f.state = 'air'; dmStartAir(f, 0, Math.min(0, m.dir.y * m.speed));
+      f.vel = v3(m.dir.x * m.speed, 0, m.dir.z * m.speed); f.drag = 0.975; f.move = null; f.state = 'air'; f.wallRushed = false; dmStartAir(f, 0, Math.min(0, m.dir.y * m.speed));
     }
   } else if (m && m.kind === 'slide') {
     if (m.S >= 0.01) { f.pos = vAdd(f.pos, vMul(m.dir, m.S)); m.S *= 0.9; } else f.move = null;
   }
   if (f.air) { f.vel = vMul(f.vel, f.drag); f.pos = vAdd(f.pos, v3(f.vel.x, dmAirDy(f), f.vel.z)); }
-  if (f.pos.y <= 0 && (f.air || f.state === 'launched')) dmLand(f);
+  const held = f.move && f.move.kind === 'drag' && (f.move.R === 14 || f.move.R === 15);   // 14 / 15: a drag (state 0x17) lands only once it ends
+  // a straight flight (reactions 5, 8, 20) that runs level or upward from the floor rides it until the line ends;
+  // only a downward line lands on contact (it used to land on its first tick when the hit came on the ground)
+  const level = f.move && f.move.kind === 'line' && f.move.dir.y >= 0;
+  if (level && f.pos.y < 0) f.pos.y = 0;
+  if (f.pos.y <= 0 && (f.air || f.state === 'launched') && !held && !level) dmLand(f);
   if (f.state === 'stun' && f.motionT >= DM_STUN) { f.state = f.pos.y > 0.001 ? 'falling' : 'idle'; f.canActIn = 0; }
   if ((f.state === 'down' || f.state === 'recovering') && f.canActIn <= 0) f.state = 'idle';
   if (f.state === 'wall' && f.motionT >= Math.max(20, motionLen(dmScriptMotion(f.motion)) * 2)) { f.motion = 101; f.motionT = 0; f.inv = 0; f.state = 'falling'; f.vel = v3(0, 0, 0); dmStartAir(f, 0); }
@@ -233,6 +263,26 @@ async function dmLoadVolumes() {
   } catch (err) { console.warn('studio: no hit volumes', err); }
 }
 
+/* ---------------------------------------------------------------- body push-apart (docs/archive/open-questions/dummy-and-sound.md §1)
+   FUN_08812414: the push d of sphere Y off sphere X (r = h for body spheres), horizontal only, the whole overlap plus
+   0.05 m (const 0x089C6E28) in one go; null when they don't overlap (3-D test |Yc − Xc| < rX + rY) */
+function dmPushVec(xc, xr, yc, yr) {
+  const rs = xr + yr, o = vSub(yc, xc);
+  if (vLen(o) >= rs) return null;
+  const n = vMul(o, 1 / rs), hz = n.x * n.x + n.z * n.z;
+  if (hz <= 0) return v3(rs + 0.05, 0, 0);       // same column: along +x
+  const k = Math.sqrt((1 - n.y * n.y) / hz);
+  return v3(n.x * (k - 1) * (rs + 0.05), 0, n.z * (k - 1) * (rs + 0.05));
+}
+/* FUN_0883E3BC: how d splits between the mover (self) and the fighter it walks into (other). mass 1000 with heavy_body
+   (0x004B), else 100; cant_be_pushed (0x0049) on the OTHER side makes the mover take it all (on its own side it does
+   nothing). Returns [self's move, other's move]; self moves back (−), other forward (+). */
+function dmPushSplit(d, self, other) {
+  const mS = self.heavy ? 1000 : 100, mO = other.heavy ? 1000 : 100;
+  if (other.unpushable && !self.unpushable) return [vMul(d, -1), v3(0, 0, 0)];
+  return [vMul(d, -mO / (mS + mO)), vMul(d, mS / (mS + mO))];
+}
+
 /* ---------------------------------------------------------------- the simulation */
 const DM_HIT_OPS = new Set([0x0200, 0x0743, 0x027B]);
 function dmSegments() {                       // [{motion, start tick, len ticks}] of the move (or the animation) on show
@@ -242,12 +292,235 @@ function dmSegments() {                       // [{motion, start tick, len ticks
   }
   return S.motion >= 0 ? [{ motion: S.motion, start: 0, len: motionLen(S.motion) * 2 }] : [];
 }
-function dmAttackerAt(T) {                  // where the simulation has the attacker at tick T of the current press (effects posed then)
+function dmAttackerAt(T, pi) {                // where the simulation has the attacker at tick T of the current press (or of press pi) (effects posed then)
   if (!DM.on || !DM.sim || !view.root || S.fxEdit) return null;
   const segs = DM.sim.segs && DM.sim.move === (S.step ? S.step.move : -1) ? DM.sim.segs : dmSegments(); if (!segs.length) return null;
-  const i = S.step ? Math.min(S.step.i, segs.length - 1) : 0;
+  const i = Math.min(pi != null ? pi : S.step ? S.step.i : 0, segs.length - 1);
   const fr = DM.sim.frames[Math.max(0, Math.min(DM.sim.frames.length - 1, Math.round(segs[i].start + Math.min(T, segs[i].len))))];
   return fr ? { x: fr.apos.x, y: fr.apos.y - DM.sim.H, z: fr.apos.z, yaw: fr.ayaw } : null;
+}
+/* the simulated flight of shot n of a projectile fired at tick `fire` of the current press (homing on the dummy), as
+   fx.js's fxShot gives it: {life, at(T) -> matrix (+Z along the flight)}; null when the simulation has no such shot */
+function dmShotAt(id, fire, n) {
+  if (!DM.on || !DM.sim || !DM.sim.shotLog || !view.root || S.fxEdit) return null;
+  const segs = DM.sim.segs && DM.sim.move === (S.step ? S.step.move : -1) ? DM.sim.segs : dmSegments(); if (!segs.length) return null;
+  const s0 = segs[S.step ? Math.min(S.step.i, segs.length - 1) : 0].start, T0 = s0 + Math.round(fire);
+  const L = DM.sim.shotLog.filter((x) => x.id === id && !x.child && Math.abs(x.T - T0) <= 1 && x.path.length).sort((a, b) => a.T - b.T)[n];
+  if (!L) return null;
+  const H = DM.sim.H, P = L.path, z = new THREE.Vector3(0, 0, 1);
+  return { life: P[P.length - 1].T - L.T + 1, at: (t) => {
+    const T = s0 + t, k = Math.max(0, Math.min(P.length - 1, Math.round(T) - P[0].T)), q = P[k];
+    const d = new THREE.Vector3(q.d.x, q.d.y, q.d.z); if (d.lengthSq() < 1e-9) d.copy(z); else d.normalize();
+    return new THREE.Matrix4().makeRotationFromQuaternion(new THREE.Quaternion().setFromUnitVectors(z, d)).setPosition(q.p.x, q.p.y - H, q.p.z);
+  } };
+}
+/* apocarms=ARM0,NARM,ID1[,ID2..] (runtime roster.cpp apoc_bone_post): the move's royal arms ride their magi bullets.
+   When a listed bullet is born, the free arm of that set that the motion showed within the last 12 ticks and lies
+   nearest it (at most 3 m) takes it; while the bullet lives the arm sits on it, blade (+Y) along the flight, scale 1. */
+/* what the simulation adds to the effect preview (app.js passes it as extra instances): the contact effect of every
+   projectile hit on the dummy, and the shots born of a hit (link_hit, and their own children), flown as simulated */
+function dmSimFxInsts() {
+  if (!DM.on || !DM.sim || !DM.sim.shotLog || !view.root || S.fxEdit || !S.fx || typeof projVisuals !== 'function') return [];
+  const segs = DM.sim.segs && DM.sim.move === (S.step ? S.step.move : -1) ? DM.sim.segs : dmSegments(); if (!segs.length) return [];
+  const s0 = segs[S.step ? Math.min(S.step.i, segs.length - 1) : 0].start, H = DM.sim.H, z = new THREE.Vector3(0, 0, 1), out = [];
+  const hits = (F(msPath('hits.json')) || {}).hits || [];
+  DM.sim.hits.forEach((h, k) => {
+    if (h.proj == null || h.guarded || h.T < s0) return;
+    const hr = hits.find((x) => (x.name || x.id) === h.name), bit = hr ? hr.hit_effect_bit : 0; if (!bit || bit === 255) return;
+    const grp = S.fx.fepa.filter((r) => fxGroupHas(r, bit) && !r.trig), contact = grp.filter((r) => r.kinds & 1), recs = (contact.length ? contact : grp).slice(0, 2);
+    const fr = DM.sim.frames[Math.min(DM.sim.frames.length - 1, h.T)];
+    if (recs.length && fr) out.push({ type: 'hit', tick: h.T - s0, recs, kind: 'sim', idx: k, hit: h.name, foe: [fr.pos.x, fr.pos.y - H + 0.85, fr.pos.z] });
+  });
+  DM.sim.shotLog.forEach((L, k) => {
+    if (!L.hit || !L.path.length || L.T < s0) return;
+    const pr = S.fx.magi && S.fx.magi.get(L.id), recs = pr ? projVisuals(S.fx, pr) : []; if (!recs.length) return;
+    const P = L.path;
+    out.push({ type: 'proj', tick: L.T - s0, proj: pr, recs, kind: 'sim', idx: k, arg2: 0, simShot: { life: P[P.length - 1].T - L.T + 1, at: (t) => {
+      const q = P[Math.max(0, Math.min(P.length - 1, Math.round(s0 + t) - P[0].T))], d = new THREE.Vector3(q.d.x, q.d.y, q.d.z);
+      if (d.lengthSq() < 1e-9) d.copy(z); else d.normalize();
+      return new THREE.Matrix4().makeRotationFromQuaternion(new THREE.Quaternion().setFromUnitVectors(z, d)).setPosition(q.p.x, q.p.y - H, q.p.z);
+    } } });
+  });
+  return out;
+}
+function dmApocSets() {
+  const out = [];
+  for (const t of (S.mod && S.mod.runtime_hooks) || []) {
+    if (typeof t !== 'string' || !t.startsWith('apocarms=')) continue;
+    const [a0, n, ...ids] = t.slice(9).split(',').map(Number);
+    if (n > 0 && ids.length) out.push({ arms: Array.from({ length: n }, (_, k) => a0 + k), ids: new Set(ids) });
+  }
+  return out;
+}
+function dmApocAssign(sim) {
+  const sets = dmApocSets(); if (!sets.length || !sim.shotLog || !sim.shotLog.length) return [];
+  const segs = sim.segs, cache = new Map(), inv = new THREE.Matrix4();
+  const armsAt = (T) => {                     // world positions (simulation frame) of the arms the motion shows at tick T
+    if (cache.has(T)) return cache.get(T);
+    const i = segs.findIndex((x) => T < x.start + x.len), sg = segs[i < 0 ? segs.length - 1 : i], P = dmPoseOf(sg.motion, T - sg.start);
+    inv.copy(P.root).invert(); const fr = sim.frames[Math.min(sim.frames.length - 1, T)], m = new Map();
+    if (fr) for (const set of sets) for (const b of set.arms) {
+      const M = P.bones[b]; if (!M) continue;
+      const L = inv.clone().multiply(M), e = L.elements; if (Math.hypot(e[0], e[1], e[2]) < 1e-3) continue;   // hidden (scale 0)
+      const c = Math.cos(fr.ayaw), sn = Math.sin(fr.ayaw);
+      m.set(b, { x: fr.apos.x + e[12] * c + e[14] * sn, y: fr.apos.y + e[13], z: fr.apos.z - e[12] * sn + e[14] * c });
+    }
+    cache.set(T, m); return m;
+  };
+  const out = [];
+  for (const L of sim.shotLog.filter((x) => x.path.length).sort((a, b) => a.T - b.T)) {
+    const set = sets.find((st) => st.ids.has(L.id)); if (!set) continue;
+    if (L.child) {                            // a listed child takes the arm of a listed shot that just ended near where it is born (roster.cpp hand-off)
+      const p0 = L.path[0].p, prev = out.filter((o) => set.arms.includes(o.arm) && !out.some((o2) => o2 !== o && o2.arm === o.arm && o2.T > o.T)).find((o) => {
+        const P = o.L.path, e = P[P.length - 1]; return L.T - e.T >= -1 && L.T - e.T <= 4 && Math.hypot(e.p.x - p0.x, e.p.y - p0.y, e.p.z - p0.z) <= 3; });
+      if (prev) out.push({ arm: prev.arm, T: L.T, L });
+      continue;
+    }
+    const busy = new Set(out.filter((o) => o.T <= L.T && L.T <= o.T + o.L.path.length).map((o) => o.arm));
+    const p = L.path[0].p; let best = null, bd = 3;
+    for (let T = L.T; T >= Math.max(0, L.T - 12) && !best; T--) for (const [b, q] of armsAt(T)) {
+      if (!set.arms.includes(b) || busy.has(b)) continue;
+      const d = Math.hypot(q.x - p.x, q.y - p.y, q.z - p.z); if (d < bd) { bd = d; best = b; }
+    }
+    if (best != null) out.push({ arm: best, T: L.T, L });
+  }
+  return out;
+}
+function dmApocNow() { if (DM.on && DM.sim && !S.fxEdit && view.root) dmApocPlace(Math.min(DM.sim.frames.length - 1, Math.round(dmNowTick()))); else dmApocStraight(); }   // after a re-pose of the playhead
+/* the same ride with the Dummy off: each listed bullet of this timeline flies as the effect preview flies it (fx.js
+   fxShot: straight ahead from its origin, no homing), and the arm the motion showed nearest its start within the
+   12 ticks before (at most 3 m) sits on it, blade (+Y) along the flight, while it lives. Called after every pose. */
+function dmApocStraight() {
+  if (DM.on || S.fxEdit || !S.gmo || !view.root || !view.bones) return;
+  dmApocSetArms(dmApocRides());
+}
+function dmApocSetArms(rides) {                // the playhead's riding / held arms onto the live skeleton
+  const now = S.frame * 2, list = [];
+  for (const b of new Set(rides.map((r) => r.arm))) { const M = dmApocArmAt(rides, b, now); if (M) list.push([b, M]); }
+  if (typeof FXP !== 'undefined' && FXP.dirty) { FXP.dirty = false; poseMotion(S.gmo, view, S.motion, S.frame); view.root.updateMatrixWorld(true); }   // back to the playhead
+  const inv = new THREE.Matrix4();
+  for (const [arm, M] of list) {
+    const b = view.bones[arm]; if (!b) continue;
+    b.parent.updateMatrixWorld(true); inv.copy(b.parent.matrixWorld).invert();
+    inv.multiply(M).decompose(b.position, b.quaternion, b.scale); b.updateMatrixWorld(true);
+  }
+}
+/* armtrailhold=N (roster.cpp apoc_bone_post): when an arm's bullet ends it stays where the flight ended, full size for
+   the APOC_LIVE passes the game takes to notice, then N passes as a speck (scale 0.06, still shown for its trail), so
+   its trail runs into the point of contact; then the motion's pose again. */
+const APOC_LIVE = 3, ARM_HOLD_SCALE = 0.06;
+function dmArmHold() { const h = ((S.mod && S.mod.runtime_hooks) || []).find((x) => typeof x === 'string' && x.startsWith('armtrailhold=')); return h ? Math.max(0, +h.slice(13) || 0) : 0; }
+/* arm b's world matrix at press tick T while a ride or its hold moves it, else null (the motion's pose) */
+function dmApocArmAt(rides, b, T) {
+  const mine = rides.filter((r) => r.arm === b), on = mine.find((r) => T >= r.T0 && T < r.T0 + r.life);
+  if (on) return on.at(T);
+  const hold = dmArmHold();
+  const r = mine.filter((x) => T >= x.T0 + x.life && T < x.T0 + x.life + APOC_LIVE + hold).sort((p, q) => q.T0 - p.T0)[0];
+  if (!r) return null;
+  const end = r.T0 + r.life, M = r.at(end - 1).clone();
+  if (T >= end + APOC_LIVE) {
+    const p = new THREE.Vector3(), q = new THREE.Quaternion(), sc = new THREE.Vector3(); M.decompose(p, q, sc);
+    M.compose(p, q, new THREE.Vector3(ARM_HOLD_SCALE, ARM_HOLD_SCALE, ARM_HOLD_SCALE));
+  }
+  return M;
+}
+/* every apocarms= ride of the press on show: [{arm, T0, life, at(T) -> the arm's world matrix}] in press ticks.
+   Dummy on: the simulation's bullets (DM.apoc); off: each listed bullet of this timeline flown as fx.js fxShot flies
+   it, taken by the arm the motion showed nearest its start within the 12 ticks before (at most 3 m). */
+function dmApocRides() {
+  const Y = new THREE.Vector3(0, 1, 0), out = [];
+  const onFlight = (p, d) => new THREE.Matrix4().makeRotationFromQuaternion(new THREE.Quaternion().setFromUnitVectors(Y, d.normalize())).setPosition(p);
+  if (DM.on && DM.sim && !S.fxEdit) {
+    if (!DM.apoc || !DM.apoc.length) return out;
+    const segs = DM.sim.segs && DM.sim.move === (S.step ? S.step.move : -1) ? DM.sim.segs : dmSegments(); if (!segs.length) return out;
+    const s0 = segs[S.step ? Math.min(S.step.i, segs.length - 1) : 0].start, H = DM.sim.H;
+    for (const a of DM.apoc) {
+      const P = a.L.path; if (!P.length) continue;
+      out.push({ arm: a.arm, T0: P[0].T - s0, life: P.length, at: (T) => {
+        const q = P[Math.max(0, Math.min(P.length - 1, Math.round(T + s0) - P[0].T))], d = new THREE.Vector3(q.d.x, q.d.y, q.d.z);
+        if (d.lengthSq() < 1e-9) d.set(0, 0, 1);
+        return onFlight(new THREE.Vector3(q.p.x, q.p.y - H, q.p.z), d);
+      } });
+    }
+    return out;
+  }
+  if (S.fxEdit || !S.gmo || !view.bones || !S.fx || !S.fx.magi || typeof fxShot !== 'function') return out;
+  const sets = dmApocSets(), tl = typeof curTL === 'function' ? curTL() : null; if (!sets.length || !tl || !tl.keyed) return out;
+  const names = view.bones.map((b) => b.name), ctx = { fx: S.fx, opts: {}, poseAt: fxPoseAt, boneOk: (i) => i >= 0 && i < names.length };
+  try {
+    for (const e of tl.keyed) {
+      if (opCode(e.op) !== 0x0204) continue;
+      const a = argsOf(e), id = typeof hkPickMagi === 'function' ? hkPickMagi(a[0]) : a[0];
+      const set = sets.find((st) => st.ids.has(id)), pr = set && S.fx.magi.get(id); if (!pr) continue;
+      const T0 = e.frame, shot = fxShot(ctx, pr, T0, typeof a[1] === 'number' ? a[1] : 0, null);
+      const p0 = new THREE.Vector3().setFromMatrixPosition(shot.at(T0));
+      const busy = new Set(out.filter((r) => T0 < r.T0 + r.life).map((r) => r.arm));
+      let best = null, bd = 3;
+      for (let T = T0; T >= Math.max(0, T0 - 12) && best == null; T--) {
+        const P = fxPoseAt(T);
+        for (const b of set.arms) {
+          const M = P.bones[b]; if (!M || busy.has(b)) continue;
+          const el = M.elements; if (Math.hypot(el[4], el[5], el[6]) < 1e-3) continue;   // hidden (scale 0)
+          const d = new THREE.Vector3().setFromMatrixPosition(M).distanceTo(p0); if (d < bd) { bd = d; best = b; }
+        }
+      }
+      if (best == null) continue;
+      out.push({ arm: best, T0, life: shot.life, at: (T) => {
+        const Mn = shot.at(T), Mp = shot.at(T + 1), pn = new THREE.Vector3().setFromMatrixPosition(Mn);
+        const d = new THREE.Vector3().setFromMatrixPosition(Mp).sub(pn); if (d.lengthSq() < 1e-9) d.set(0, 0, 1).transformDirection(Mn);
+        return onFlight(pn, d);
+      } });
+    }
+  } catch (err) { console.warn('studio: apocarms preview', err); }
+  return out;
+}
+/* armtrail=ID,SLOT0,NSLOTS,ARM0:N:BIT0:DRAW,... (roster.cpp armtrail_bone_post + its FUN_0884E660 wrapper): arm k of a
+   set leaves the first FEPA record of trail id ID with mask bit BIT0+k while it is shown (bone scale > 0.05 and its
+   draw part drawn), on at most NSLOTS slots at once (earlier sets win). The preview plays that trail on the arm as the
+   preview moves it, riding its bullet under apocarms=, so the trail follows the whole flight. -> extra fx instances */
+function dmArmTrailInsts() {
+  const h = ((S.mod && !(S.rig && S.rig.retail) && S.mod.runtime_hooks) || []).find((x) => typeof x === 'string' && x.startsWith('armtrail='));
+  if (!h || S.fxEdit || !S.gmo || !view.root || !view.bones || !S.fx || typeof curTL !== 'function') return [];
+  const tl = curTL(); if (!tl) return [];
+  const [id, , nslots, ...rest] = h.slice(9).split(','), ID = +id, NS = Math.max(1, +nslots || 11), arms = [];
+  for (const s of rest) {
+    const [a0, n, b0, draw] = s.split(':').map(Number);
+    for (let k = 0; k < n; k++) {
+      const bit = b0 + k, rec = (S.fx.byId.get(ID) || []).find((r) => r.trig === 0 && ((r.keys >>> bit) & 1));
+      if (rec && a0 + k < view.bones.length) arms.push({ bone: a0 + k, draw, rec });
+    }
+  }
+  if (!arms.length) return [];
+  const rides = dmApocRides(), now = S.frame * 2, out = [], live = new Map();
+  const ride = (b, T) => dmApocArmAt(rides, b, T);
+  const drawn = (st, d) => (st.has(d) ? st.get(d) : partDefault(d)) && (S.exMode || !S.exOnly.has(d));
+  for (let T = 0; T <= now; T++) {
+    const st = partStates(tl, T), P = fxPoseAt(T);
+    for (const a of arms) {
+      const r = ride(a.bone, T), M = P.bones[a.bone], e = M ? M.elements : null;
+      const shown = drawn(st, a.draw) && (r || (e && Math.hypot(e[4], e[5], e[6]) > 0.05));
+      const cur = live.get(a);
+      if (shown && !cur && live.size < NS) {
+        const inst = { type: 'fx', tick: T, end: null, recs: [a.rec], kind: 'armtrail', idx: a.bone, trail: true,
+          boneAt: (t) => ride(a.bone, t) || fxPoseAt(t).bones[a.bone] };
+        live.set(a, inst); out.push(inst);
+      } else if (!shown && cur) { cur.end = T; live.delete(a); }
+    }
+  }
+  return out;
+}
+function dmApocPlace(T) {
+  if (!DM.apoc || !DM.apoc.length || !view.bones) return;
+  if (view.root) { dmApocSetArms(dmApocRides()); return; }     // the rides with their holds (dmApocArmAt); below: no skeleton root
+  const H = DM.sim.H, Y = new THREE.Vector3(0, 1, 0), M = new THREE.Matrix4(), inv = new THREE.Matrix4();
+  for (const a of DM.apoc) {
+    const P = a.L.path, k = T - P[0].T; if (k < 0 || k >= P.length) continue;
+    const b = view.bones[a.arm]; if (!b) continue;
+    const q = P[k], d = new THREE.Vector3(q.d.x, q.d.y, q.d.z); if (d.lengthSq() < 1e-9) continue;
+    M.makeRotationFromQuaternion(new THREE.Quaternion().setFromUnitVectors(Y, d.normalize())).setPosition(q.p.x, q.p.y - H, q.p.z);
+    b.parent.updateMatrixWorld(true); inv.copy(b.parent.matrixWorld).invert();
+    inv.multiply(M).decompose(b.position, b.quaternion, b.scale); b.updateMatrixWorld(true);
+  }
 }
 function dmFoePosAt(T) {                     // where the simulation has the dummy at tick T of the current press (THREE vector), or null
   if (!DM.on || !DM.sim || !view.root || S.fxEdit) return null;
@@ -373,7 +646,7 @@ function dmHeight() {                        // how high above the floor the fig
 }
 function dmKey() {
   const segs = dmSegments();
-  return JSON.stringify([segs, DM.dist, dmHeight(), S.gen || 0, S.skinShown, S.rig && S.rig.gmo, !!S.exMode, DM.does, DM.wall]);
+  return JSON.stringify([segs, DM.dist, dmHeight(), DM.above, S.gen || 0, S.skinShown, S.rig && S.rig.gmo, !!S.exMode, DM.does, DM.wall, typeof HK_PREV !== 'undefined' ? [HK_PREV.level, HK_PREV.pick] : 0]);   // the move panel's charge level / shot pick
 }
 /* projectiles (magi.js, docs/archive/projectile-flight): fired by fire_projectile (0x0204) and by a hit_window_fire
    (0x0743) that connects; flown tick by tick with homing on the dummy; their hit sphere (or upright column) is swept
@@ -392,25 +665,28 @@ function dmShotTouch(hit, f) {               // the shot's (swept) hit shape aga
 }
 /* The recomp runtime's per-character hooks (mod.json runtime_hooks = roster.txt tokens; runtime/roster.cpp) that move the
    attacker or chain his actions in game, so the dummy sees what the game does with them:
-     warp=MOTION[/MOTION...],TRAVEL,STOP[,LIFT]  warpreach=MOTION[/...],REACH   (warp_step_hook)
+     warp=MOTION[/MOTION...],TRAVEL,STOP[,LIFT[,FROM]]  warpreach=MOTION[/...],REACH   (warp_step_hook)
        while the motion plays, each root-motion step becomes the same share of the way to E = S + (T−S)·min(|T−S|−STOP,
        REACH or TRAVEL)/|T−S| (S = where the travel started, T = the target's feet now), the share being this step's part
        of what is left of TRAVEL metres; LIFT −1 = flat (horizontal only, the step's own height kept), LIFT > 0 = end no
        lower than LIFT above a lower target
+     warpabove=MOTION[/...],FROM,TO,UP[,BACK]  (warpabove_step)  between motion ticks FROM..TO each step is an equal
+       share of the way left to UP m above the target's feet, BACK m short of it horizontally (a teleport onto the foe)
      vtrack=MOTION[/...],FROM,TO,MAX[,LIFT]  (vtrack_step)  between motion ticks FROM..TO the height eases (smoothstep)
        toward the target's feet, at most MAX from the motion's own height, at most 2·MAX/(TO−FROM) per tick
      hitact=MAGI,ACTION  (hit_spawn_hook)  spawning that projectile (an on-hit child) starts ACTION
      landact=ACTION,MOTION[,...]  (land_hook)  a touchdown while one of those motions plays starts ACTION */
 function dmHooks() {
-  const H = { warps: [], reach: new Map(), vtracks: [], hitact: null, landact: null };
+  const H = { warps: [], reach: new Map(), vtracks: [], aboves: [], hitact: null, landact: null };
   if (!S.mod || S.mod.kind === 'retail' || (S.rig && S.rig.retail)) return H;
   const nums = (s) => s.split(',').map(Number);
   for (const t of S.mod.runtime_hooks || []) {
     if (typeof t !== 'string' || !t.includes('=')) continue;
     const k = t.slice(0, t.indexOf('=')), v = t.slice(t.indexOf('=') + 1), [ms, ...rest] = v.split(',');
     const motions = ms.split('/').map(Number);
-    if (k === 'warp') { const [travel, stop, lift] = rest.map(Number); H.warps.push({ motions, travel, stop, flat: lift === -1, lift: lift > 0 ? lift : 0 }); }
+    if (k === 'warp') { const [travel, stop, lift, from] = rest.map(Number); H.warps.push({ motions, travel, stop, flat: lift === -1, lift: lift > 0 ? lift : 0, from: from > 0 ? from : 0 }); }
     else if (k === 'warpreach') for (const m of motions) H.reach.set(m, Number(rest[0]));
+    else if (k === 'warpabove') { const [from, to, up, back] = rest.map(Number); H.aboves.push({ motions, from, to, up, back: back || 0 }); }
     else if (k === 'vtrack') { const [from, to, max, lift] = rest.map(Number); H.vtracks.push({ motions, from, to, max, lift: lift || 0 }); }
     else if (k === 'hitact') { const [m, a] = nums(v); H.hitact = { magi: m, action: a }; }
     else if (k === 'landact') { const [a, ...mo] = nums(v); H.landact = { action: a, motions: mo }; }
@@ -421,6 +697,12 @@ function dmRootHook(H, ctx) {                 // ctx: { motion, t (motion tick),
   return (o, a, foe) => {
     if (!foe) return o;
     const R = ctx.run;
+    const wa = (H.aboves || []).find((w) => w.motions.includes(ctx.motion) && ctx.t >= w.from && ctx.t < w.to);
+    if (wa) {                                 // warpabove_step: an equal share of the way left to just above the foe
+      const T = foe.pos, hx = T.x - a.pos.x, hz = T.z - a.pos.z, hd = Math.hypot(hx, hz), b = hd > 1e-4 ? Math.min(wa.back, hd) / hd : 0;
+      const E = v3(T.x - hx * b, T.y + wa.up, T.z - hz * b), left = Math.max(1, Math.ceil(wa.to - ctx.t - 1e-3));
+      return v3((E.x - a.pos.x) / left, (E.y - a.pos.y) / left, (E.z - a.pos.z) / left);
+    }
     const vt = H.vtracks.find((v) => v.motions.includes(ctx.motion));
     if (vt) {                                 // vtrack_step
       if (R.vtMotion !== ctx.motion) { R.vtMotion = ctx.motion; R.vtApplied = 0; }
@@ -436,6 +718,7 @@ function dmRootHook(H, ctx) {                 // ctx: { motion, t (motion tick),
     const sp = H.warps.find((w) => w.motions.includes(ctx.motion));
     if (!sp) { R.warp = null; return o; }
     if (!R.warp || R.warp.motion !== ctx.motion) R.warp = { motion: ctx.motion, done: -1, S: null };
+    if (ctx.t < sp.from) return o;           // FROM: the motion's own steps until then
     const W = R.warp, m = sp.flat ? Math.hypot(o.x, o.z) : vLen(o);
     if (!(m > 1e-6) || W.done >= sp.travel) return o;
     if (W.done < 0) { W.done = 0; W.S = { ...a.pos }; }
@@ -480,9 +763,9 @@ function dmSimulate() {
   const code = S.rig.retail ? S.rig.retail.code : ((S.mod && S.mod.character) || {}).based_on || '';
   const stand = dmStand(); DM.hurt = stand.hurt;
   const a = ACT.makeActor(v3(0, H, 0), 0, ACT.specOf(code), stand.refY); a.aimY = stand.aimY;
-  const f = dmFoe(v3(0, H, DM.dist), Math.PI);
+  const f = dmFoe(v3(0, Math.max(0, H + DM.above), DM.dist), Math.PI);   // above / below the attacker, never under the floor
   const frames = [], hits = [], hitAt = new Map(), prevSph = new Map(), notes = [];
-  const magi = dmMagiRecords(); let shots = []; MAGI.setSeed(1);
+  const magi = dmMagiRecords(); let shots = []; const shotLog = []; MAGI.setSeed(1);
   const poseCache = new Map(), segOf = (T) => { let i = segs.findIndex((x) => T < x.start + x.len); return i < 0 ? segs.length - 1 : i; };
   const poseAt = (T) => { if (!poseCache.has(T)) { const i = segOf(T); poseCache.set(T, dmPoseOf(segs[i].motion, T - segs[i].start)); } return poseCache.get(T); };
   const ti = S.boneIndex.get('trans_include');
@@ -504,8 +787,12 @@ function dmSimulate() {
     const P = poseAt(T), bi = rec.bone !== 'root' && S.boneIndex.has(rec.bone) ? S.boneIndex.get(rec.bone) : -1;   // 'root' = the character's root
     return matW(T, (bi >= 0 ? P.bones[bi] : P.root).clone().multiply(new THREE.Matrix4().makeTranslation(...(rec.pos || [0, 0, 0]))));
   };
-  const fire = (id, T, opts) => { if (hooks.hitact && id === hooks.hitact.magi) switchTo(Math.max(0, T - 1), hooks.hitact.action, `projectile ${id} spawned (hitact=)`);
-    const r = magi.get(id); if (r) shots.push(...MAGI.spawnShots(r, () => ownerAt(Math.min(T, hist.length - 1)), foeActor, { effect: effectAt(Math.min(T, hist.length - 1)), floorY: 0, ...opts }, T)); };
+  const fire = (id, T, opts) => { if (typeof hkPickMagi === 'function') id = hkPickMagi(id);   // magipick=: the member the move panel picked
+    if (hooks.hitact && id === hooks.hitact.magi) switchTo(Math.max(0, T - 1), hooks.hitact.action, `projectile ${id} spawned (hitact=)`);
+    const r = magi.get(id); if (!r) return;
+    const made = MAGI.spawnShots(r, () => ownerAt(Math.min(T, hist.length - 1)), foeActor, { effect: effectAt(Math.min(T, hist.length - 1)), floorY: 0, ...opts }, T);
+    for (const sh of made) { sh.path = []; sh.hitChain = !!opts.viaHit; shotLog.push({ id: r.id, T: sh.tick, child: !!opts.parent, hit: sh.hitChain, path: sh.path }); }   // hit: born of a link_hit (or its children)   // the flight, for the effects (dmShotAt)
+    shots.push(...made); };
   const hitRec = (id) => F(msPath('hits.json')).hits.find((x) => parseInt(x.id, 16) === id);
   const log = (T, si, h, extra = {}) => hits.push({ T, press: si, name: h.name || h.id, reaction: h.reaction, hp: !!(parseInt(h.flags, 16) & 2), power: h.power, height: f.pos.y, ...extra });
   let landedAt = null, switches = 0;
@@ -520,15 +807,24 @@ function dmSimulate() {
   };
   const threat = (si, local, lead) => {       // an attack starts within `lead` ticks in this press
     const s = segs[si], p = S.tlOfMotion.get(s.motion), t = p && F(p); if (!t) return false;
-    return t.ranged.some((e) => DM_HIT_OPS.has(opCode(e.op)) && evMode(e) && e.start > local && e.start <= local + lead) ||
-      t.keyed.some((e) => opCode(e.op) === 0x0204 && evMode(e) && e.frame > local && e.frame <= local + lead);
+    return t.ranged.some((e) => DM_HIT_OPS.has(opCode(e.op)) && evOk(e, s) && e.start > local && e.start <= local + lead) ||
+      t.keyed.some((e) => opCode(e.op) === 0x0204 && evOk(e, s) && e.frame > local && e.frame <= local + lead);
   };
   const recoilAttacker = (T, code) => {       // a blocked attack: the attacker recoils (901, 911 in the air), its move ends
     const air = a.pos.y > 0.001, mo = dmScriptMotion(air ? 911 : 901);
     const si = segOf(T); segs = segs.slice(0, si + 1); segs[si].len = T - segs[si].start + 1;
     segs.push({ motion: mo, start: T + 1, len: Math.min(80, motionLen(mo) * 2), why: 'blocked: recoil' });
     const back = vMul(ACT.fwd(a.yaw), -1);
-    a.recoil = code === 6 ? { dir: vRotY(back, Math.PI / 2), S: 2 * (2 + 3) / 16 } : { dir: back, S: code === 2 ? 0 : (2 + 3) / 16 };
+    // FUN_0884A4C4: S = (2 + 3k)/16, k from the attacker's motion time t against its latest hit window [wa, wb] so far
+    // in this script (FUN_0882FD08: wa = max start, wb = max end, an open end = the motion's end): 1 up to the window's
+    // start, falling to 0 at its end
+    const sg = segs[si], local = T - sg.start, tp = S.tlOfMotion.get(sg.motion), tl = tp && F(tp);
+    let wa = -1, wb = -1;
+    if (tl) for (const e of tl.ranged) if ((opCode(e.op) === 0x0200 || opCode(e.op) === 0x0743) && evOk(e, sg) && e.start <= local) {
+      wa = Math.max(wa, e.start); wb = Math.max(wb, e.end === FOREVER || e.end === 0xFFFF ? Math.max(local, motionLen(sg.motion) * 2) : e.end);
+    }
+    const kk = local <= wa ? 1 : local >= wb ? 0 : 1 - (local - wa) / (wb - wa), SS = (2 + 3 * kk) / 16;
+    a.recoil = code === 6 ? { dir: vRotY(back, Math.PI / 2), S: 2 * SS } : { dir: back, S: code === 2 ? 0 : SS };
     notes.push(`tick ${T}: guarded (outcome ${code}) → recoil`);
   };
   // An EX Burst holds its target: the foe is never out of reach (down, invincible) between the burst's hits. How the
@@ -541,11 +837,26 @@ function dmSimulate() {
     segs.push({ motion: mo, start: T + 1, len: motionLen(mo) * 2, why, action });
     notes.push(`tick ${T}: ${why} → action ${action} (${motionName(mo)})`);
   };
+  // the event filter's phase byte (low byte of keyed x / ranged pad): an event runs only for the press whose motion-map
+  // phase matches (a charge's three releases share one animation and fire one shot each)
+  const phCache = new Map();
+  const segPhase = (sg) => {
+    if (!sg || sg.action == null) return null;
+    if (!phCache.has(sg.action)) {
+      const a = S.actionById.get(sg.action), row = a && F(msPath('motion_map.json')).rows.find((r) => r.script === a.script && r.motion === sg.motion);
+      phCache.set(sg.action, row ? row.phase & 0xFF : null);
+    }
+    return phCache.get(sg.action);
+  };
+  const evOk = (e, sg) => { if (!evMode(e)) return false; const ph = (('pad' in e ? e.pad : e.x) || 0) & 0xFF, sp = segPhase(sg); return !ph || sp == null || ph === sp; };
+  let charged = false;
   for (let T = 0; T <= endOf(); T++) {
     const si = segOf(T), seg = segs[si], local = T - seg.start, p = S.tlOfMotion.get(seg.motion), tl = p && F(p);
+    const chg = !charged && !seg.why && typeof hkChargeOf === 'function' ? hkChargeOf(seg.motion) : null;   // charge= (charge_tick)
+    if (chg && local === hkHold(chg, HK_PREV.level)) { charged = true; switchTo(T, chg.acts[HK_PREV.level - 1], `charge= release, level ${HK_PREV.level} (held ${local} ticks)`); }
     // 1. the attacker: events, movement state, root motion, floor (docs/archive/attacker-movement)
-    const keyed = tl ? tl.keyed.filter((e) => e.frame === local && evMode(e)).map(ACT.evArgs) : [];
-    const ranged = tl ? tl.ranged.filter((e) => evMode(e) && e.start <= local && (e.end === FOREVER || local < e.end)).map(ACT.evArgs) : [];
+    const keyed = tl ? tl.keyed.filter((e) => e.frame === local && evOk(e, seg)).map(ACT.evArgs) : [];
+    const ranged = tl ? tl.ranged.filter((e) => evOk(e, seg) && e.start <= local && (e.end === FOREVER || local < e.end)).map(ACT.evArgs) : [];
     if (local === 0) {
       ACT.startMove(a, ranged);
       const act = seg.action != null && S.actionById.get(seg.action);   // plya +0x18 bit 0: a homing dash as the action starts
@@ -566,6 +877,16 @@ function dmSimulate() {
       if (hooks.landact && hooks.landact.motions.includes(seg.motion)) switchTo(T, hooks.landact.action, 'touchdown (landact=)');
       else if (landedAt == null) landedAt = T;
     }
+    if (a.groundContact) {                    // 0x0070 (Kain's dive): on the floor, the action's +0x12 script plays (FUN_08B2F054)
+      a.groundContact = false;
+      const act = seg.action != null && S.actionById.get(seg.action), ls = act ? new DataView(mvRaw(act).buffer).getUint16(0x12, true) : 0xFFFF;
+      const mo = ls && ls !== 0xFFFF ? dmScriptMotion(ls) : -1;
+      if (mo >= 0 && !seg.why && switches <= 3) {
+        switches++; const si2 = segOf(T); segs = segs.slice(0, si2 + 1); segs[si2].len = T - segs[si2].start + 1;
+        segs.push({ motion: mo, start: T + 1, len: motionLen(mo) * 2, why: `touchdown (ground_contact_switch, script ${ls})`, action: seg.action });
+        notes.push(`tick ${T}: touchdown → script ${ls} (${motionName(mo)})`);
+      }
+    }
     if (a.recoil) { a.pos = vAdd(a.pos, vMul(a.recoil.dir, a.recoil.S)); a.recoil.S *= 0.9; if (a.recoil.S < 0.005) a.recoil = null; }
     hist[T] = { pos: { ...a.pos }, yaw: a.yaw };
     // 2. the dummy moves (its reaction), then 3. the hit test against everyone's pose of this tick
@@ -573,18 +894,25 @@ function dmSimulate() {
     dmTickFoe(f, attacker(T)); dmGuardTick(f); dmDodgeTick(f);
     if (wall && dmWallCheck(f, wall, vSub(f.pos, before))) { defence.push({ T, what: 'wall rush' }); notes.push(`tick ${T}: wall rush (${f.motion})`); }
     if (wall && f.pos.z > wall.point.z - 0.3) f.pos.z = wall.point.z - 0.3;      // the wall stops the body
-    if (!a.flags.no_body_collision) {        // body push (kind-1 spheres): the resolver wasn't read; split the overlap evenly
-      const ca = v3(a.pos.x, a.pos.y + stand.refY, a.pos.z), cf = v3(f.pos.x, f.pos.y + stand.refY, f.pos.z), d = vSub(cf, ca), L = vLen(d), need = 2 * stand.refR;
-      if (L < need) {
-        let hz = v3(d.x, 0, d.z); hz = vLen(hz) > 1e-4 ? vNorm(hz) : ACT.fwd(a.yaw);
-        const o = (need - L) / 2; a.pos = vSub(a.pos, vMul(hz, o)); f.pos = vAdd(f.pos, vMul(hz, o));
-        hist[T] = { pos: { ...a.pos }, yaw: a.yaw };
-      }
+    // body push (kind-1 spheres, FUN_08833360 → FUN_0883E904): each fighter that moved this tick resolves against the
+    // other, the attacker first; a dummy in a straight flight (state 3) is never pushed; no_body_collision skips it
+    if (!a.flags.no_body_collision && !(f.move && f.move.kind === 'line')) {
+      const A1 = { heavy: !!a.flags.heavy_body, unpushable: !!a.flags.cant_be_pushed }, F1 = { heavy: false, unpushable: false };
+      const prevA = hist[T - 1] ? hist[T - 1].pos : a.pos, aMoved = vLen(vSub(a.pos, prevA)) > 1e-6, fMoved = vLen(vSub(f.pos, before)) > 1e-6;
+      const pass = (selfIsA) => {
+        const ca = v3(a.pos.x, a.pos.y + stand.refY, a.pos.z), cf = v3(f.pos.x, f.pos.y + stand.refY, f.pos.z);
+        const d = selfIsA ? dmPushVec(ca, stand.refR, cf, stand.refR) : dmPushVec(cf, stand.refR, ca, stand.refR); if (!d) return;
+        const [ds, dO] = selfIsA ? dmPushSplit(d, A1, F1) : dmPushSplit(d, F1, A1);
+        if (selfIsA) { a.pos = vAdd(a.pos, ds); f.pos = vAdd(f.pos, dO); } else { f.pos = vAdd(f.pos, ds); a.pos = vAdd(a.pos, dO); }
+      };
+      if (aMoved || !fMoved) pass(true);
+      if (fMoved) pass(false);
+      hist[T] = { pos: { ...a.pos }, yaw: a.yaw };
     }
     if (burst) f.inv = 0;
     let shown = []; const seen = new Set();
     if (tl && DM.group) tl.ranged.forEach((e, idx) => {
-      const c = opCode(e.op); if (!DM_HIT_OPS.has(c) || !evMode(e) || !(e.start <= local && (e.end === FOREVER || local < e.end))) return;
+      const c = opCode(e.op); if (!DM_HIT_OPS.has(c) || !evOk(e, seg) || !(e.start <= local && (e.end === FOREVER || local < e.end))) return;
       const h = hitOf(e.hit), group = e.group ?? argsOf(e)[1]; if (!h) return;
       const key = si + ':' + idx; seen.add(key);
       const now = dmSpheres(poseAt(T), group).filter((s) => s.kind === 4).map((s) => ({ ...s, c: toW(T, s.c) }));
@@ -603,18 +931,19 @@ function dmSimulate() {
       if (c === 0x0743 && e.projectile != null) fire(e.projectile, T + 1, {});
     });
     for (const k of [...prevSph.keys()]) if (!seen.has(k)) prevSph.delete(k);
-    if (tl) for (const e of tl.keyed) if (opCode(e.op) === 0x0204 && e.frame === local && evMode(e)) fire(e.projectile ?? argsOf(e)[0], T, { arg2: (e.args || [])[0] });
+    if (tl) for (const e of tl.keyed) if (opCode(e.op) === 0x0204 && e.frame === local && evOk(e, seg)) fire(e.projectile ?? argsOf(e)[0], T, { arg2: (e.args || [])[0] });
     const next = [], drawn = [];
     for (const sh of shots) {
       if (sh.tick > T) { next.push(sh); continue; }
       const o = MAGI.stepShot(sh, foeActor());
-      let ev = o.events;
+      if (sh.path) sh.path.push({ T, p: { ...sh.pos }, d: { ...sh.dir } });
+      let ev = o.events; const onHit = new Set();
       if (o.hit && o.hit.fresh && f.guard) {
         const h = hitRec(o.hit.atkp), g = h && dmGuardResolve(f, [{ c: o.hit.c || sh.pos, r: o.hit.r || 0.2 }], h, vNorm(v3(sh.dir.x, 0, sh.dir.z)), guardSphere());
         if (g && g.blocked) { log(T, si, h, { proj: sh.rec.id, guarded: g.attacker }); continue; }
       }
       if (o.hit && o.hit.fresh && f.inv <= 0 && dmShotTouch(o.hit, f)) {
-        ev = ev.concat(MAGI.shotContact(sh));
+        const ce = MAGI.shotContact(sh); ce.forEach((x) => onHit.add(x)); ev = ev.concat(ce);
         const h = hitRec(o.hit.atkp);
         if (h && !DM_NO_HURT.has(h.class)) {
           const d = v3(sh.dir.x, 0, sh.dir.z);
@@ -622,7 +951,7 @@ function dmSimulate() {
         }
       }
       const pull = MAGI.magiPull(sh, foeActor()); if (pull) f.pos = vAdd(f.pos, pull);
-      for (const e2 of ev) fire(e2.fire, T + 1, { parent: e2.parent });
+      for (const e2 of ev) fire(e2.fire, T + 1, { parent: e2.parent, viaHit: sh.hitChain || onHit.has(e2) });
       if (o.alive && sh.state <= 2) { next.push(sh); drawn.push({ c: { ...sh.pos }, r: o.hit ? o.hit.r : 0.15, live: !!o.hit }); }
     }
     shots = next;
@@ -634,7 +963,7 @@ function dmSimulate() {
       spheres: shown, hurt: dmHurt(f), shots: drawn, apos: { ...a.pos }, ayaw: a.yaw, astate: a.state });
   }
   if (keep) { view.root.position.copy(keep.p); view.root.rotation.y = keep.r; view.root.updateMatrixWorld(true); }
-  return { frames, hits, defence, wall, total: endOf(), H, landedAt, spec: a.spec, segs, extra: segs.filter((x) => x.why), notes, move: S.step ? S.step.move : -1 };
+  return { frames, hits, defence, wall, shotLog, total: endOf(), H, landedAt, spec: a.spec, segs, extra: segs.filter((x) => x.why), notes, move: S.step ? S.step.move : -1 };
 }
 
 /* ---------------------------------------------------------------- drawing */
@@ -656,21 +985,42 @@ function dmEnsureMeshes() {
 function dmShow(on) {
   if (DM_BODY.root) DM_BODY.root.visible = on && !!S.gmo && DM_BODY.gmo === S.gmo;
   if (!on && view.root && (view.root.position.lengthSq() || view.root.rotation.y)) { view.root.position.set(0, 0, 0); view.root.rotation.y = 0; view.root.updateMatrixWorld(true); DM.cam = null; }
-  if (!DM.mesh) return; DM.mesh.visible = DM.path.visible = DM.marks.visible = DM.vols.visible = on;
+  if (!DM.mesh) return; DM.mesh.visible = DM.path.visible = DM.marks.visible = on;
+  DM.vols.visible = on && (typeof hbOn !== 'function' || hbOn());   // the spheres follow View → Hitboxes
 }
 function dmPlaceAttacker(fr, H) {           // the character where the simulation has him (root motion, homing, falls)
   view.root.position.set(fr.apos.x, fr.apos.y - H, fr.apos.z); view.root.rotation.y = fr.ayaw; view.root.updateMatrixWorld(true);
   const mid = new THREE.Vector3((fr.apos.x + fr.pos.x) / 2, 1.1 + Math.min(fr.apos.y, fr.pos.y) - H, (fr.apos.z + fr.pos.z) / 2);
-  if (DM.cam && !(typeof GCAM !== 'undefined' && GCAM.on)) { const d = mid.clone().sub(DM.cam); view.camera.position.add(d); view.controls.target.add(d); view.controls.update(); }
-  DM.cam = mid;                               // the camera keeps both in view as they travel
+  // Follow on: the camera keeps both fighters in view as they travel; off, it stays where you put it (2026-11-01:
+  // it used to follow with Follow off, and then framed empty space late in Blitz Attack)
+  if ($('camFollow') && $('camFollow').checked && !(typeof GCAM !== 'undefined' && GCAM.on) && (typeof camFree !== 'function' || camFree()))
+    dmFrameBoth(new THREE.Vector3(fr.apos.x, fr.apos.y - H, fr.apos.z), new THREE.Vector3(fr.pos.x, fr.pos.y - H, fr.pos.z), mid);
+  DM.cam = mid;
+}
+/* aim at the point between them from the same direction, far enough back that both bodies fit the field of view; your
+   own zoom stays unless they need more room (a zoom since the last framing becomes the new least distance) */
+function dmFrameBoth(A, B, mid) {
+  const c = view.camera, t = view.controls.target, dir = c.position.clone().sub(t); let dist = dir.length();
+  if (!(dist > 1e-3) || !(c.aspect > 0)) return;          // (a hidden viewport, the Character tab's art, has no width)
+  dir.divideScalar(dist);
+  if (DM.camSet == null || Math.abs(dist - DM.camSet) > 1e-3) DM.camBase = dist;
+  const f = dir.clone().negate(), right = new THREE.Vector3().crossVectors(f, c.up).normalize(), up = new THREE.Vector3().crossVectors(right, f);
+  const half = B.clone().sub(A).multiplyScalar(0.5), tv = Math.tan(c.fov * Math.PI / 360), th = tv * c.aspect;
+  const need = Math.max((Math.abs(half.dot(right)) + 1.5) / th, (Math.abs(half.dot(up)) + 1.3) / tv) + Math.abs(half.dot(dir));
+  const d = Math.min(150, Math.max(DM.camBase, need)); if (!isFinite(d)) return;
+  t.copy(mid); c.position.copy(mid).addScaledVector(dir, d); view.controls.update(); DM.camSet = d;
 }
 function dmRefresh() {                        // called after every pose: re-simulate when needed, draw at the playhead
-  const info = $('dmInfo');
-  if (!DM.on || !S.gmo || !view.root || S.fxEdit) { dmShow(false); if (info) info.hidden = true; return; }
+  const info = $('dmInfo'), card = $('dmCard');     // the Inspector's dummy card: its set-up, then what happens at the playhead
+  if (!DM.on || !S.gmo || !view.root || S.fxEdit) { dmShow(false); if (card) card.hidden = true; dmApocStraight(); return; }
   dmEnsureMeshes();
   const key = dmKey();
   if (key !== DM.key) {
-    DM.key = key; DM.sim = dmSimulate();
+    // the run before an edit (only S.gen differs in the key) stays as the readout's "since edit" baseline
+    // (edits clear DM.key to force a run, so the key of the last run is kept apart: DM.simKey)
+    const was = DM.sim, same = (() => { try { const a = JSON.parse(DM.simKey), b = JSON.parse(key); a[4] = b[4] = 0; return JSON.stringify(a) === JSON.stringify(b); } catch (e) { return false; } })();
+    if (key !== DM.simKey) DM.prev = same && was ? was : null;
+    DM.key = DM.simKey = key; DM.sim = dmSimulate(); DM.apoc = dmApocAssign(DM.sim);
     pose0();                                  // the simulation posed other ticks: back to the playhead
     const H = DM.sim.H;
     const pts = DM.sim.frames.map((fr) => new THREE.Vector3(fr.pos.x, fr.pos.y - H + 0.85, fr.pos.z));
@@ -694,7 +1044,7 @@ function dmRefresh() {                        // called after every pose: re-sim
   dmShow(true);
   const T = Math.min(DM.sim.frames.length - 1, Math.round(dmNowTick())), fr = DM.sim.frames[T];
   const H = DM.sim.H;
-  dmPlaceAttacker(fr, H);
+  dmPlaceAttacker(fr, H); dmApocPlace(T);
   DM.mesh.position.set(fr.pos.x, fr.pos.y - H, fr.pos.z); DM.mesh.rotation.y = fr.facing;
   if (S.gmo) {                                 // the character copy playing its reaction
     const B = dmBodyEnsure();
@@ -715,12 +1065,12 @@ function dmRefresh() {                        // called after every pose: re-sim
     const m = new THREE.Mesh(new THREE.SphereGeometry(Math.max(0.08, s.r), 12, 8), new THREE.MeshBasicMaterial({ color: 0xffd27a, wireframe: !s.live, transparent: true, opacity: s.live ? 0.35 : 0.5 }));
     m.position.set(s.c.x, s.c.y - H, s.c.z); DM.vols.add(m);
   }
-  for (const s of fr.hurt || []) {            // the dummy's hurt spheres
-    const m = new THREE.Mesh(new THREE.SphereGeometry(s.r, 12, 8), new THREE.MeshBasicMaterial({ color: 0x8fd3ff, wireframe: true, transparent: true, opacity: 0.45 }));
+  for (const s of fr.hurt || []) {            // the dummy's hurt spheres (green, as the attacker's)
+    const m = new THREE.Mesh(new THREE.SphereGeometry(s.r, 12, 8), new THREE.MeshBasicMaterial({ color: 0x6fd39b, wireframe: true, transparent: true, opacity: 0.45 }));
     m.position.set(s.c.x, s.c.y - H, s.c.z); DM.vols.add(m);
   }
+  if (card) card.hidden = false;
   if (info) {
-    info.hidden = false;
     const got = DM.sim.hits.filter((h) => h.T <= T), last = got[got.length - 1], landed = got.filter((x) => !x.guarded).length, guarded = got.length - landed;
     const st = { guard: 'guarding', dodge: 'dodging', wall: 'wall rush', idle: 'standing', stun: 'hit-stun', launched: 'knocked', air: 'in the air', falling: 'falling', down: 'down', recovering: 'landing' }[fr.state] || fr.state;
     const stTip = { dodge: 'invincible 0–20', wall: 'pinned, invincible', down: 'invincible' }[fr.state] || '';
@@ -730,7 +1080,11 @@ function dmRefresh() {                        // called after every pose: re-sim
     const row = (k, v, tip) => `<span class="dmc-k">${k}</span><span class="dmc-v"${tip ? ` title="${esc(tip)}"` : ''}>${esc(v)}</span>`;
     info.innerHTML = `<div class="dmc"><div class="dmc-who"><b>Dummy</b><span class="dmc-st dmc-${esc(fr.state)}"${stTip ? ` title="${esc(stTip)}"` : ''}>${esc(st)}</span></div>
       <div class="dmc-grid">${row('Can act', fr.canAct > 0 && isFinite(fr.canAct) ? 'in ' + Math.ceil(fr.canAct) : 'now')}${row('Height', fr.pos.y.toFixed(2) + ' m')}${row('Hits', DM.sim.hits.length ? `${landed} / ${DM.sim.hits.length}${guarded ? ` (${guarded} guarded)` : ''}` : '—')}${row('Distance', vLen(v3(fr.pos.x - fr.apos.x, 0, fr.pos.z - fr.apos.z)).toFixed(1) + ' m')}</div>
-      <div class="dmc-grid dmc-wide">${row('Last hit', lastTxt, lastTxt)}</div></div>
+      <div class="dmc-grid dmc-wide">${row('Last hit', lastTxt, lastTxt)}${(() => {   // knock-back since the last edit, at this frame
+        const P = DM.prev && DM.prev.frames, q = P && P[Math.min(P.length - 1, T)]; if (!q) return '';
+        const d = vLen(v3(fr.pos.x - fr.apos.x, 0, fr.pos.z - fr.apos.z)) - vLen(v3(q.pos.x - q.apos.x, 0, q.pos.z - q.apos.z));
+        return Math.abs(d) < 0.05 ? '' : row('Since edit', (d > 0 ? '+' : '−') + Math.abs(d).toFixed(1) + ' m', 'Distance at this frame compared with before your last edit');
+      })()}</div></div>
       <div class="dmc"><div class="dmc-who"><b>${esc((S.mod && S.mod.character && S.mod.character.name) || 'Attacker')}</b><span class="dmc-st">${esc(ast)}</span>${notes.length ? `<span class="dmc-note" title="${esc(notes.join('\n'))}">${notes.length === 1 ? '1 note' : notes.length + ' notes'}</span>` : ''}</div>
       <div class="dmc-grid">${row('Height', fr.apos.y.toFixed(2) + ' m')}${row('Travelled', vLen(v3(fr.apos.x, 0, fr.apos.z)).toFixed(1) + ' m')}</div></div>`;
   }
@@ -739,7 +1093,7 @@ const pose0 = () => { poseMotion(S.gmo, view, S.motion, S.frame); if (typeof upd
 function dmWire() {
   const on = $('dmOn'), d = $('dmDist'), h = $('dmHeight'); if (!on) return;
   on.onchange = async () => {
-    DM.on = on.checked; $('dmOpts').hidden = !DM.on;
+    DM.on = on.checked;
     if (DM.on && !DM.group) await dmLoadVolumes();
     if (DM.on) {                              // a side view, so both fighters and the gap between them show
       const c = view.camera, t = view.controls.target, mid = DM.dist / 2;
@@ -751,6 +1105,7 @@ function dmWire() {
   const dd = $('dmDoes'); if (dd) { dd.innerHTML = DM_DOES.map(([v, l]) => `<option value="${v}">${l}</option>`).join(''); dd.onchange = () => { DM.does = dd.value; dmRefresh(); }; }
   const dw = $('dmWall'); if (dw) dw.onchange = () => { DM.wall = dw.value === '' ? null : Math.max(0.5, parseFloat(dw.value) || 0); dmRefresh(); };
   h.onchange = () => { DM.height = h.value === '' ? null : Math.max(0, parseFloat(h.value) || 0); dmRefresh(); };
+  const ab = $('dmAbove'); if (ab) ab.onchange = () => { DM.above = parseFloat(ab.value) || 0; dmRefresh(); };
 }
 async function dmRigChanged() { DM.group = null; DM.key = ''; if (DM.on) { await dmLoadVolumes(); dmRefresh(); } }
 dmWire();

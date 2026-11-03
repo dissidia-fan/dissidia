@@ -80,9 +80,10 @@ static auto g_time_base = std::chrono::steady_clock::now();
 
 extern std::atomic<uint64_t> g_vclock_us;
 extern bool g_vclock_on;
+extern std::atomic<int64_t> g_clock_skew_us;   // fast-forward (psp_hle_display.cpp): the game's clock runs ahead
 static uint64_t get_system_time_us() {
     if (g_vclock_on) return g_vclock_us.load() + 1000000;
-    auto now = std::chrono::steady_clock::now();
+    auto now = std::chrono::steady_clock::now() + std::chrono::microseconds(g_clock_skew_us.load());
     return static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::microseconds>(
             now - g_time_base).count());

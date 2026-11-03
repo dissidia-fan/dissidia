@@ -3,6 +3,8 @@
 #include "psp_render_queue.h"
 #include "psp_scheduler.h"
 #include "psp_ge_draw.h"
+#include "psp_settings.h"
+#include "hle/psp_savedata_dialog.h"   // on-screen keyboard: host typing
 
 #include <SDL.h>
 #include <glad/glad.h>
@@ -45,6 +47,8 @@ static void gl_debug_install() {
 #include <cstdlib>
 #include <cstring>
 #include <algorithm>
+#include <string>
+#include <unistd.h>
 
 // --- Global state definitions (declared extern in psp_runtime.h) ---
 std::atomic<bool> g_should_exit{false};
@@ -215,6 +219,13 @@ uint8_t axis_to_psp_raw(int16_t v) {
 
 // Recompute the published host state from all sources.
 void publish_input() {
+    // The settings menu takes all input while open (and until it is released after closing).
+    if (psp_settings_block_input(g_kb_buttons | g_pad_buttons | g_pad_triggers)) {
+        g_host_buttons.store(0, std::memory_order_relaxed);
+        g_host_analog.store(0x8080, std::memory_order_relaxed);
+        g_host_ranalog.store(0x8080, std::memory_order_relaxed);
+        return;
+    }
     g_host_buttons.store(g_kb_buttons | g_pad_buttons | g_pad_triggers,
                          std::memory_order_relaxed);
     g_host_ranalog.store(static_cast<uint32_t>(axis_to_psp_raw(g_rx_raw)) |
@@ -292,8 +303,66 @@ static void toggle_fullscreen(SDL_Window* w) {
         std::fprintf(stderr, "[RT] fullscreen toggle failed: %s\n", SDL_GetError());
 }
 
+// ---- On-screen keyboard: host text input and the Steam Deck keyboard -------
+// While the game's keyboard dialog is open, SDL text input is on (typed text goes to the dialog, see
+// handle_sdl_event) and, on a Steam Deck, Steam's own keyboard is shown through its steam:// link (the same
+// link SDL and ISteamUtils::ShowFloatingGamepadTextInput use; Mode=0 = single line, so its Enter key sends
+// Enter, which finishes the name, and closes it). The game runs in a distrobox container, so the link is
+// opened on the host with distrobox-host-exec. PSPRECOMP_STEAM_KEYBOARD=1 forces it on, =0 off; by default
+// it is on when Steam sets SteamDeck=1.
+static bool steam_keyboard_wanted() {
+    if (const char* e = std::getenv("PSPRECOMP_STEAM_KEYBOARD")) return e[0] && e[0] != '0';
+    const char* d = std::getenv("SteamDeck");
+    return d && d[0] == '1';
+}
+static void steam_keyboard(bool show) {
+    static const bool wanted = steam_keyboard_wanted();
+    if (!wanted) return;
+    const char* url = show ? "steam://open/keyboard?XPosition=0&YPosition=0&Width=0&Height=0&Mode=0"
+                           : "steam://close/keyboard";
+    const bool in_box = std::getenv("CONTAINER_ID") || access("/run/.containerenv", F_OK) == 0;
+    std::string cmd = in_box ? "distrobox-host-exec steam '" : "steam '";
+    cmd += url;
+    cmd += "' >/dev/null 2>&1 &";
+    const int rc = std::system(cmd.c_str());
+    std::fprintf(stderr, "[OSK] Steam keyboard %s (%s, rc %d)\n", show ? "open" : "close", in_box ? "host" : "local", rc);
+}
+static void osk_tick() {
+    static bool was = false;
+    const bool now = psp_sddialog::osk_active();
+    if (now == was) return;
+    was = now;
+    if (now) SDL_StartTextInput(); else SDL_StopTextInput();
+    steam_keyboard(now);
+}
+
 // Handle one SDL event: window close, keyboard and game controller state.
 static void handle_sdl_event(const SDL_Event& ev) {
+    {   // settings menu first: its hotkey is swallowed; opening / closing re-gates the game's input
+        const bool was_open = psp_settings_menu_open();
+        const bool eaten = psp_settings_handle_event(ev);
+        if (was_open != psp_settings_menu_open()) publish_input();
+        if (eaten) return;
+    }
+    if (psp_sddialog::osk_active()) {   // the on-screen keyboard is open: the host keyboard types into it
+        if (ev.type == SDL_TEXTINPUT) {
+            const unsigned char* t = reinterpret_cast<const unsigned char*>(ev.text.text);
+            for (size_t i = 0; t[i];) {   // UTF-8 -> code points (Latin text only is kept by the dialog)
+                uint32_t cp = t[i];
+                int n = cp < 0x80 ? 1 : (cp >> 5) == 6 ? 2 : (cp >> 4) == 14 ? 3 : (cp >> 3) == 30 ? 4 : 1;
+                if (n > 1) { cp &= 0xFFu >> (n + 1); for (int k = 1; k < n && t[i + k]; ++k) cp = (cp << 6) | (t[i + k] & 63u); }
+                psp_sddialog::osk_push_key(cp);
+                i += size_t(n);
+            }
+            return;
+        }
+        if (ev.type == SDL_KEYDOWN && !(ev.key.keysym.mod & (KMOD_ALT | KMOD_GUI | KMOD_CTRL))) {
+            const SDL_Keycode k = ev.key.keysym.sym;
+            if (k == SDLK_BACKSPACE || k == SDLK_DELETE) { psp_sddialog::osk_push_key(8); return; }
+            if (k == SDLK_RETURN || k == SDLK_KP_ENTER) { if (!ev.key.repeat) psp_sddialog::osk_push_key(13); return; }
+            if (k >= 32 && k < 127) return;   // arrives as SDL_TEXTINPUT; must not also press a PSP button
+        }
+    }
     switch (ev.type) {
     case SDL_QUIT:
         g_should_exit.store(true);
@@ -384,6 +453,9 @@ int psp_runtime_init_sdl() {
     g_trig_r_mask      = parse_button_set("PSPRECOMP_PAD_R2", P_R);
     // Keep pad input flowing even when the window is unfocused.
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+    // Text input is only wanted while the on-screen keyboard is open, and SDL must not summon the
+    // Steam Deck keyboard by itself (SDL_StartTextInput does on a Deck): steam_keyboard() below does it.
+    SDL_SetHint("SDL_ENABLE_SCREEN_KEYBOARD", "0");
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) != 0) {
         std::fprintf(stderr,
             "[RT] SDL_Init failed: %s\n", SDL_GetError());
@@ -468,6 +540,8 @@ int psp_runtime_init_sdl() {
         return 1;
     }
 
+    SDL_StopTextInput();   // started while the on-screen keyboard is open (osk_tick)
+
     // 5. Load GL function pointers via GLAD2 (MUST be after context creation)
     //    GLAD2 requires a loader function; SDL2 provides SDL_GL_GetProcAddress.
     if (!gladLoadGL((GLADloadfunc)SDL_GL_GetProcAddress)) {
@@ -522,6 +596,10 @@ void psp_event_loop(uint8_t* rdram) {
         // 2b. Service any pending debug-socket screenshot request here on
         //     the main (GL) thread — the socket thread never touches GL.
         ge_draw_service_screenshot_request();
+
+        // 2c. Settings menu: input repeat, drawing and presenting while the game is paused.
+        psp_settings_tick();
+        osk_tick();
 
         // 3. Check if any game threads are still alive
         if (g_alive_threads.load() == 0) {

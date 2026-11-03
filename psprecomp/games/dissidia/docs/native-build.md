@@ -22,7 +22,11 @@ The Steam Deck has its own, `deck_setup.sh`. The steps by hand:
    `<workdir>/build/psprecomp_runtime`. Re-running it is safe. Add `--jobs 2` if it runs out of memory.
 3. `run.sh` starts the game with the right environment. Saves are in `<workdir>/ms0/PSP/SAVEDATA/`.
    Gamepads work out of the box (A = Cross); `--swap-ab` swaps confirm/cancel. Keyboard: arrows, X/Z/A/S,
-   Q/W, Space = Start, Tab = Select.
+   Q/W, Space = Start, Tab = Select. `--quick-battle` loads the save and goes straight to the Quick Battle
+   (1-on-1) character select: `tools/quick_battle.py` presses the buttons through the runtime's debug socket,
+   checking each screen in a screenshot first (a press the game drops in a fade is pressed again), with the
+   game fast-forwarded for the trip (the debug socket's `FF`, see DEBUGGING.md), then the game is yours at its
+   own speed. It needs a save in `ms0` (without one the game starts as usual).
 
 If something fails, the scripts say what is missing. This is a work-in-progress preview: see
 [Status](#status) for what does and does not work yet.

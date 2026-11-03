@@ -6,6 +6,8 @@
 //   g++ -std=c++17 -I<repo>/runtime/include -I<repo>/work/output/include -I<repo>/games/dissidia/runtime
 //       -o /tmp/test_land_action test_land_action.cpp; /tmp/test_land_action
 #include "../runtime/roster.cpp"
+int dissidia_frame_ticks() { return 2; }              // the 60 fps clock (dissidia_main.cpp): not used here
+float dissidia_own_clock_scale() { return 1.0f; }
 #include <map>
 #include <cstdlib>
 
@@ -195,6 +197,31 @@ int main() {
     set_motion(NOC, 10041, 55, ROWS); W32(NOC + 0x101Cu, 0);
     touchdown(NOC);
     CHECK(g_sa_calls == 4 && R32(NOC + 0x101Cu) == REC3024);
+    // 11. two landact= tokens (Greatsword Down Strike and the Trident of the Oracle dive): each motion starts its own
+    //     action; a motion in neither is a plain landing
+    make_table(MS_N, TAB_N, {{1934, 10003}, {1949, 10040}, {1950, 10041}, {3024, 10096}, {3034, 10106}, {3035, 10107}});
+    const uint32_t REC3035 = rec_addr(TAB_N, 5);
+    install("34 noc100 9 landact=3024,54,55 landact=3035,94");
+    CHECK(g_hooks.count(0x08833C98u) && g_hooks.count(0x0884A294u));
+    {
+        const int sa0 = g_sa_calls;
+        set_motion(NOC, 10106, 94, ROWS); W32(NOC + 0x101Cu, 0);
+        touchdown(NOC);
+        CHECK(g_sa_calls == sa0 + 1 && R32(NOC + 0x101Cu) == REC3035 && R16(NOC + 0x180) == 10107);
+        set_motion(NOC, 10040, 54, ROWS); W32(NOC + 0x101Cu, 0);
+        touchdown(NOC);
+        CHECK(g_sa_calls == sa0 + 2 && R32(NOC + 0x101Cu) == rec_addr(TAB_N, 3) && R16(NOC + 0x180) == 10096);
+        set_motion(NOC, 10050, 59, ROWS); W32(NOC + 0x101Cu, 0);
+        touchdown(NOC);
+        CHECK(g_sa_calls == sa0 + 2 && R16(NOC + 0x180) == 102);
+    }
+    // 12. a fifth token is refused, the first four stay; a bad one among them does not stop the others
+    install("34 noc100 9 landact=1,1 landact=x,2 landact=2,2 landact=3,3 landact=4,4 landact=5,5");
+    {
+        const Entry* e = nullptr;
+        for (const Entry& x : g_entries) if (x.charId == 34) e = &x;
+        CHECK(e && e->nland == 4 && e->lands[0].act == 1 && e->lands[1].act == 2 && e->lands[3].act == 4);
+    }
     std::printf("ok test_land_action (%d touchdowns, %d actions started, %d engine selector calls)\n", g_td_calls, g_sa_calls, g_sel_calls);
     return 0;
 }
