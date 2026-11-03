@@ -60,8 +60,8 @@ own `mod.json` holds just its data: `charmod.py` and the Move Studio write it wi
 | `fx_shaders` | the character's shader overrides (merged into fx_shaders/manifest.json) |
 
 ### `move_names` fields
-`build` merges every mod's `move_names` into `games/dissidia/extra_abilities.json` (local, not in git: rebuilt from the
-mod folders), and `roster_mainbin.py` / `new_character.py` apply that file when they rebuild main.bin. The copied `ablt`
+`build` merges every mod's `move_names` into `<mods dir>/extra_abilities.json` (`work/mods/`, next to `roster.txt`; rebuilt
+from the mod folders, and each mods dir has its own, so a second work dir or a scratch build never changes another's), and `roster_mainbin.py` / `new_character.py` apply that file when they rebuild main.bin. The copied `ablt`
 records of the character get new records in the name table (`general_archive/main/<lang>/main_lang.bin` -> ability.bin)
 and in the help pack (`text/<lang>/mess_pk_customize_ability_0.bin`, entry 0), and their +2 / +4 text ids point at them.
 Table and reasons: [roster.md](roster.md).
@@ -78,7 +78,9 @@ Table and reasons: [roster.md](roster.md).
     lines ('Additional Effect: chase'), `{like}` = all of it; `{effect:X}` / `{effects:X}` = an orange
     'Additional Effect: X' / 'Effects: X' line.
 - Record kind, optional (left out, the based-on character's values stay): `type` brave / hp (+0x16), `phase` ground /
-  midair / follow-up (+0x17), `after` the ability it follows up (+6, `null` = none).
+  midair / follow-up (+0x17), `after` the ability it follows up (+6, `null` = none): always one of the character's own keys (`"01"`), never a full id, because a mod's charId depends on which other mods are installed. An old full id (`"2201"`) is read by its last two digits. A follow-up is also unlocked by mastering its `after` (system.bin `amas`, as every retail
+  HP follow-up is), which puts the yellow diamond on that attack in the Command Chart; an inherited `amas` entry for an
+  ability that no longer follows anything up is dropped (`roster_mainbin.sync_followup_unlocks`).
 - `copy`: `"0F"` ADDS an ability the based-on character does not have under this key: a copy of the character's record
   0F with `cmd` (required) as its command id; `learn`: N lists it in the character's `chrl` row at level N
   (`roster_mainbin.add_new_abilities`). Its move is the objx comb command `cmd` (battle looks the record's +12 up in the

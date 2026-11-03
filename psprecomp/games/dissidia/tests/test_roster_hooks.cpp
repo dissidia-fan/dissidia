@@ -13,6 +13,8 @@ static std::vector<uint8_t> g_ram(0x08000000u);
 std::string dissidia_mods_dir() { return "/nonexistent"; }
 FuncPtr ovl_menu_lookup(uint32_t) { return nullptr; }
 FuncPtr ovl_battle_lookup(uint32_t) { return nullptr; }
+int dissidia_frame_ticks() { return 2; }               // framerate.cpp: 30 Hz battle logic
+float dissidia_own_clock_scale() { return 1.0f; }
 thread_local uint32_t g_func_ring[32];
 thread_local uint32_t g_func_ring_pos;
 void psp_dump_func_ring(const char*) {}
@@ -230,6 +232,57 @@ int main() {
         CHECK(R16(vl) == 0x2105 && R16(vl + 6) == 0xFFFF);                                  // only its own ids
         own(5, 0, 0); own(6, 0, 0); own(7, 0, 0);
         std::printf("learn-all ok\n");
+    }
+    // 9. a character's record follows its code, not its charId: saved with Noctis at 34, loaded after a reinstall that
+    // gave Noctis 33 and the other mod 34. Noctis gets his record (moved to 33); the mod now at 34 does not get it.
+    {
+        reset_extra_records();
+        call(34);
+        R(noc)[1] = 61; g_saverec_state[34 - kFirstNew] = REC_OWN;
+        W16(noc + 0x10 + 0x3DE, 0x220C);
+        param(3, "GameData00", 0); run_sd();
+        std::vector<uint8_t> sc = get_file(SIDE0);
+        CHECK(sc.size() == 0x60 + (8 + 0x778) + 8 && sc[0x60] == 34 && sc[0x61] == 9 && std::memcmp(sc.data() + 0x62, "noc100", 6) == 0);
+        Entry* en = nullptr; Entry* ev = nullptr;
+        for (Entry& e : g_entries) { if (e.code == "noc100") en = &e; if (e.code == "viv100") ev = &e; }
+        CHECK(en && ev && en->charId == 34 && ev->charId == 33);
+        en->charId = 33; ev->charId = 34;
+        const uint32_t noc33 = noc - 0x778u;               // charId 33's private record
+        param(0, "GameData00", 0); run_sd();
+        CHECK(g_saverec_state[33 - kFirstNew] == REC_OWN && g_saverec_state[34 - kFirstNew] == REC_FOLLOW);
+        const uint8_t* m = R(noc33);
+        CHECK(m[0] == 33 && m[1] == 61 && m[0x10 + 0x762] == 33);
+        for (int s = 0; s < 5; s++) CHECK(m[0x10 + 0xC6 * s + 0xB6] == 33);
+        CHECK(R16(noc33 + 0x10 + 0x3DE) == 0x210C && R16(noc33 + 0x10 + 0x3DE + 6) == 0x4025);   // own ids moved, shared kept
+        R(BARTZ + 0x1000)[1] = 12; CHECK(R(call(34))[1] == 12 && R(noc)[0] == 34);            // the mod at 34 follows its like
+        // an older sidecar (no codes): by charId, and only for the same like. charId 34 is now a mod based on 21: skipped
+        std::vector<SidecarRecord> rs;
+        std::vector<uint8_t> cur = get_file(SD + "/ULES01505GameData00/DISSIDIA.BIN");
+        CHECK(sidecar_decode(sc, fnv1a64(cur.data(), cur.size()), kMainSaveBytes, &rs).empty() && rs.size() == 1 && rs[0].code == "noc100");
+        rs[0].code.clear();
+        put_file(SIDE0, sidecar_encode(fnv1a64(cur.data(), cur.size()), kMainSaveBytes, "ULES01505GameData00", "DISSIDIA.BIN", rs));
+        param(0, "GameData00", 0); run_sd();
+        CHECK(g_saverec_state[33 - kFirstNew] == REC_FOLLOW && g_saverec_state[34 - kFirstNew] == REC_FOLLOW);
+        en->charId = 34; ev->charId = 33;                  // ... and with Noctis back at 34 the same old sidecar is his
+        param(0, "GameData00", 0); run_sd();
+        CHECK(g_saverec_state[34 - kFirstNew] == REC_OWN && R(noc)[1] == 61 && R(noc)[0] == 34);
+        // a character that is not installed keeps its record through a load and a save, and gets it back when it returns
+        param(3, "GameData00", 0); run_sd();                                   // saved with codes again
+        en->code = "zzz100";                                                   // Noctis's folder removed, another mod at 34
+        param(0, "GameData00", 0); run_sd();
+        CHECK(g_saverec_state[34 - kFirstNew] == REC_FOLLOW && g_parked.size() == 1 && g_parked[0].code == "noc100");
+        put_file(SD + "/ULES01505GameData00/DISSIDIA.BIN", save0);             // the player plays on and saves
+        param(3, "GameData00", 0); run_sd();
+        sc = get_file(SIDE0);
+        CHECK(sidecar_decode(sc, fnv1a64(save0.data(), save0.size()), kMainSaveBytes, &rs).empty() && rs.size() == 1 &&
+              rs[0].code == "noc100" && rs[0].rec[1] == 61);
+        en->code = "noc100"; en->charId = 33; ev->charId = 34;                // back, in another slot
+        param(0, "GameData00", 0); run_sd();
+        CHECK(g_parked.empty() && g_saverec_state[33 - kFirstNew] == REC_OWN && R(noc33)[1] == 61 && R(noc33)[0] == 33);
+        ctx = recomp_context{}; ctx.r[4] = OBJ + 0xF58; g_hooks[0x088CB210u](g_ram.data(), &ctx);   // New Game drops parked ones too
+        CHECK(g_parked.empty());
+        en->charId = 34; ev->charId = 33;
+        std::printf("charId-independent records ok\n");
     }
     std::printf("ok test_roster_hooks\n");
     return 0;

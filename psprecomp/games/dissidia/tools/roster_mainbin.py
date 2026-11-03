@@ -3,7 +3,7 @@
 
     roster_mainbin.py <disc0 or DATA dir> <mods dir> [--roster roster.txt]
                       [--char 34] [--like 9] [--code NOC100] [--max 43] [--first 34] [--objs new:src,...] [--check]
-                      [--names extra_abilities.json | --names none]
+                      [--names PATH | --names none]   (default <mods dir>/extra_abilities.json)
 
 Characters come from `<mods>/roster.txt` (the file the runtime reads: lines `<charId> <code> [like] ...`,
 every charId >= 34 is built) or, without a roster file, from --char/--like/--code for one character.
@@ -50,7 +50,7 @@ attacks at all and can never leave the screen ("no HP attacks enabled"). For eve
   The save record of an extra character is a copy of <like>'s that the runtime (roster.cpp saverec_hook) moves to the
   new owner the same way (record byte 0, ability block +0x762 and set +0xB6, learned ids).
 
-Ability names (games/dissidia/extra_abilities.json, --names PATH, --names none to skip; table in docs/roster.md). An
+Ability names (<mods>/extra_abilities.json, --names PATH, --names none to skip; table in docs/roster.md). An
 'ablt' record names its ability with two u16 text ids: +2 = a record of the name table (general_archive/main/<lang>/
 main_lang.bin, an MPK the boot loader FUN_0893354C reads once into a 512 KiB buffer; member 'ability.bin', a mess_text
 string table, 1307 retail records) and +4 = a record of entry 0 of text/<lang>/mess_pk_customize_ability_0.bin (the
@@ -60,7 +60,7 @@ code the name map lists, the tool appends the new names and help texts to both t
 package has; this package has only 'en') and points that character's records at them; retail records keep their ids
 and bytes, and a map entry whose 'cmd' differs from the record's command id is skipped. An entry may also change the
 record's kind: "type" (brave / hp, +0x16), "phase" (ground / midair / follow-up, +0x17) and "after" (+6, the ability
-it follows up, null = none), and its cost: "cp" (CP to equip, +0x0E; "cp_mastered" +0x10, default half), "ap" (AP to
+it follows up: the character's own key, "01"; null = none), and its cost: "cp" (CP to equip, +0x0E; "cp_mastered" +0x10, default half), "ap" (AP to
 master, +0x12) and "bonus" (the equip bonus, +0x14: a system.bin 'fncs' effect-set id, null = none); "learn": N on an
 ability the like has moves it to level N of the 'chrl' row (set_learn_levels). An entry with "disabled": true takes the ability out of the kit but keeps its record
 (owner byte 0xFE, command -2: not listed, does nothing in battle; see disable_abilities). An entry with "copy" adds an ability the like does not have: a copy of the character's
@@ -471,7 +471,7 @@ ABLT_TYPES = {"brave": 0, "hp": 1}
 ABLT_CP, ABLT_CP_MASTERED, ABLT_AP, ABLT_BONUS = 0x0E, 0x10, 0x12, 0x14   # s16 CP to equip (before / after mastering),
 # s16 AP to master, s16 equip bonus = a system.bin 'fncs' effect-set id (-1 none); docs/archive/ablt-fields
 ABLT_PHASES = {"ground": 0, "midair": 1, "follow-up": 0xFF}
-ABILITY_NAMES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "extra_abilities.json")
+ABILITY_NAMES = "extra_abilities.json"   # in the mods dir (charmod.py build writes it there, next to roster.txt)
 HELP_LINES, HELP_WIDTH, NAME_WIDTH = 3, 35, 31          # the largest retail help text / name (characters shown)
 EFFECT_PREFIX = "\x10Łａ"                      # orange 'Additional Effect: ...' / 'Effects: ...' line
 NAME_TOKENS = {"{ground}": "\x11P(ground)\x11d", "{midair}": "\x11P(midair)\x11d"}
@@ -591,10 +591,11 @@ class AbilityTexts:
         return out
 
 
-def load_names_and_texts(read, path=None, required=False):
-    """(name map, AbilityTexts) for build(), or (None, None) when there is no name map (path 'none', or the default file
-    missing). read: package read(path) -> bytes. required: a missing file is an error (an explicit --names PATH)."""
-    path = ABILITY_NAMES if path is None else path
+def load_names_and_texts(read, mods, path=None, required=False):
+    """(name map, AbilityTexts) for build(), or (None, None) when there is no name map (path 'none', or <mods>/
+    extra_abilities.json missing). read: package read(path) -> bytes. required: a missing file is an error (an explicit
+    --names PATH)."""
+    path = os.path.join(mods, ABILITY_NAMES) if path is None else path
     if path == "none":
         return None, None
     if not os.path.exists(path):
@@ -607,16 +608,23 @@ def load_names_and_texts(read, path=None, required=False):
     return load_ability_names(path), texts
 
 
-def after_id(v, char):
-    """An entry's "after": null = none; an ability id ("2201", 0x2201); or a key of the character's own name map
-    ("01", as the Move Studio writes it), which is (char << 8) | key."""
+def after_id(v, char, log=None):
+    """An entry's "after": null = none, else always one of the character's own abilities, by its name-map key ("01",
+    as the Move Studio writes it; 1), which is (char << 8) | key. Never absolute: a mod's charId depends on the other
+    mods installed, so a full id ("2201") is read by its last two digits too (a log line says so when its charId part
+    is not this character's), and a follow-up stays on its brave attack whatever charId the character gets."""
     if v in (None, "", "none"):
         return 0xFFFF
     if isinstance(v, str):
         t = v.strip().lower()
-        t = t[2:] if t.startswith("0x") else t
-        return (char << 8) | int(t, 16) if len(t) <= 2 else int(t, 16)
-    return int(v)
+        n = int(t[2:] if t.startswith("0x") else t, 16)
+    else:
+        n = int(v)
+    if not 0 <= n <= 0xFFFF:
+        raise SystemExit("ablt: 'after' %r is not an ability key" % (v,))
+    if n > 0xFF and n >> 8 != char and log:
+        log("ablt names: 'after' %r is read as charId %d's own ability %04X (keys are per character)" % (v, char, (char << 8) | (n & 0xFF)))
+    return (char << 8) | (n & 0xFF)
 
 
 def apply_ability_names(aents, chars, names, texts, log=print):
@@ -650,9 +658,8 @@ def apply_ability_names(aents, chars, names, texts, log=print):
                 r[ABLT_TYPE] = ABLT_TYPES[str(ent["type"]).lower()]
             if "phase" in ent:                      # ground / midair / follow-up of the +6 ability (+0x17)
                 r[ABLT_PHASE] = ABLT_PHASES[str(ent["phase"]).lower()]
-            if "after" in ent:                      # prerequisite ability (+6): null = none, else an ability id
-                v = ent["after"]
-                struct.pack_into("<H", r, ABLT_AFTER, after_id(v, char))
+            if "after" in ent:                      # prerequisite ability (+6): null = none, else one of its own keys
+                struct.pack_into("<H", r, ABLT_AFTER, after_id(ent["after"], char, log))
             if ent.get("cp") is not None:           # CP to equip (+0x0E); once mastered (+0x10) defaults to half, rounded down
                 cp = int(ent["cp"])
                 struct.pack_into("<hh", r, ABLT_CP, cp, int(ent["cp_mastered"]) if ent.get("cp_mastered") is not None else cp // 2)
@@ -783,6 +790,63 @@ def set_learn_levels(aents, chars, names, log=print):
     if moved:
         by["chrl"][2] = level_table_bytes(head, rows)
     return moved
+
+
+AMAS_ONE = 1                    # u16 at +2 of every retail attack 'amas' entry {u16 unlocks, 1, u16 needs, u16 0xFFFF}
+
+
+def sync_followup_unlocks(aents, chars, names, log=print):
+    """The 'amas' attack entries of each roster character follow its HP follow-ups. In retail every attack entry of
+    'amas' (34) is a follow-up unlocked by mastering an attack, almost always the one it follows up (+6): Bartz's Flare
+    0907 by Holy 0906, Rune Saber 010D by Ascension 0100. The Command Chart marks an attack that unlocks one with a
+    yellow diamond. A row copied from the like keeps the like's entries, so:
+      * an entry unlocking an ability that no longer follows anything up (+6 = 0xFFFF) is dropped. Noctis's 2307
+        Greatsword Down Strike (Bartz's Flare made a brave move of its own) was still unlocked by mastering Dagger Strike
+        2306, which showed the diamond;
+      * a name-map entry that makes an ability a follow-up ("after", or a "copy" whose record follows one up) gets the
+        entry "mastering its +6 unlocks it" (added, or the prerequisite of its entry replaced), so its brave attack shows
+        the diamond (Katana of the Warrior after Armiger Assault).
+    Support entries (0x40nn) and entries of retail follow-ups the map does not touch stay as they are (Onion Knight's
+    chains unlock by the previous follow-up). Returns {ability id: the attack that unlocks it, None = dropped}."""
+    by = {e[0]: e for e in aents}
+    blob = by["ablt"][2]
+    n = struct.unpack_from("<I", blob, 8)[0]
+    after = {struct.unpack_from("<H", blob, 16 + ABLT_REC * i)[0]: struct.unpack_from("<H", blob, 16 + ABLT_REC * i + ABLT_AFTER)[0]
+             for i in range(n)}
+    head, rows = parse_level_table(by["amas"][2], "amas")
+    done = {}
+    for char, code, _like in chars:
+        table = names.get((code or "").lower()) or {}
+        want = {}
+        for k, ent in table.items():
+            aid = (char << 8) | k
+            if ("after" in ent or "copy" in ent) and after.get(aid, 0xFFFF) != 0xFFFF:
+                want[aid] = after[aid]
+        w3, ents = rows.get(char, (0, []))
+        new = []
+        for e in ents:
+            aid, need = struct.unpack_from("<H", e, 0)[0], struct.unpack_from("<H", e, 4)[0]
+            if aid >> 8 == char and after.get(aid, 0xFFFF) == 0xFFFF:
+                done[aid] = None
+                log("amas: charId %d: %04X no longer follows anything up, no longer unlocked by mastering %04X" % (char, aid, need))
+                continue
+            if aid in want:
+                if need != want[aid]:
+                    e = bytearray(e)
+                    struct.pack_into("<H", e, 4, want[aid])
+                    done[aid] = want[aid]
+                    log("amas: charId %d: %04X unlocked by mastering %04X (was %04X)" % (char, aid, want[aid], need))
+                del want[aid]
+            new.append(bytes(e))
+        for aid, need in sorted(want.items()):
+            new.append(struct.pack("<4H", aid, AMAS_ONE, need, 0xFFFF))
+            done[aid] = need
+            log("amas: charId %d: %04X unlocked by mastering %04X (its brave attack shows the diamond)" % (char, aid, need))
+        if new != list(ents):
+            rows[char] = (w3, sorted(new, key=lambda e: struct.unpack_from("<H", e, 0)[0]))
+    if done:
+        by["amas"][2] = level_table_bytes(head, rows)
+    return done
 
 
 def disable_abilities(aents, chars, names, log=print):
@@ -977,6 +1041,8 @@ def build(data, chars, rmax=ROSTER_MAX, log=print, min_id=FIRST_NEW, objs=None, 
         apply_ability_names(aents, chars, names, texts, log)
     if names:
         set_learn_levels(aents, chars, names, log)
+    if names:                                    # after the kinds ("after") are set, before disabling drops entries
+        sync_followup_unlocks(aents, chars, names, log)
     if names:                                    # last: the naming above looks records up by owner and command
         disable_abilities(aents, chars, names, log)
     chrp[2] =bytes(chd[:4]) + struct.pack("<I", len(recs)) + b"".join(bytes(r) for r in recs)
@@ -1032,7 +1098,7 @@ def main(argv):
         if "code" in opt and len(chars) == 1:
             chars = [(chars[0][0], opt["code"], chars[0][2])]
     rowmap = {}
-    names, texts = load_names_and_texts(pk.read, opt.get("names"), required="names" in opt)
+    names, texts = load_names_and_texts(pk.read, args[1], opt.get("names"), required="names" in opt)
     out = build(data, chars, rmax, min_id=int(opt.get("first", FIRST_NEW)), objs=objs, objs_char=objs_char, rowmap_out=rowmap,
                 names=names, texts=texts)
     text_files = texts.files(print) if texts else {}  # before anything is written: exits if a table no longer fits

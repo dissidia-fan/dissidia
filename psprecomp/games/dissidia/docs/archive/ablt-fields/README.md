@@ -32,7 +32,9 @@ To reproduce: capstone (pip) plus `roster_mainbin.mpk_unpack/arc_unpack/AbilityT
 The "Additional Effect: chase / wall rush" line and the [Close]/[Mid]/[Long] tag are text only (help text +0x04); the
 record has no field for them. The actual chase / wall rush behaviour comes from the move's objx / hit data. The level at
 which an attack is learned is not in 'ablt' but in 'chrl' (CLEV: {u8 level, u8 flags, u16 id x3}); 'amas' lists what
-mastering one ability unlocks.
+mastering one ability unlocks. Every retail attack entry of 'amas' (34) is an HP follow-up unlocked by
+mastering an attack, almost always its +6; the Command Chart marks that attack with a yellow diamond (3 Nov 2026: a
+stale copied entry put the diamond on Noctis's Dagger Strike, and his own follow-ups had none until entries were added).
 
 Save side (for reference): a character's learned list is at save record +0x3DE, 150 entries of 6 bytes {s16 id, s16 AP,
 u16 flags}; flag 2 = mastered (FUN_088B8414 searches it).

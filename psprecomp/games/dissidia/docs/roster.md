@@ -675,24 +675,29 @@ Back it up together with `ms0/PSP/SAVEDATA`.
   (`[ROSTER] save data created anew (New Game): ...`).
 * **File layout** (little endian):
   * header: `"DSRSTR01"`, u32 0x60, u32 0x778, u64 data file hash, u32 data file size, u32 n, char dir[32], char file[16], 8 zero bytes;
-  * n x {u8 charId, u8 like, 6 zero bytes, the 0x778-byte record};
+  * n x {u8 charId, u8 like, char code[6] (zero padded; all zero in files written before 3 Nov 2026), the 0x778-byte record};
   * u64 FNV-1a of everything before it.
 * **Checked offline.** `tests/run_roster_hooks_test.sh` includes roster.cpp with fake stubs and a temporary ms0. It covers the
   ablt hook, the private records, and these sidecar cases: save then restart then load; stale and damaged sidecars; two slots;
   New Game; and the ignored cases (cancel, import, listing, failed save). Not yet run in game.
-* **To do (with the next new character): key the sidecar by character code, not charId.** Slots are per machine (each
-  install's `readme_newchars.json`; `work/mods` is not in git since 29 Oct 2026), so a save copied between the Mac and the
-  Deck can put an extra's record on whoever has that charId there. Plan: a `DSRSTR02` layout whose entries also carry the
-  6-character code (the 6 zero bytes after `like` fit it); on load, find the code's charId in this install's roster and keep
-  records of codes that are not installed for when they come back; `DSRSTR01` files still load by charId and are rewritten
-  as 02 at the next save. Add "same code, other slot" and "code not installed" cases to `run_roster_hooks_test.sh`, then
-  check it in game (save on one slot layout, load on another).
+* **Keyed by character code, not charId (3 Nov 2026).** Slots are given per install (`readme_newchars.json`), so the same
+  character can be 34 on one machine and 35 on another, or move when other mods come and go. Each entry carries the
+  character's code in the 6 bytes after `like` (codes are at most 6 characters). On load a record goes to the installed
+  character with that code; if its charId changed, `move_saverec` rewrites the charId byte and the owner bytes (the same
+  rewrite `derive_saverec` does from the like), with the log line `noc100's record was saved as charId 34, it is charId 33
+  now: moved over`. A record whose character is not installed is kept (`is not installed, its record (Lv N) is kept with
+  the save`) and written back at the next save, until a New Game or the load of another save. Files without codes still
+  load by charId, and only into a character with the same like. The magic stays `DSRSTR01`: the code bytes used to be zero,
+  so older runtimes read new files and this one reads old files. Covered by case 9 of `run_roster_hooks_test.sh` (slots
+  swapped between save and load, a sidecar without codes, a character removed and reinstalled in another slot). Not yet
+  checked in game.
 
 ### The extras' own ability names and help texts, 19 Oct
 
 The copied `ablt` records used to keep the like's text ids, so an extra's Abilities screen showed the like's move names.
 
-* `roster_mainbin.py` (and `new_character.py`) now apply `games/dissidia/extra_abilities.json`. They append the new names to
+* `roster_mainbin.py` (and `new_character.py`) now apply `extra_abilities.json` (since 3 Nov 2026 in the mods dir; it was
+  `games/dissidia/extra_abilities.json`, shared by every mods dir). They append the new names to
   `general_archive/main/<lang>/main_lang.bin` -> `ability.bin` and the help texts to entry 0 of
   `text/<lang>/mess_pk_customize_ability_0.bin`.
 * They point the records' +2 / +4 at the new texts and write both files next to main.bin. `--names none` = the old output.
@@ -777,8 +782,10 @@ Each extra character's Abilities screen used to show the names of the character 
 that `tools/roster_mainbin.py` copies for an extra kept the like's text ids. Now they point at text records of their own.
 
 * **Source:** each mod's `move_names` in `mods/<name>/mod.json` (format: character-mods.md, *`move_names` fields*).
-  `charmod.py build` merges them into `games/dissidia/extra_abilities.json`, a name map per roster code; that file is
-  local (not in git) and rewritten by every build, so don't edit it.
+  `charmod.py build` merges them into `<mods dir>/extra_abilities.json`, a name map per roster code, next to the
+  `roster.txt` and main.bin it goes with; it is rewritten by every build, so don't edit it. main.bin is rebuilt when it
+  changes, so it belongs to one mods dir: a scratch build into another dir used to rewrite the shared
+  `games/dissidia/` copy and stop the real dir's next build from rebuilding main.bin. A copy left there is no longer read.
 * **Applied by:** `tools/roster_mainbin.py` (and `tools/new_character.py`, which calls it) whenever they rebuild main.bin.
   `--names PATH` uses another map; `--names none` builds main.bin as before (byte-identical to the 19 Oct
   `db12385b...` file).

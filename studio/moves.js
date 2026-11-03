@@ -124,7 +124,7 @@ function mvMoveHTML() {
     <div class="field"><label>Starts on</label>${seg('phase', MV_PHASES.map(([v, l]) => [v, PHASE[v] || l]), k.phase)}</div>`;
   if (k.phase === 'follow-up') {
     const opts = Object.entries(mvNames()).filter(([kk, v]) => !kk.startsWith('_') && v && kk !== m.info.key)
-      .map(([kk, v]) => `<option value="${kk}"${String(e.after || '').toUpperCase().replace(/^0X/, '') === kk ? ' selected' : ''}>${esc(v.name || v.was || kk)} (${kk})</option>`).join('');
+      .map(([kk, v]) => `<option value="${kk}"${String(e.after || '').toUpperCase().replace(/^0X/, '').slice(-2) === kk ? ' selected' : ''}>${esc(v.name || v.was || kk)} (${kk})</option>`).join('');
     h += `<div class="field"><label>Follows up</label><select id="mvAfter"${ro}><option value="">(as copied)</option>${opts}</select></div>`;
   }
   if (!k.type || !k.phase) h += `<p class="note">${S.abilities && Object.keys(S.abilities).length ? '' : 'Set the game ISO to see what the copied record has. '}Unset = as the copied ${esc((S.mod.character || {}).based_on || 'retail')} record has it.</p>`;

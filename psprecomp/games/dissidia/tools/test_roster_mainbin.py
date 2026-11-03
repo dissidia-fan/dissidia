@@ -256,8 +256,16 @@ def test_ability_names():
         raise AssertionError("a 36-character help line must be refused")
     except SystemExit:
         pass
-    names, texts = R.load_names_and_texts(lambda p: (_ for _ in ()).throw(KeyError(p)))   # no text tables: no names
-    assert (names, texts) == (None, None)
+    # the name map is the mods dir's own <mods>/extra_abilities.json (a scratch build or another work dir has its own)
+    import tempfile
+    with tempfile.TemporaryDirectory() as mods, tempfile.TemporaryDirectory() as other:
+        with open(os.path.join(mods, "extra_abilities.json"), "w") as f:
+            f.write('{"noc100": {"07": {"cmd": "0xAC", "name": "X"}}}')
+        names, texts = R.load_names_and_texts(lambda p: (_ for _ in ()).throw(KeyError(p)), mods)   # no text tables: no names
+        assert (names, texts) == (None, None)
+        names, texts = R.load_names_and_texts(text_package(), mods)
+        assert names is not None and texts is not None and 0x07 in names["noc100"]
+        assert R.load_names_and_texts(text_package(), other) == (None, None)                      # that dir has none
 
 
 def test_ability_kind():
@@ -283,6 +291,52 @@ def test_ability_kind():
     assert a_new[0x2202] == a_old[0x2202]
     assert any("2207 type 0 phase 01 after FFFF" in line for line in log), log
     assert all(a_new[aid] == a_old[aid] for aid in a_new if aid >> 8 != 34)             # retail records untouched
+
+
+def test_after_is_own_key():
+    """'after' is never absolute: a key ("02", 2) or a full id ("2202", "0x2202") all name the character's own ability
+    02, so a follow-up stays on its brave attack when the character lands on another charId (a mod built at 34 and
+    installed next to another mod, so at 35); a full id of another charId is logged."""
+    assert R.after_id(None, 0x23) == 0xFFFF and R.after_id("none", 0x23) == 0xFFFF
+    for v in ("02", "0x02", 2, "2302", "0x2302"):
+        assert R.after_id(v, 0x23) == 0x2302, v
+    log = []
+    assert R.after_id("2202", 0x23, log.append) == 0x2302 and len(log) == 1 and "2302" in log[0], log
+    assert R.after_id("2302", 0x23, log.append) == 0x2302 and len(log) == 1          # its own charId: no line
+    try:
+        R.after_id("12345", 0x23)
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("an id over 0xFFFF must be refused")
+    base = main_bin()
+    m = {"noc100": {0x06: {"cmd": "0xAB", "after": "2202"}}}                       # written when Noctis was 34
+    for cid in (34, 35):
+        out = R.build(base, [(cid, "noc100", 9)], log=lambda *_: None, min_id=33, names=m, texts=R.AbilityTexts(text_package()))
+        r6 = ablt_records(tables(out)["ablt"])[(cid << 8) | 0x06]
+        assert struct.unpack_from("<H", r6, R.ABLT_AFTER)[0] == (cid << 8) | 0x02, cid
+
+
+def test_followup_unlocks():
+    """'amas' attack entries follow the follow-ups: Flare 0x2207 made a brave move of its own (after null) is no longer
+    unlocked by mastering 0x2206 (the stale entry showed a diamond on that attack); 0x220C made a follow-up of 0x2202
+    is unlocked by mastering 0x2202 (its diamond); the support entry and the like's row stay; the row stays sorted."""
+    base = main_bin()
+    plain = R.build(base, [(34, "noc100", 9)], log=lambda *_: None, min_id=33)
+    _h, rows = R.parse_level_table(tables(plain)["amas"], "amas")
+    assert rows[34][1] == [amas_entry(0x2207, 0x2206), amas_entry(0x4004, 0x4003)]          # copied from Bartz's
+    m = {"noc100": {0x07: {"cmd": "0xAC", "type": "brave", "phase": "midair", "after": None},
+                    0x0C: {"cmd": "0xA2", "type": "hp", "phase": "follow-up", "after": "02"}}}
+    log = []
+    out = R.build(base, [(34, "noc100", 9)], log=log.append, min_id=33, names=m, texts=R.AbilityTexts(text_package()))
+    _h, rows = R.parse_level_table(tables(out)["amas"], "amas")
+    assert rows[34][1] == [amas_entry(0x220C, 0x2202), amas_entry(0x4004, 0x4003)], [e.hex() for e in rows[34][1]]
+    assert rows[9][1] == AMAS[9] and rows[1][1] == AMAS[1]                                    # retail rows untouched
+    assert any("2207 no longer follows anything up" in line for line in log), log
+    # a name map that only renames keeps the copied entries as they are
+    out = R.build(base, [(34, "noc100", 9)], log=lambda *_: None, min_id=33, names={"noc100": {0x07: {"cmd": "0xAC", "name": "X"}}},
+                  texts=R.AbilityTexts(text_package()))
+    assert R.parse_level_table(tables(out)["amas"], "amas")[1][34][1] == [amas_entry(0x2207, 0x2206), amas_entry(0x4004, 0x4003)]
 
 
 def test_new_ability():
@@ -407,6 +461,6 @@ def test_ability_cost_and_learn():
 
 if __name__ == "__main__":
     for t in (test_level_table_round_trip, test_abilities, test_game_row_limit, test_mess_text_off4, test_ability_names,
-              test_ability_kind, test_new_ability, test_disabled_ability, test_ability_cost_and_learn):
+              test_ability_kind, test_after_is_own_key, test_followup_unlocks, test_new_ability, test_disabled_ability, test_ability_cost_and_learn):
         t()
         print("ok", t.__name__)
