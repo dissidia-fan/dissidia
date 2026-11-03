@@ -12,11 +12,9 @@ You need your own copy of the game as an `.iso` or `.cso`. The European PSN rele
 
 No terminal needed. In Desktop Mode (Steam button > Power > Switch to Desktop):
 
-1. On GitHub (signed in; the repository is private), open `psprecomp/games/dissidia/tools/deck_gui.sh` and click **Download raw file**. It lands in your Downloads folder.
+1. On GitHub, open `psprecomp/games/dissidia/tools/deck_gui.sh` and click **Download raw file**. It lands in your Downloads folder.
 2. In Dolphin, right-click it > Properties > Permissions > tick **Is executable**. Then double-click it and choose **Execute**.
-3. Follow the dialogs. It downloads the project into `~/dissidia/repo` (GitHub asks for your user name and an access token; you can let the Deck remember them), asks for your game file (`.iso` or `.cso`, from the Deck, an SD card or a USB stick; it is placed at `~/dissidia/game.iso`), builds the game with a progress bar and adds **Dissidia Trēdecim** to Steam.
-
-The first build takes a while (tens of minutes). Keep the Deck plugged in; it is kept awake until the build is done. If it stops part-way, choose Install again; finished steps are skipped.
+3. Follow the dialogs. It downloads the project into `~/dissidia/repo`, asks for your game file (`.iso` or `.cso`, from the Deck, an SD card or a USB stick; it is placed at `~/dissidia/game.iso`), builds the game with a progress bar and adds **Dissidia Trēdecim** to Steam.
 
 Then switch back to Game Mode and start **Dissidia Trēdecim** from your library.
 
