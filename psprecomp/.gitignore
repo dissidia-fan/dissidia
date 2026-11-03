@@ -61,7 +61,7 @@ Thumbs.db
 vtable_miss_addresses.txt
 
 # NID database is fetched locally, not committed
-data/
+/data/
 
 # Issue-52 integration gate scratch outputs
 tmp-out/
