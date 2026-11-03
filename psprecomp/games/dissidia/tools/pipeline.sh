@@ -232,6 +232,16 @@ fi
 
 # ---------------------------------------------------------------- 4. cmake build
 step "Configuring runtime build ($WORK/build)"
+# A build dir configured from another checkout (repo moved, re-cloned, or a second clone sharing
+# this workdir) makes cmake refuse to run. Drop just the cache so it reconfigures from this one.
+if [ -f "$WORK/build/CMakeCache.txt" ]; then
+  CACHED_SRC=$(sed -n 's/^CMAKE_HOME_DIRECTORY:INTERNAL=//p' "$WORK/build/CMakeCache.txt")
+  THIS_SRC=$(cd "$REPO/runtime" && pwd -P)
+  if [ -n "$CACHED_SRC" ] && [ "$(cd "$CACHED_SRC" 2>/dev/null && pwd -P || echo "$CACHED_SRC")" != "$THIS_SRC" ]; then
+    echo "Build dir was configured from $CACHED_SRC; reconfiguring from $THIS_SRC"
+    rm -rf "$WORK/build/CMakeCache.txt" "$WORK/build/CMakeFiles"
+  fi
+fi
 cmake -B "$WORK/build" -S "$REPO/runtime" -DCMAKE_BUILD_TYPE=Release $(command -v ccache >/dev/null && echo -DCMAKE_CXX_COMPILER_LAUNCHER=ccache) \
   -DPSPRECOMP_GAME=dissidia -DPSPRECOMP_OUTPUT_DIR="$WORK/output" \
   "-DPSPRECOMP_OVERLAY_DIRS=$WORK/overlays/battle;$WORK/overlays/menu;$WORK/overlays/extra;$WORK/overlays/supacc"
