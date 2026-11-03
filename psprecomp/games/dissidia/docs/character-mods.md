@@ -60,8 +60,8 @@ own `mod.json` holds just its data: `charmod.py` and the Move Studio write it wi
 | `fx_shaders` | the character's shader overrides (merged into fx_shaders/manifest.json) |
 
 ### `move_names` fields
-`build` merges every mod's `move_names` into `games/dissidia/extra_abilities.json` (local, not in git: rebuilt from the
-mod folders), and `roster_mainbin.py` / `new_character.py` apply that file when they rebuild main.bin. The copied `ablt`
+`build` merges every mod's `move_names` into `<mods dir>/extra_abilities.json` (`work/mods/`, next to `roster.txt`; rebuilt
+from the mod folders, and each mods dir has its own, so a second work dir or a scratch build never changes another's), and `roster_mainbin.py` / `new_character.py` apply that file when they rebuild main.bin. The copied `ablt`
 records of the character get new records in the name table (`general_archive/main/<lang>/main_lang.bin` -> ability.bin)
 and in the help pack (`text/<lang>/mess_pk_customize_ability_0.bin`, entry 0), and their +2 / +4 text ids point at them.
 Table and reasons: [roster.md](roster.md).

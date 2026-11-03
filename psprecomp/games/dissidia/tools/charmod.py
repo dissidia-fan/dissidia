@@ -47,7 +47,7 @@ GAME = os.path.normpath(os.path.join(HERE, '..'))
 REPO = os.path.normpath(os.path.join(GAME, '..', '..'))
 ROOT = os.path.normpath(os.path.join(REPO, '..'))                       # the repo root: mods/, studio/, blender/
 MODS_SRC = os.environ.get('CHARMOD_SRC') or os.path.join(ROOT, 'mods')   # CHARMOD_SRC: another folder of mods (tests)
-ABILITIES = os.path.join(GAME, 'extra_abilities.json')   # not in the public tree: the first build writes it
+ABILITIES = 'extra_abilities.json'   # in the game mods dir, next to roster.txt: the move names that dir was built with
 DEF_MODS = os.path.join(REPO, 'work', 'mods')
 DEF_DISC = os.path.join(REPO, 'work', 'disc0')
 FX_MANIFEST = 'fx_shaders/manifest.json'
@@ -73,9 +73,11 @@ def rj(p):
         return json.load(f)
 
 
-def read_abilities():
-    """extra_abilities.json, or {} before a build first writes it (the file is local, not in the public tree)."""
-    return rj(ABILITIES) if os.path.exists(ABILITIES) else {}
+def read_abilities(mods):
+    """<mods>/extra_abilities.json, or {} before a build first writes it. It belongs to the mods dir it was built for
+    (as roster.txt and main.bin do), so two work dirs, or a scratch build, never share one."""
+    p = os.path.join(mods, ABILITIES)
+    return rj(p) if os.path.exists(p) else {}
 
 
 def wj(p, o):
@@ -750,7 +752,7 @@ def _build(a, added):
             known.add(ch(rj(os.path.join(MODS_SRC, n, 'mod.json')))['code'])
         except (OSError, ValueError, KeyError, TypeError):
             pass
-    abil = {k: v for k, v in read_abilities().items() if k.startswith('_') or k in known}
+    abil = {k: v for k, v in read_abilities(a.mods).items() if k.startswith('_') or k in known}
     for m in mod_list:
         if m.get('move_names'):
             abil[ch(m)['code']] = {k: v for k, v in m['move_names'].items() if not k.startswith('_')}
@@ -771,7 +773,7 @@ def _build(a, added):
             if os.path.exists(os.path.join(a.mods, gp)):
                 bad += 1
                 print('  differs: %s (a build takes it out: %s is no longer changed by %s)' % (gp, gp, old_retail[gp]))
-        if read_abilities() != json.loads(abil_bytes):
+        if read_abilities(a.mods) != json.loads(abil_bytes):
             bad += 1
             print('  differs: extra_abilities.json (move names)')
         print('check: %d of %d files differ from %s' % (bad, len(files) + 1, a.mods) if bad else
@@ -804,8 +806,8 @@ def _build(a, added):
         wj(rs_p, keep)
     wj(st_p, state)
     roster_changed = 'roster.txt' in changed
-    if read_abilities() != json.loads(abil_bytes):
-        write(ABILITIES, abil_bytes)
+    if read_abilities(a.mods) != json.loads(abil_bytes):
+        write(os.path.join(a.mods, ABILITIES), abil_bytes)
         roster_changed = True
         changed.append('extra_abilities.json')
     for gp in changed:
@@ -851,7 +853,7 @@ def cmd_unpack(a):
     test = dict(m, character=dict(m['character'], slot=slot), menu_ids=menu, runtime_hooks=hooks)   # mods dir state
     if roster_line(test) != ' '.join(line):
         sys.exit('cannot express the roster line in the new layout:\n  %s\n  %s' % (' '.join(line), roster_line(test)))
-    abil = read_abilities()
+    abil = read_abilities(a.mods)
     notes = {}
     for k, v in (abil.get(code) or {}).items():
         if isinstance(v, dict) and 'cmd' in v:

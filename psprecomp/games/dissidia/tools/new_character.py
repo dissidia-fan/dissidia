@@ -21,7 +21,7 @@ What it does for the slot (details and file list: docs/roster.md, "new_character
     (--logo picture, or text from --series), VS screen name/face gims, face strips, encounter name text, and the
     name record of the info panels (text/<lang>/mess_pk_chara_select_0.bin)
   * rebuilds <mods>/by_crc/93307c1c.bin (main.bin: chrp + objentry records) with roster_mainbin.py, and with it the
-    extras' own ability names / help texts from games/dissidia/extra_abilities.json (general_archive/main/<lang>/
+    extras' own ability names / help texts from <mods>/extra_abilities.json (general_archive/main/<lang>/
     main_lang.bin and text/<lang>/mess_pk_customize_ability_0.bin; docs/roster.md)
   * keeps <mods>/readme_newchars.json (ignored by the loose-file layer: the name starts with "readme"), which makes
     a re-run idempotent (same slot -> updated in place, options you leave out are inherited) and lets --remove
@@ -509,7 +509,7 @@ def rebuild_mainbin(out, pkg, mods, lines, log):
                 if objs_char is None and toks[0].isdigit():
                     objs_char = int(toks[0])
     data = pkg.read_crc(rmb.MAIN_CRC)
-    names, texts = rmb.load_names_and_texts(pkg.read)        # extra_abilities.json (if present): the extras' own ability names
+    names, texts = rmb.load_names_and_texts(pkg.read, out.mods)   # <mods>/extra_abilities.json (if present): the extras' own ability names
     new = rmb.build(data, chars, max_slots(os.path.join(HERE, "..")), log=lambda *a: None, min_id=FIRST_SLOT,
                     objs=objs or None, objs_char=objs_char, names=names, texts=texts)
     text_files = texts.files() if texts else {}

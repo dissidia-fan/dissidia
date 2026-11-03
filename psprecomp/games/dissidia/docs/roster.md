@@ -696,7 +696,8 @@ Back it up together with `ms0/PSP/SAVEDATA`.
 
 The copied `ablt` records used to keep the like's text ids, so an extra's Abilities screen showed the like's move names.
 
-* `roster_mainbin.py` (and `new_character.py`) now apply `games/dissidia/extra_abilities.json`. They append the new names to
+* `roster_mainbin.py` (and `new_character.py`) now apply `extra_abilities.json` (since 3 Nov 2026 in the mods dir; it was
+  `games/dissidia/extra_abilities.json`, shared by every mods dir). They append the new names to
   `general_archive/main/<lang>/main_lang.bin` -> `ability.bin` and the help texts to entry 0 of
   `text/<lang>/mess_pk_customize_ability_0.bin`.
 * They point the records' +2 / +4 at the new texts and write both files next to main.bin. `--names none` = the old output.
@@ -781,8 +782,10 @@ Each extra character's Abilities screen used to show the names of the character 
 that `tools/roster_mainbin.py` copies for an extra kept the like's text ids. Now they point at text records of their own.
 
 * **Source:** each mod's `move_names` in `mods/<name>/mod.json` (format: character-mods.md, *`move_names` fields*).
-  `charmod.py build` merges them into `games/dissidia/extra_abilities.json`, a name map per roster code; that file is
-  local (not in git) and rewritten by every build, so don't edit it.
+  `charmod.py build` merges them into `<mods dir>/extra_abilities.json`, a name map per roster code, next to the
+  `roster.txt` and main.bin it goes with; it is rewritten by every build, so don't edit it. main.bin is rebuilt when it
+  changes, so it belongs to one mods dir: a scratch build into another dir used to rewrite the shared
+  `games/dissidia/` copy and stop the real dir's next build from rebuilding main.bin. A copy left there is no longer read.
 * **Applied by:** `tools/roster_mainbin.py` (and `tools/new_character.py`, which calls it) whenever they rebuild main.bin.
   `--names PATH` uses another map; `--names none` builds main.bin as before (byte-identical to the 19 Oct
   `db12385b...` file).

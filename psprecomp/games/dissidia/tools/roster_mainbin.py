@@ -3,7 +3,7 @@
 
     roster_mainbin.py <disc0 or DATA dir> <mods dir> [--roster roster.txt]
                       [--char 34] [--like 9] [--code NOC100] [--max 43] [--first 34] [--objs new:src,...] [--check]
-                      [--names extra_abilities.json | --names none]
+                      [--names PATH | --names none]   (default <mods dir>/extra_abilities.json)
 
 Characters come from `<mods>/roster.txt` (the file the runtime reads: lines `<charId> <code> [like] ...`,
 every charId >= 34 is built) or, without a roster file, from --char/--like/--code for one character.
@@ -50,7 +50,7 @@ attacks at all and can never leave the screen ("no HP attacks enabled"). For eve
   The save record of an extra character is a copy of <like>'s that the runtime (roster.cpp saverec_hook) moves to the
   new owner the same way (record byte 0, ability block +0x762 and set +0xB6, learned ids).
 
-Ability names (games/dissidia/extra_abilities.json, --names PATH, --names none to skip; table in docs/roster.md). An
+Ability names (<mods>/extra_abilities.json, --names PATH, --names none to skip; table in docs/roster.md). An
 'ablt' record names its ability with two u16 text ids: +2 = a record of the name table (general_archive/main/<lang>/
 main_lang.bin, an MPK the boot loader FUN_0893354C reads once into a 512 KiB buffer; member 'ability.bin', a mess_text
 string table, 1307 retail records) and +4 = a record of entry 0 of text/<lang>/mess_pk_customize_ability_0.bin (the
@@ -471,7 +471,7 @@ ABLT_TYPES = {"brave": 0, "hp": 1}
 ABLT_CP, ABLT_CP_MASTERED, ABLT_AP, ABLT_BONUS = 0x0E, 0x10, 0x12, 0x14   # s16 CP to equip (before / after mastering),
 # s16 AP to master, s16 equip bonus = a system.bin 'fncs' effect-set id (-1 none); docs/archive/ablt-fields
 ABLT_PHASES = {"ground": 0, "midair": 1, "follow-up": 0xFF}
-ABILITY_NAMES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "extra_abilities.json")
+ABILITY_NAMES = "extra_abilities.json"   # in the mods dir (charmod.py build writes it there, next to roster.txt)
 HELP_LINES, HELP_WIDTH, NAME_WIDTH = 3, 35, 31          # the largest retail help text / name (characters shown)
 EFFECT_PREFIX = "\x10Łａ"                      # orange 'Additional Effect: ...' / 'Effects: ...' line
 NAME_TOKENS = {"{ground}": "\x11P(ground)\x11d", "{midair}": "\x11P(midair)\x11d"}
@@ -591,10 +591,11 @@ class AbilityTexts:
         return out
 
 
-def load_names_and_texts(read, path=None, required=False):
-    """(name map, AbilityTexts) for build(), or (None, None) when there is no name map (path 'none', or the default file
-    missing). read: package read(path) -> bytes. required: a missing file is an error (an explicit --names PATH)."""
-    path = ABILITY_NAMES if path is None else path
+def load_names_and_texts(read, mods, path=None, required=False):
+    """(name map, AbilityTexts) for build(), or (None, None) when there is no name map (path 'none', or <mods>/
+    extra_abilities.json missing). read: package read(path) -> bytes. required: a missing file is an error (an explicit
+    --names PATH)."""
+    path = os.path.join(mods, ABILITY_NAMES) if path is None else path
     if path == "none":
         return None, None
     if not os.path.exists(path):
@@ -1097,7 +1098,7 @@ def main(argv):
         if "code" in opt and len(chars) == 1:
             chars = [(chars[0][0], opt["code"], chars[0][2])]
     rowmap = {}
-    names, texts = load_names_and_texts(pk.read, opt.get("names"), required="names" in opt)
+    names, texts = load_names_and_texts(pk.read, args[1], opt.get("names"), required="names" in opt)
     out = build(data, chars, rmax, min_id=int(opt.get("first", FIRST_NEW)), objs=objs, objs_char=objs_char, rowmap_out=rowmap,
                 names=names, texts=texts)
     text_files = texts.files(print) if texts else {}  # before anything is written: exits if a table no longer fits

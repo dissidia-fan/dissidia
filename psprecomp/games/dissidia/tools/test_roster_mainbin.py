@@ -256,8 +256,16 @@ def test_ability_names():
         raise AssertionError("a 36-character help line must be refused")
     except SystemExit:
         pass
-    names, texts = R.load_names_and_texts(lambda p: (_ for _ in ()).throw(KeyError(p)))   # no text tables: no names
-    assert (names, texts) == (None, None)
+    # the name map is the mods dir's own <mods>/extra_abilities.json (a scratch build or another work dir has its own)
+    import tempfile
+    with tempfile.TemporaryDirectory() as mods, tempfile.TemporaryDirectory() as other:
+        with open(os.path.join(mods, "extra_abilities.json"), "w") as f:
+            f.write('{"noc100": {"07": {"cmd": "0xAC", "name": "X"}}}')
+        names, texts = R.load_names_and_texts(lambda p: (_ for _ in ()).throw(KeyError(p)), mods)   # no text tables: no names
+        assert (names, texts) == (None, None)
+        names, texts = R.load_names_and_texts(text_package(), mods)
+        assert names is not None and texts is not None and 0x07 in names["noc100"]
+        assert R.load_names_and_texts(text_package(), other) == (None, None)                      # that dir has none
 
 
 def test_ability_kind():

@@ -71,6 +71,7 @@ tmp-out/
 work/
 
 # Character mod folders stay local (rules in the root .gitignore, mods/ is at the repo root).
+# where builds before 3 Nov 2026 wrote the move-name map (now <mods dir>/extra_abilities.json)
 games/dissidia/extra_abilities.json
 
 # Third-party mod ports, game artwork, screenshots, run traces
