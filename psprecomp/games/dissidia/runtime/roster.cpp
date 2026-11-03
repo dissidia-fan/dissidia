@@ -904,11 +904,12 @@ uint32_t saverec_block() {
     }
     return g_saverec_block;
 }
-void derive_saverec(uint8_t* dst, const uint8_t* src, const Entry& e) {
-    std::memcpy(dst, src, kSaveRec);
-    const uint8_t from = static_cast<uint8_t>(e.like), to = static_cast<uint8_t>(e.charId);
-    dst[0] = to;
-    uint8_t* ab = dst + kRecAbil;
+// Moves a record from charId `from` to `to`: its charId byte and every owner byte (the ability block's, each set's and
+// the high byte of each learned id). That is all that ties a record to a charId, so it serves both a record derived from
+// the like's and an own record restored for a character whose charId changed (mods are given slots at install).
+void move_saverec(uint8_t* rec, uint8_t from, uint8_t to) {
+    rec[0] = to;
+    uint8_t* ab = rec + kRecAbil;
     if (ab[kAbilOwner] == from) ab[kAbilOwner] = to;
     for (uint32_t s = 0; s < kAbilSets; s++)
         if (ab[kAbilSetBytes * s + kAbilSetOwner] == from) ab[kAbilSetBytes * s + kAbilSetOwner] = to;
@@ -916,6 +917,10 @@ void derive_saverec(uint8_t* dst, const uint8_t* src, const Entry& e) {
         uint8_t* id = ab + kAbilLearned + kAbilLearnedRow * i;
         if (id[1] == from) id[1] = to;
     }
+}
+void derive_saverec(uint8_t* dst, const uint8_t* src, const Entry& e) {
+    std::memcpy(dst, src, kSaveRec);
+    move_saverec(dst, static_cast<uint8_t>(e.like), static_cast<uint8_t>(e.charId));
 }
 // The extras know all of their own attacks from the start (19 Oct: "can we set him to have all moves active?";
 // following Bartz's learned list, Noctis had a single HP attack at level 1, Hellfire). The learned list is 150 rows
@@ -1003,7 +1008,11 @@ bool reset_extra_records() {
 // every extra follow its like too.
 // File layout (little endian): header {char magic[8] "DSRSTR01", u32 header bytes 0x60, u32 record bytes 0x778, u64 data
 // file hash, u32 data file size, u32 records n, char save dir[32], char data file[16], u8 0[8]}, then n x {u8 charId,
-// u8 like, u8 0[6], 0x778-byte record}, then the u64 FNV-1a hash of everything before it. Written to <name>.tmp, then renamed.
+// u8 like, char code[6] (the character's code, zero padded; all zero in sidecars written before it), 0x778-byte record},
+// then the u64 FNV-1a hash of everything before it. Written to <name>.tmp, then renamed.
+// A record goes back to the character with its code, whatever charId it has now (a mod's charId is the slot it was given
+// at install and changes when other mods come and go): move_saverec carries it over. A sidecar without codes falls back
+// to the charId, and only for a character with the same like, so another mod in that slot never gets the record.
 constexpr uint32_t kMainSaveBytes = 0x3ECC8u;
 constexpr uint32_t SAVE_OBJECT = 0x089D712Cu, SAVE_PARTY = 0xF58u, GAME_CODE_PTR = 0x089D6010u, PARTY_INIT = 0x088CB210u;
 constexpr uint32_t NID_SD_INIT = 0x50C4CD57u, NID_SD_STATUS = 0x8874DBE0u, NID_SD_SHUTDOWN = 0x9790B33Cu;
@@ -1013,7 +1022,12 @@ constexpr int32_t SD_STATUS_FINISHED = 3;
 constexpr char kSidecarMagic[8] = {'D', 'S', 'R', 'S', 'T', 'R', '0', '1'};
 constexpr uint32_t kSidecarHeader = 0x60u, kSidecarEntry = 8u;
 
-struct SidecarRecord { uint8_t charId = 0, like = 0; std::vector<uint8_t> rec; };
+constexpr size_t kSidecarCode = 6u;                 // code bytes of an entry: roster codes are at most 6 characters
+struct SidecarRecord { uint8_t charId = 0, like = 0; std::string code; std::vector<uint8_t> rec; };
+// Records of the loaded save whose character is not installed now (its mod folder was removed or disabled): written back
+// with the next save, so the character finds its progress again when it returns. Dropped with the session's records.
+std::vector<SidecarRecord> g_parked;
+bool reset_session_records() { g_parked.clear(); return reset_extra_records(); }
 
 uint64_t fnv1a64(const uint8_t* p, size_t n) {
     uint64_t h = 0xCBF29CE484222325ull;
@@ -1067,6 +1081,7 @@ std::vector<uint8_t> sidecar_encode(uint64_t hash, uint32_t size, const std::str
     for (const SidecarRecord& r : recs) {
         b[at] = r.charId;
         b[at + 1] = r.like;
+        if (r.code.size() <= kSidecarCode) std::memcpy(b.data() + at + 2, r.code.data(), r.code.size());
         std::memcpy(b.data() + at + kSidecarEntry, r.rec.data(), kSaveRec);
         at += kSidecarEntry + kSaveRec;
     }
@@ -1087,6 +1102,7 @@ std::string sidecar_decode(const std::vector<uint8_t>& b, uint64_t hash, uint32_
         SidecarRecord r;
         r.charId = b[at];
         r.like = b[at + 1];
+        for (size_t k = 0; k < kSidecarCode && b[at + 2 + k]; k++) r.code += static_cast<char>(b[at + 2 + k]);
         r.rec.assign(b.begin() + static_cast<long>(at + kSidecarEntry), b.begin() + static_cast<long>(at + kSidecarEntry + kSaveRec));
         out->push_back(std::move(r));
     }
@@ -1142,7 +1158,7 @@ void savedata_finished(uint8_t* rdram, uint32_t p) {
     const std::string dir = savedata_dir(rdram, p, base, file, save);
     std::vector<uint8_t> data;
     if (dir.empty() || !read_host_file(base + "/" + dir + "/" + file, &data)) {
-        if (load) reset_extra_records();
+        if (load) reset_session_records();
         std::fprintf(stderr, "[ROSTER] save %s (mode %u): data file not found, extra characters' records not %s\n",
                      dir.empty() ? "?" : dir.c_str(), mode, save ? "saved" : "restored (they follow their like)");
         return;
@@ -1165,10 +1181,16 @@ void savedata_finished(uint8_t* rdram, uint32_t p) {
             SidecarRecord r;
             r.charId = static_cast<uint8_t>(e->charId);
             r.like = static_cast<uint8_t>(e->like);
+            if (e->code.size() <= kSidecarCode) r.code = e->code;
             const uint8_t* rec = rdram + ((block + kSaveRec * static_cast<uint32_t>(slot)) & 0x07FFFFFFu);
             r.rec.assign(rec, rec + kSaveRec);
             add_who(e->charId, rec);
             recs.push_back(std::move(r));
+        }
+        for (const SidecarRecord& p : g_parked) {        // characters not installed now keep their saved record
+            bool installed = false;
+            for (const Entry* e : extras()) installed = installed || e->code == p.code;
+            if (!installed && recs.size() < static_cast<size_t>(kExtraSlots)) recs.push_back(p);
         }
         const bool ok = write_host_file_atomic(side, sidecar_encode(hash, size, dir, file, recs));
         std::fprintf(stderr, "[ROSTER] save %s/%s written: %s%s %s %s\n", dir.c_str(), file.c_str(),
@@ -1179,15 +1201,33 @@ void savedata_finished(uint8_t* rdram, uint32_t p) {
     std::vector<SidecarRecord> recs;
     std::vector<uint8_t> sb;
     const std::string why = read_host_file(side, &sb) ? sidecar_decode(sb, hash, size, &recs) : "no sidecar";
-    reset_extra_records();
+    reset_session_records();
     if (!why.empty() || !block) {
         std::fprintf(stderr, "[ROSTER] save %s/%s loaded: %s (%s): the extra characters follow their like\n", dir.c_str(), file.c_str(),
                      why.empty() ? "no host memory for the records" : why.c_str(), side.c_str());
         return;
     }
-    for (const SidecarRecord& r : recs) {
-        const Entry* e = extra_of(r.charId);
-        if (!e || r.rec[0] != r.charId) continue;          // no longer in roster.txt / not that character's record
+    for (SidecarRecord& r : recs) {
+        if (r.rec[0] != r.charId) continue;                // not that charId's record
+        const Entry* e = nullptr;
+        if (!r.code.empty()) {                             // the character with this code, whatever its charId is now
+            for (const Entry* x : extras()) if (x->code == r.code) { e = x; break; }
+        } else if ((e = extra_of(r.charId)) && e->like != r.like) {
+            e = nullptr;                                   // an older sidecar: by charId, only for the same like
+        }
+        if (!e) {                                          // not installed now: kept for when it comes back
+            if (!r.code.empty()) {
+                std::fprintf(stderr, "[ROSTER] save %s/%s: %s is not installed, its record (Lv %u) is kept with the save\n",
+                             dir.c_str(), file.c_str(), r.code.c_str(), static_cast<unsigned>(r.rec[1]));
+                g_parked.push_back(std::move(r));
+            }
+            continue;
+        }
+        if (e->charId != r.charId) {
+            std::fprintf(stderr, "[ROSTER] save %s/%s: %s's record was saved as charId %d, it is charId %d now: moved over\n",
+                         dir.c_str(), file.c_str(), e->code.c_str(), r.charId, e->charId);
+            move_saverec(r.rec.data(), r.charId, static_cast<uint8_t>(e->charId));
+        }
         const uint32_t slot = static_cast<uint32_t>(e->charId - kFirstNew);
         std::memcpy(const_cast<uint8_t*>(rdram) + ((block + kSaveRec * slot) & 0x07FFFFFFu), r.rec.data(), kSaveRec);
         g_saverec_state[slot] = REC_OWN;
@@ -1220,7 +1260,7 @@ void party_init_hook(uint8_t* rdram, recomp_context* ctx) {
     const uint32_t party = static_cast<uint32_t>(ctx->r[4]), obj = g32(rdram, SAVE_OBJECT);
     g_orig_party_init(rdram, ctx);
     if (obj != 0 && party != obj + SAVE_PARTY) return;           // a scratch save object
-    if (reset_extra_records())
+    if (reset_session_records())
         std::fprintf(stderr, "[ROSTER] save data created anew (New Game): the extra characters follow their like again\n");
 }
 

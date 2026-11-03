@@ -675,18 +675,22 @@ Back it up together with `ms0/PSP/SAVEDATA`.
   (`[ROSTER] save data created anew (New Game): ...`).
 * **File layout** (little endian):
   * header: `"DSRSTR01"`, u32 0x60, u32 0x778, u64 data file hash, u32 data file size, u32 n, char dir[32], char file[16], 8 zero bytes;
-  * n x {u8 charId, u8 like, 6 zero bytes, the 0x778-byte record};
+  * n x {u8 charId, u8 like, char code[6] (zero padded; all zero in files written before 3 Nov 2026), the 0x778-byte record};
   * u64 FNV-1a of everything before it.
 * **Checked offline.** `tests/run_roster_hooks_test.sh` includes roster.cpp with fake stubs and a temporary ms0. It covers the
   ablt hook, the private records, and these sidecar cases: save then restart then load; stale and damaged sidecars; two slots;
   New Game; and the ignored cases (cancel, import, listing, failed save). Not yet run in game.
-* **To do (with the next new character): key the sidecar by character code, not charId.** Slots are per machine (each
-  install's `readme_newchars.json`; `work/mods` is not in git since 29 Oct 2026), so a save copied between the Mac and the
-  Deck can put an extra's record on whoever has that charId there. Plan: a `DSRSTR02` layout whose entries also carry the
-  6-character code (the 6 zero bytes after `like` fit it); on load, find the code's charId in this install's roster and keep
-  records of codes that are not installed for when they come back; `DSRSTR01` files still load by charId and are rewritten
-  as 02 at the next save. Add "same code, other slot" and "code not installed" cases to `run_roster_hooks_test.sh`, then
-  check it in game (save on one slot layout, load on another).
+* **Keyed by character code, not charId (3 Nov 2026).** Slots are given per install (`readme_newchars.json`), so the same
+  character can be 34 on one machine and 35 on another, or move when other mods come and go. Each entry carries the
+  character's code in the 6 bytes after `like` (codes are at most 6 characters). On load a record goes to the installed
+  character with that code; if its charId changed, `move_saverec` rewrites the charId byte and the owner bytes (the same
+  rewrite `derive_saverec` does from the like), with the log line `noc100's record was saved as charId 34, it is charId 33
+  now: moved over`. A record whose character is not installed is kept (`is not installed, its record (Lv N) is kept with
+  the save`) and written back at the next save, until a New Game or the load of another save. Files without codes still
+  load by charId, and only into a character with the same like. The magic stays `DSRSTR01`: the code bytes used to be zero,
+  so older runtimes read new files and this one reads old files. Covered by case 9 of `run_roster_hooks_test.sh` (slots
+  swapped between save and load, a sidecar without codes, a character removed and reinstalled in another slot). Not yet
+  checked in game.
 
 ### The extras' own ability names and help texts, 19 Oct
 
