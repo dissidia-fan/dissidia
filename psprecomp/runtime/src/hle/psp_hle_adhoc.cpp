@@ -842,7 +842,7 @@ void h_MStart(uint8_t* rdram, recomp_context* ctx) {
     if (!m) { ret(ctx, E_INVALID_ARG); return; }
     uint32_t optlen = ARG(5), opt = ARG(6);
     m->hello_opt.clear();
-    if (opt && optlen && optlen < 0x1000) m->hello_opt.assign(gp(rdram, opt), gp(rdram, opt) + optlen);
+    if (opt && optlen && optlen < 0x4000) m->hello_opt.assign(gp(rdram, opt), gp(rdram, opt) + optlen);
     m->started = true; m->next_hello = 0; m->next_ping = 0;
     ANOTE("matching %d started (hello opt %u bytes)", m->id, optlen);
     ret(ctx, 0);
@@ -878,7 +878,7 @@ void h_MSelect(uint8_t* rdram, recomp_context* ctx) {  // (id, mac*, optlen, opt
     Mac mac = read_mac(rdram, ARG(1));
     uint32_t optlen = ARG(2), opt = ARG(3);
     std::vector<uint8_t> o;
-    if (opt && optlen && optlen < 0x1000) o.assign(gp(rdram, opt), gp(rdram, opt) + optlen);
+    if (opt && optlen && optlen < 0x4000) o.assign(gp(rdram, opt), gp(rdram, opt) + optlen);
     auto it = m->peers.find(mac);
     int64_t t = now_us();
     if (it != m->peers.end() && it->second.s == MPeer::REQ_BY) {
@@ -926,7 +926,7 @@ void h_MSetHelloOpt(uint8_t* rdram, recomp_context* ctx) {  // (id, optlen, opt*
     if (!m) { ret(ctx, E_INVALID_ARG); return; }
     uint32_t optlen = ARG(1), opt = ARG(2);
     m->hello_opt.clear();
-    if (opt && optlen && optlen < 0x1000) m->hello_opt.assign(gp(rdram, opt), gp(rdram, opt) + optlen);
+    if (opt && optlen && optlen < 0x4000) m->hello_opt.assign(gp(rdram, opt), gp(rdram, opt) + optlen);
     ret(ctx, 0);
 }
 

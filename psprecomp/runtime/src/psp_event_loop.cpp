@@ -219,19 +219,29 @@ uint8_t axis_to_psp_raw(int16_t v) {
 
 // Recompute the published host state from all sources.
 void publish_input() {
+    // Pads work in the background (SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS), so with two instances
+    // on one machine a pad would drive both. Only the window that has the keyboard focus listens to
+    // pads (PSPRECOMP_PAD_BACKGROUND=1 restores listening while unfocused). The pad state keeps
+    // being tracked, so a held button is right again when the window regains focus.
+    static const bool pad_bg = env_flag("PSPRECOMP_PAD_BACKGROUND");
+    const bool pad_ok = pad_bg || SDL_GetKeyboardFocus() != nullptr;
+    const uint32_t pad_buttons = pad_ok ? g_pad_buttons : 0;
+    const uint32_t pad_triggers = pad_ok ? g_pad_triggers : 0;
+    const int16_t lx_raw = pad_ok ? g_lx_raw : 0, ly_raw = pad_ok ? g_ly_raw : 0;
+    const int16_t rx_raw = pad_ok ? g_rx_raw : 0, ry_raw = pad_ok ? g_ry_raw : 0;
     // The settings menu takes all input while open (and until it is released after closing).
-    if (psp_settings_block_input(g_kb_buttons | g_pad_buttons | g_pad_triggers)) {
+    if (psp_settings_block_input(g_kb_buttons | pad_buttons | pad_triggers)) {
         g_host_buttons.store(0, std::memory_order_relaxed);
         g_host_analog.store(0x8080, std::memory_order_relaxed);
         g_host_ranalog.store(0x8080, std::memory_order_relaxed);
         return;
     }
-    g_host_buttons.store(g_kb_buttons | g_pad_buttons | g_pad_triggers,
+    g_host_buttons.store(g_kb_buttons | pad_buttons | pad_triggers,
                          std::memory_order_relaxed);
-    g_host_ranalog.store(static_cast<uint32_t>(axis_to_psp_raw(g_rx_raw)) |
-                         (static_cast<uint32_t>(axis_to_psp_raw(g_ry_raw)) << 8),
+    g_host_ranalog.store(static_cast<uint32_t>(axis_to_psp_raw(rx_raw)) |
+                         (static_cast<uint32_t>(axis_to_psp_raw(ry_raw)) << 8),
                          std::memory_order_relaxed);
-    uint8_t lx = axis_to_psp(g_lx_raw), ly = axis_to_psp(g_ly_raw);
+    uint8_t lx = axis_to_psp(lx_raw), ly = axis_to_psp(ly_raw);
     if (lx == 128 && ly == 128 && !g_arrows_dpad_only && g_kb_arrows) {
         if (g_kb_arrows & 4) lx = 0;
         if (g_kb_arrows & 8) lx = 255;
@@ -423,12 +433,12 @@ static void handle_sdl_event(const SDL_Event& ev) {
         }
         if (ev.window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
             // KEYUP is not delivered after focus loss; release keyboard
-            // state so no key sticks. Pads keep working (background events
-            // are enabled).
+            // state so no key sticks. Pads are muted by publish_input() while unfocused.
             g_kb_buttons = 0;
             g_kb_arrows = 0;
             publish_input();
         }
+        if (ev.window.event == SDL_WINDOWEVENT_FOCUS_GAINED) publish_input();  // pads listen again
         return;
     default:
         return;
