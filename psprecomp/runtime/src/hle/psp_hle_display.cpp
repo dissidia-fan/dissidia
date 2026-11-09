@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include "psp_prof.h"
 #include "hle/psp_hle.h"
+#include "hle/psp_hle_adhoc.h"
 #include "psp_render_queue.h"
 #include "psp_scheduler.h"
 #include "psp_memory.h"
@@ -101,6 +102,7 @@ static void hle_sceDisplayWaitVblankStart(
     static thread_local std::chrono::steady_clock::time_point t_last_host, t_last_game;
 
     sched_yield_point();
+    psp_adhoc_pump(rdram, ctx);   // ad-hoc handler/callback events
     psp_settings_guest_wait();   // the settings menu pauses the game here
 
     psp_prof::seq("vblank-begin");

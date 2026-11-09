@@ -1,6 +1,7 @@
 #include <atomic>
 #include "hle/psp_hle.h"
 #include "hle/psp_hle_kernel.h"
+#include "hle/psp_hle_adhoc.h"
 #include "hle/psp_hle_refer_info.h"
 #include "psp_scheduler.h"
 #include "psp_memory.h"
@@ -589,6 +590,7 @@ static void hle_sceKernelDeleteCallback(
 static void hle_sceKernelCheckCallback(
     uint8_t* rdram, recomp_context* ctx
 ) {
+    psp_adhoc_pump(rdram, ctx);  // ad-hoc handlers/callbacks queued by the network thread
     // Iterate callbacks looking for pending dispatch
     for (auto& [id, cb] : g_callbacks) {
         if (!cb.pending) {
