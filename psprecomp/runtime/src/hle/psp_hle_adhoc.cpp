@@ -1114,26 +1114,35 @@ void h_PtpAccept(uint8_t* rdram, recomp_context* ctx) {  // (id, mac*, port*, ti
     ret(ctx, cid);
 }
 void h_PtpSend(uint8_t* rdram, recomp_context* ctx) {  // (id, data, size*, timeout, nonblock)
+    // Stream semantics like TCP send(): queue as many bytes as the send buffer has room for and
+    // report that count in *size (0 on would-block/timeout - the game adds *size to what it has sent).
     int id = (int)ARG(0); uint32_t data = ARG(1), sizep = ARG(2), timeout = ARG(3); bool nb = ARG(4) != 0;
     if (!data || !sizep) { ret(ctx, E_INVALID_ARG); return; }
     uint32_t len = r32(rdram, sizep);
-    auto room = [&] {
+    auto space = [&]() -> size_t {
         auto it = g_ptp.find(id);
-        if (it == g_ptp.end()) return true;
-        return it->second.s != Ptp::ESTAB || (int64_t)it->second.sendq.size() + len <= (size_t)std::max(it->second.bufsize, 0x2000);
+        if (it == g_ptp.end()) return 1;
+        size_t cap = (size_t)std::max(it->second.bufsize, 0x2000), used = it->second.sendq.size();
+        return cap > used ? cap - used : 0;
     };
     {
         std::lock_guard<std::mutex> lk(g_mu);
         auto it = g_ptp.find(id);
         if (it == g_ptp.end()) { ret(ctx, E_INVALID_SOCKET); return; }
         if (it->second.s != Ptp::ESTAB) { ret(ctx, E_NOT_CONNECTED); return; }
-        if (nb && !room()) { ret(ctx, E_WOULD_BLOCK); return; }
+        if (nb && space() == 0) { w32(rdram, sizep, 0); ret(ctx, E_WOULD_BLOCK); return; }
     }
-    if (!nb && !wait_for(timeout, room)) { ret(ctx, E_TIMEOUT); return; }
+    if (!nb && !wait_for(timeout, [&] {
+            auto it = g_ptp.find(id);
+            return it == g_ptp.end() || it->second.s != Ptp::ESTAB || space() > 0; })) {
+        w32(rdram, sizep, 0); ret(ctx, E_TIMEOUT); return;
+    }
     std::lock_guard<std::mutex> lk(g_mu);
     auto it = g_ptp.find(id);
     if (it == g_ptp.end() || it->second.s != Ptp::ESTAB) { ret(ctx, E_NOT_CONNECTED); return; }
-    it->second.sendq.insert(it->second.sendq.end(), gp(rdram, data), gp(rdram, data) + len);
+    uint32_t n = (uint32_t)std::min<size_t>(len, space());
+    it->second.sendq.insert(it->second.sendq.end(), gp(rdram, data), gp(rdram, data) + n);
+    w32(rdram, sizep, n);
     ret(ctx, 0);
 }
 void h_PtpRecv(uint8_t* rdram, recomp_context* ctx) {  // (id, buf, size*, timeout, nonblock)
@@ -1146,14 +1155,15 @@ void h_PtpRecv(uint8_t* rdram, recomp_context* ctx) {  // (id, buf, size*, timeo
     {
         std::lock_guard<std::mutex> lk(g_mu);
         if (!g_ptp.count(id)) { ret(ctx, E_INVALID_SOCKET); return; }
-        if (nb && !ready()) { ret(ctx, E_WOULD_BLOCK); return; }
+        if (nb && !ready()) { w32(rdram, sizep, 0); ret(ctx, E_WOULD_BLOCK); return; }
     }
-    if (!nb && !wait_for(timeout, ready)) { ret(ctx, E_TIMEOUT); return; }
+    if (!nb && !wait_for(timeout, ready)) { w32(rdram, sizep, 0); ret(ctx, E_TIMEOUT); return; }
     std::lock_guard<std::mutex> lk(g_mu);
     auto it = g_ptp.find(id);
     if (it == g_ptp.end()) { ret(ctx, E_INVALID_SOCKET); return; }
     Ptp& p = it->second;
-    if (p.rxq.empty()) { ret(ctx, (p.fin_rx || p.s != Ptp::ESTAB) ? E_DISCONNECTED : E_WOULD_BLOCK); return; }
+    if (p.rxq.empty()) {
+        w32(rdram, sizep, 0); ret(ctx, (p.fin_rx || p.s != Ptp::ESTAB) ? E_DISCONNECTED : E_WOULD_BLOCK); return; }
     uint32_t n = std::min<uint32_t>(r32(rdram, sizep), (uint32_t)p.rxq.size());
     for (uint32_t i = 0; i < n; i++) { gp(rdram, buf)[i] = p.rxq.front(); p.rxq.pop_front(); }
     w32(rdram, sizep, n);
