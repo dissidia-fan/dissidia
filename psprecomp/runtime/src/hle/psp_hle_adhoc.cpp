@@ -1217,14 +1217,42 @@ void h_GetPtpStat(uint8_t* rdram, recomp_context* ctx) {  // (int* buflen, void*
         if (poll && ++quiet > 8) return; \
         std::fprintf(stderr, "[ADHOC] " NAME "(0x%X, 0x%X, 0x%X, 0x%X, 0x%X) -> 0x%08X\n", a0, a1, a2, a3, a4, (uint32_t)rc); \
     }
-TRACED("PdpCreate", h_PdpCreate) TRACED("PdpDelete", h_PdpDelete) TRACED("PdpSend", h_PdpSend) TRACED("PdpRecv", h_PdpRecv)
+// Same as TRACED, plus a hex dump of the first bytes of the message (first 300 messages per call).
+// BUFARG is the argument holding the buffer address; LENARG the argument holding the length or a
+// pointer to it (LENPTR=1 when it is a pointer, as in PtpSend/PtpRecv/PdpRecv).
+#define TRACED_DATA(NAME, FN, BUFARG, LENARG, LENPTR) \
+    void t_##FN(uint8_t* rdram, recomp_context* ctx) { \
+        static int quiet = 0, shown = 0; \
+        uint32_t a0 = ARG(0), a1 = ARG(1), a2 = ARG(2), a3 = ARG(3), a4 = ARG(4); \
+        uint32_t args[5] = {a0, a1, a2, a3, a4}; \
+        uint32_t pre_len = (LENPTR && args[LENARG]) ? r32(rdram, args[LENARG]) : 0; \
+        FN(rdram, ctx); \
+        if (!g_log) return; \
+        int32_t rc = ctx->r[2]; \
+        bool poll = rc == E_WOULD_BLOCK || rc == E_TIMEOUT; \
+        if (poll && ++quiet > 8) return; \
+        char hex[3 * 32 + 1] = {0}; \
+        uint32_t n = 0; \
+        if (rc == 0 && args[BUFARG]) { \
+            n = LENPTR ? (args[LENARG] ? r32(rdram, args[LENARG]) : 0) : args[LENARG]; \
+            if (n > 0x10000) n = 0; \
+            for (uint32_t i = 0; i < n && i < 32; i++) std::snprintf(hex + i * 3, 4, "%02x ", gp(rdram, args[BUFARG])[i]); \
+        } \
+        if (rc == 0 && ++shown > 300) return; \
+        std::fprintf(stderr, "[ADHOC] " NAME "(0x%X, 0x%X, 0x%X, 0x%X, 0x%X) -> 0x%08X len=%u (asked %u) %s\n", a0, a1, a2, a3, a4, (uint32_t)rc, n, pre_len, hex); \
+    }
+TRACED("PdpCreate", h_PdpCreate) TRACED("PdpDelete", h_PdpDelete)  
 TRACED("PtpListen", h_PtpListen) TRACED("PtpOpen", h_PtpOpen) TRACED("PtpConnect", h_PtpConnect)
-TRACED("PtpAccept", h_PtpAccept) TRACED("PtpSend", h_PtpSend) TRACED("PtpRecv", h_PtpRecv)
+TRACED("PtpAccept", h_PtpAccept)  
 TRACED("PtpFlush", h_PtpFlush) TRACED("PtpClose", h_PtpClose) TRACED("GetPtpStat", h_GetPtpStat)
 TRACED("GetPdpStat", h_GetPdpStat)
+TRACED_DATA("PtpSend", h_PtpSend, 1, 2, 1) TRACED_DATA("PtpRecv", h_PtpRecv, 1, 2, 1)
+TRACED_DATA("PdpSend", h_PdpSend, 3, 4, 0) TRACED_DATA("PdpRecv", h_PdpRecv, 3, 4, 1)
+TRACED_DATA("MatchingSendData", h_MSendData, 3, 2, 0)
+
 TRACED("MatchingSelectTarget", h_MSelect) TRACED("MatchingCancelTarget", h_MCancel)
-TRACED("MatchingSendData", h_MSendData) TRACED("MatchingStop", h_MStop) TRACED("MatchingDelete", h_MDelete)
-TRACED("AdhocctlDisconnect", h_CtlDisconnect) TRACED("AdhocctlGetPeerInfo", h_CtlGetPeerInfo)
+ TRACED("MatchingStop", h_MStop) TRACED("MatchingDelete", h_MDelete)
+TRACED("AdhocctlDisconnect", h_CtlDisconnect)
 
 }  // namespace
 
@@ -1329,7 +1357,7 @@ void psp_hle_register_adhoc() {
     psp_hle_register("sceNetAdhocctlScan", h_CtlScan);
     psp_hle_register("sceNetAdhocctlGetScanInfo", h_CtlGetScanInfo);
     psp_hle_register("sceNetAdhocctlGetPeerList", h_CtlGetPeerList);
-    psp_hle_register("sceNetAdhocctlGetPeerInfo", t_h_CtlGetPeerInfo);
+    psp_hle_register("sceNetAdhocctlGetPeerInfo", h_CtlGetPeerInfo);
     // matching
     psp_hle_register("sceNetAdhocMatchingInit", h_MInit);
     psp_hle_register("sceNetAdhocMatchingTerm", h_MTerm);
