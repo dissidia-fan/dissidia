@@ -37,6 +37,7 @@
 #include "psp_settings.h"
 #include "recomp.h"
 #include "hle/psp_hle.h"
+#include "hle/psp_hle_adhoc.h"
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -126,7 +127,10 @@ void frame_end_hook(uint8_t* rdram, recomp_context* ctx) {
     const uint32_t timer = static_cast<uint32_t>(ctx->r[4]);
     g_tick++;
     if (ok(timer)) {
-        const bool want60 = g_target.load(std::memory_order_relaxed) == 60 && (g_scope_all || overlay_id() == 1);
+        // In an ad-hoc session every player runs at the lowest rate any of them asked for, so the
+        // lock-step battle stays in sync (psp_adhoc_group_fps_cap() is 0 when not connected).
+        const int cap = psp_adhoc_group_fps_cap();
+        const bool want60 = g_target.load(std::memory_order_relaxed) == 60 && cap != 30 && (g_scope_all || overlay_id() == 1);
         const int interval = want60 ? 1 : 2;
         if (r32(timer + 0x10u) != static_cast<uint32_t>(interval)) {
             w32(timer + 0x10u, static_cast<uint32_t>(interval));
@@ -342,6 +346,7 @@ int fps_get() { return g_target.load(); }
 void fps_set(int fps) {
     fps = fps == 60 ? 60 : 30;
     if (g_target.exchange(fps) != fps) std::fprintf(stderr, "[FPS] target frame rate %d\n", fps);
+    psp_adhoc_set_local_fps(fps);   // told to the other players
 }
 const int k_rates[] = {30, 60};
 
@@ -374,5 +379,6 @@ void dissidia_framerate_install(uint8_t* rdram) {
     if (g_log && (g_orig_skel = psp_dispatch_probe_lookup(SKEL_BUILD))) psp_dispatch_register(SKEL_BUILD, skel_build_hook);
     fx_install();
     psp_settings_set_frame_rate_hook({k_rates, 2, fps_get, fps_set});
+    psp_adhoc_set_local_fps(g_target.load());
     std::fprintf(stderr, "[FPS] frame rate %d (battle logic; scope %s)\n", g_target.load(), g_scope_all ? "all" : "battle");
 }
