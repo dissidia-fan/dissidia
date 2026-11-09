@@ -1186,6 +1186,28 @@ void h_GetPtpStat(uint8_t* rdram, recomp_context* ctx) {  // (int* buflen, void*
     ret(ctx, 0);
 }
 
+// Call tracing (PSPRECOMP_ADHOC_LOG=1): arguments, result and, for data calls, the first bytes.
+// Polling results (would-block / timeout) are logged only the first few times per call.
+#define TRACED(NAME, FN) \
+    void t_##FN(uint8_t* rdram, recomp_context* ctx) { \
+        static int quiet = 0; \
+        uint32_t a0 = ARG(0), a1 = ARG(1), a2 = ARG(2), a3 = ARG(3), a4 = ARG(4); \
+        FN(rdram, ctx); \
+        if (!g_log) return; \
+        int32_t rc = ctx->r[2]; \
+        bool poll = rc == E_WOULD_BLOCK || rc == E_TIMEOUT; \
+        if (poll && ++quiet > 8) return; \
+        std::fprintf(stderr, "[ADHOC] " NAME "(0x%X, 0x%X, 0x%X, 0x%X, 0x%X) -> 0x%08X\n", a0, a1, a2, a3, a4, (uint32_t)rc); \
+    }
+TRACED("PdpCreate", h_PdpCreate) TRACED("PdpDelete", h_PdpDelete) TRACED("PdpSend", h_PdpSend) TRACED("PdpRecv", h_PdpRecv)
+TRACED("PtpListen", h_PtpListen) TRACED("PtpOpen", h_PtpOpen) TRACED("PtpConnect", h_PtpConnect)
+TRACED("PtpAccept", h_PtpAccept) TRACED("PtpSend", h_PtpSend) TRACED("PtpRecv", h_PtpRecv)
+TRACED("PtpFlush", h_PtpFlush) TRACED("PtpClose", h_PtpClose) TRACED("GetPtpStat", h_GetPtpStat)
+TRACED("GetPdpStat", h_GetPdpStat)
+TRACED("MatchingSelectTarget", h_MSelect) TRACED("MatchingCancelTarget", h_MCancel)
+TRACED("MatchingSendData", h_MSendData) TRACED("MatchingStop", h_MStop) TRACED("MatchingDelete", h_MDelete)
+TRACED("AdhocctlDisconnect", h_CtlDisconnect) TRACED("AdhocctlGetPeerInfo", h_CtlGetPeerInfo)
+
 }  // namespace
 
 // ================= public =================
@@ -1263,20 +1285,20 @@ void psp_hle_register_adhoc() {
     // adhoc
     psp_hle_register("sceNetAdhocInit", h_AdhocInit);
     psp_hle_register("sceNetAdhocTerm", h_AdhocTerm);
-    psp_hle_register("sceNetAdhocPdpCreate", h_PdpCreate);
-    psp_hle_register("sceNetAdhocPdpDelete", h_PdpDelete);
-    psp_hle_register("sceNetAdhocPdpSend", h_PdpSend);
-    psp_hle_register("sceNetAdhocPdpRecv", h_PdpRecv);
-    psp_hle_register("sceNetAdhocGetPdpStat", h_GetPdpStat);
-    psp_hle_register("sceNetAdhocPtpListen", h_PtpListen);
-    psp_hle_register("sceNetAdhocPtpOpen", h_PtpOpen);
-    psp_hle_register("sceNetAdhocPtpConnect", h_PtpConnect);
-    psp_hle_register("sceNetAdhocPtpAccept", h_PtpAccept);
-    psp_hle_register("sceNetAdhocPtpSend", h_PtpSend);
-    psp_hle_register("sceNetAdhocPtpRecv", h_PtpRecv);
-    psp_hle_register("sceNetAdhocPtpFlush", h_PtpFlush);
-    psp_hle_register("sceNetAdhocPtpClose", h_PtpClose);
-    psp_hle_register("sceNetAdhocGetPtpStat", h_GetPtpStat);
+    psp_hle_register("sceNetAdhocPdpCreate", t_h_PdpCreate);
+    psp_hle_register("sceNetAdhocPdpDelete", t_h_PdpDelete);
+    psp_hle_register("sceNetAdhocPdpSend", t_h_PdpSend);
+    psp_hle_register("sceNetAdhocPdpRecv", t_h_PdpRecv);
+    psp_hle_register("sceNetAdhocGetPdpStat", t_h_GetPdpStat);
+    psp_hle_register("sceNetAdhocPtpListen", t_h_PtpListen);
+    psp_hle_register("sceNetAdhocPtpOpen", t_h_PtpOpen);
+    psp_hle_register("sceNetAdhocPtpConnect", t_h_PtpConnect);
+    psp_hle_register("sceNetAdhocPtpAccept", t_h_PtpAccept);
+    psp_hle_register("sceNetAdhocPtpSend", t_h_PtpSend);
+    psp_hle_register("sceNetAdhocPtpRecv", t_h_PtpRecv);
+    psp_hle_register("sceNetAdhocPtpFlush", t_h_PtpFlush);
+    psp_hle_register("sceNetAdhocPtpClose", t_h_PtpClose);
+    psp_hle_register("sceNetAdhocGetPtpStat", t_h_GetPtpStat);
     // adhocctl
     psp_hle_register("sceNetAdhocctlInit", h_CtlInit);
     psp_hle_register("sceNetAdhocctlTerm", h_CtlTerm);
@@ -1285,20 +1307,20 @@ void psp_hle_register_adhoc() {
     psp_hle_register("sceNetAdhocctlConnect", h_CtlConnect);
     psp_hle_register("sceNetAdhocctlCreate", h_CtlConnect);
     psp_hle_register("sceNetAdhocctlJoin", h_CtlJoin);
-    psp_hle_register("sceNetAdhocctlDisconnect", h_CtlDisconnect);
+    psp_hle_register("sceNetAdhocctlDisconnect", t_h_CtlDisconnect);
     psp_hle_register("sceNetAdhocctlScan", h_CtlScan);
     psp_hle_register("sceNetAdhocctlGetScanInfo", h_CtlGetScanInfo);
     psp_hle_register("sceNetAdhocctlGetPeerList", h_CtlGetPeerList);
-    psp_hle_register("sceNetAdhocctlGetPeerInfo", h_CtlGetPeerInfo);
+    psp_hle_register("sceNetAdhocctlGetPeerInfo", t_h_CtlGetPeerInfo);
     // matching
     psp_hle_register("sceNetAdhocMatchingInit", h_MInit);
     psp_hle_register("sceNetAdhocMatchingTerm", h_MTerm);
     psp_hle_register("sceNetAdhocMatchingCreate", h_MCreate);
     psp_hle_register("sceNetAdhocMatchingStart", h_MStart);
-    psp_hle_register("sceNetAdhocMatchingStop", h_MStop);
-    psp_hle_register("sceNetAdhocMatchingDelete", h_MDelete);
-    psp_hle_register("sceNetAdhocMatchingSelectTarget", h_MSelect);
-    psp_hle_register("sceNetAdhocMatchingCancelTarget", h_MCancel);
-    psp_hle_register("sceNetAdhocMatchingSendData", h_MSendData);
+    psp_hle_register("sceNetAdhocMatchingStop", t_h_MStop);
+    psp_hle_register("sceNetAdhocMatchingDelete", t_h_MDelete);
+    psp_hle_register("sceNetAdhocMatchingSelectTarget", t_h_MSelect);
+    psp_hle_register("sceNetAdhocMatchingCancelTarget", t_h_MCancel);
+    psp_hle_register("sceNetAdhocMatchingSendData", t_h_MSendData);
     psp_hle_register("sceNetAdhocMatchingSetHelloOpt", h_MSetHelloOpt);
 }
