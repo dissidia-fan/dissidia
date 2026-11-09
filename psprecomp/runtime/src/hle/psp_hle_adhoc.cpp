@@ -163,12 +163,18 @@ bool g_net_ready = false;
 std::atomic<bool> g_stop{false};
 int g_sock = -1;
 int g_base_port = 27312;
+int g_span = 16;   // ports tried / probed: base..base+span-1 (several instances per machine)
 uint16_t g_my_port = 0;
 Mac g_mac{};
 char g_nick[32] = {0};
 std::thread g_thread;
 std::vector<sockaddr_in> g_extra_peers;
 std::map<Mac, Peer> g_peers;
+// Peers other players told us about (address -> give-up time). They are probed with beacons and, if
+// they answer, become normal peers. This builds a full mesh from a single configured address.
+std::map<uint64_t, int64_t> g_gossip;
+constexpr int MAX_GOSSIP = 64;
+uint64_t addr_key(const sockaddr_in& a) { return ((uint64_t)ntohl(a.sin_addr.s_addr) << 16) | ntohs(a.sin_port); }
 
 bool g_adhoc_init = false, g_ctl_init = false, g_match_init = false;
 bool g_connected = false;
@@ -460,7 +466,7 @@ void handle_ptp(const Mac& src, const uint8_t* body, size_t len) {
 
 // ---- beacons / packet intake ----
 void handle_beacon(const Mac& src, const sockaddr_in& from, const uint8_t* body, size_t len) {
-    if (len < 32 + 8 + 2) return;
+    if (len < 32 + 8 + 2) return;   // older beacons end here; newer ones append a peer list
     Peer& p = g_peers[src];
     bool fresh = p.last_seen == 0;
     p.addr = from;
@@ -469,6 +475,21 @@ void handle_beacon(const Mac& src, const sockaddr_in& from, const uint8_t* body,
     p.in_group = body[40] != 0;
     p.fps = body[41];
     p.last_seen = now_us();
+    g_gossip.erase(addr_key(from));   // it answered: now a real peer
+    if (len >= 43) {
+        int n = body[42];
+        for (int i = 0; i < n && 43 + (size_t)(i + 1) * 6 <= len; i++) {
+            sockaddr_in a{}; a.sin_family = AF_INET;
+            std::memcpy(&a.sin_addr.s_addr, body + 43 + i * 6, 4);
+            std::memcpy(&a.sin_port, body + 43 + i * 6 + 4, 2);
+            uint16_t port = ntohs(a.sin_port);
+            if (!port || a.sin_addr.s_addr == 0 || a.sin_addr.s_addr == htonl(INADDR_BROADCAST)) continue;
+            bool known = false;
+            for (auto& [m2, p2] : g_peers) if (addr_key(p2.addr) == addr_key(a)) { known = true; break; }
+            if (known || (int)g_gossip.size() >= MAX_GOSSIP) continue;
+            g_gossip.emplace(addr_key(a), now_us() + 15000000);   // probe for 15 s
+        }
+    }
     if (fresh) ANOTE("peer %s (\"%s\") at %s:%u", mac_str(src).c_str(), p.nick, inet_ntoa(from.sin_addr), ntohs(from.sin_port));
 }
 
@@ -495,8 +516,19 @@ void send_beacons() {
     std::memcpy(b.data() + 32, g_group, 8);
     b[40] = g_connected ? 1 : 0;
     b[41] = (uint8_t)g_local_fps;
+    // gossip: addresses of the peers we hear directly (so everyone learns everyone)
+    {
+        std::vector<uint8_t> list;
+        for (auto& [m, p] : g_peers) {
+            if (list.size() >= 6 * 32) break;
+            list.insert(list.end(), (const uint8_t*)&p.addr.sin_addr.s_addr, (const uint8_t*)&p.addr.sin_addr.s_addr + 4);
+            list.insert(list.end(), (const uint8_t*)&p.addr.sin_port, (const uint8_t*)&p.addr.sin_port + 2);
+        }
+        b.push_back((uint8_t)(list.size() / 6));
+        b.insert(b.end(), list.begin(), list.end());
+    }
     std::vector<sockaddr_in> targets;
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < g_span; i++) {
         uint16_t port = (uint16_t)(g_base_port + i);
         if (port == g_my_port) continue;
         sockaddr_in a{}; a.sin_family = AF_INET; a.sin_port = htons(port);
@@ -504,6 +536,14 @@ void send_beacons() {
         a.sin_addr.s_addr = htonl(INADDR_BROADCAST); targets.push_back(a);
     }
     for (auto& a : g_extra_peers) targets.push_back(a);
+    int64_t now = now_us();
+    for (auto it = g_gossip.begin(); it != g_gossip.end();) {
+        if (it->second < now) { it = g_gossip.erase(it); continue; }
+        sockaddr_in a{}; a.sin_family = AF_INET;
+        a.sin_addr.s_addr = htonl((uint32_t)(it->first >> 16)); a.sin_port = htons((uint16_t)(it->first & 0xffff));
+        targets.push_back(a);
+        ++it;
+    }
     for (auto& a : targets) send_raw(a, T_BEACON, b);
 }
 
@@ -614,7 +654,7 @@ void parse_peers(const char* s) {
         freeaddrinfo(res);
         a.sin_family = AF_INET;
         if (port > 0) { a.sin_port = htons((uint16_t)port); g_extra_peers.push_back(a); }
-        else for (int i = 0; i < 8; i++) { a.sin_port = htons((uint16_t)(g_base_port + i)); g_extra_peers.push_back(a); }
+        else for (int i = 0; i < g_span; i++) { a.sin_port = htons((uint16_t)(g_base_port + i)); g_extra_peers.push_back(a); }
         ANOTE("extra peer %s%s", host.c_str(), port > 0 ? "" : " (ports scan)");
     }
 }
@@ -632,12 +672,13 @@ bool ensure_net() {
         if (g_sock < 0) { ANOTE("socket() failed; ad-hoc networking off"); g_enabled = false; return; }
         int one = 1;
         setsockopt(g_sock, SOL_SOCKET, SO_BROADCAST, &one, sizeof one);
-        for (int i = 0; i < 8 && !g_my_port; i++) {
+        if (const char* sp = std::getenv("PSPRECOMP_ADHOC_SPAN")) g_span = std::clamp(std::atoi(sp), 1, 64);
+        for (int i = 0; i < g_span && !g_my_port; i++) {
             sockaddr_in a{}; a.sin_family = AF_INET; a.sin_addr.s_addr = htonl(INADDR_ANY);
             a.sin_port = htons((uint16_t)(g_base_port + i));
             if (bind(g_sock, (sockaddr*)&a, sizeof a) == 0) g_my_port = (uint16_t)(g_base_port + i);
         }
-        if (!g_my_port) { ANOTE("could not bind UDP ports %d-%d; ad-hoc networking off", g_base_port, g_base_port + 7); close(g_sock); g_sock = -1; g_enabled = false; return; }
+        if (!g_my_port) { ANOTE("could not bind UDP ports %d-%d; ad-hoc networking off", g_base_port, g_base_port + g_span - 1); close(g_sock); g_sock = -1; g_enabled = false; return; }
 
         const char* mc = std::getenv("PSPRECOMP_ADHOC_MAC");
         unsigned m[6];
