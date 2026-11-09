@@ -64,6 +64,10 @@ Gamepads work out of the box. Keyboard: arrows, X/Z/A/S for the face buttons, Q/
 
 Character mod folders in `mods/` are built and loaded every time the game starts. What each step does and every runtime option: [docs/native-build.md](psprecomp/games/dissidia/docs/native-build.md).
 
+## Multiplayer (experimental)
+
+Communications mode works over UDP instead of PSP ad-hoc WiFi: players on one LAN, two copies on one machine, or players across the internet (through a VPN or forwarded UDP port 27312, naming each other with `PSPRECOMP_ADHOC_PEERS`). A full match has been played between two copies on one machine. It is untested with more than two players, on real LAN hardware between machines, and over the internet, and the internet case has no relay, authentication or latency handling. In a session everyone runs at the lowest frame rate any player chose. Setup, options and how it works: [docs/multiplayer.md](psprecomp/games/dissidia/docs/multiplayer.md).
+
 ## What is not in this repository
 No game data (bring your own ISO), no character mods (`mods/_template/` shows the layout), no texture packs (the loader works with the community packs credited below), no third-party mod ports, no game artwork.
 

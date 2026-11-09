@@ -35,6 +35,12 @@
   `PSPRECOMP_FPS_SCOPE=all` also runs menus at 60 (they then run fast; for testing only).
   `PSPRECOMP_SETTINGS_MENU=0` disables the menu, `PSPRECOMP_SETTINGS=<file>` moves the settings file.
 
+## In multiplayer
+
+In an ad-hoc session ([multiplayer.md](multiplayer.md)) the game runs at the lowest rate any player asked for, so a
+60 fps player and a 30 fps player both run at 30; the setting returns to normal when the session ends. Every player
+shares the wanted rate in their beacons; `frame_end_hook` in `runtime/framerate.cpp` applies the cap.
+
 ## What 60 fps means here
 
 It is **native**: the battle simulation runs 60 updates a second. Nothing is interpolated, and there's no extra

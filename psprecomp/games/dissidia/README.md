@@ -30,4 +30,4 @@ Details: [the native build](docs/native-build.md) (each step, the work folder, w
 
 ## Status
 
-Playable end to end on Linux and the Steam Deck: menus, story mode with its movies, and battles. Built against the European PSN image; the US UMD works with less testing. Limitations and what is untested: [docs/steamdeck.md](docs/steamdeck.md).
+Playable end to end on Linux and the Steam Deck: menus, story mode with its movies, and battles. Built against the European PSN image; the US UMD works with less testing. Limitations and what is untested: [docs/steamdeck.md](docs/steamdeck.md). Communications mode (ad-hoc multiplayer over UDP, LAN or internet) is experimental: a full match has been played between two instances on one machine; see [docs/multiplayer.md](docs/multiplayer.md).
