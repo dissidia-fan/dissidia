@@ -369,79 +369,68 @@ void ptp_send_pkt(Ptp& p, uint8_t flags, uint32_t seq, uint32_t ack, const uint8
     b.insert(b.end(), p.dmac.begin(), p.dmac.end());
     put16(b, p.sport); put16(b, p.dport);
     b.push_back(flags);
-    put32(b, seq); put32(b, ack);
+    put32(b, seq); put32(b, ack); put32(b, p.cid);
     if (n) b.insert(b.end(), data, data + n);
     send_to_mac(p.dmac, T_PTP, b);
 }
 
 void handle_ptp(const Mac& src, const uint8_t* body, size_t len) {
-    if (len < 6 + 2 + 2 + 1 + 4 + 4) return;
+    if (len < 6 + 2 + 2 + 1 + 4 + 4 + 4) return;
     Mac dst; std::memcpy(dst.data(), body, 6);
     if (dst != g_mac) return;
     if (!same_group(src)) return;
     uint16_t sport = get16(body + 6), dport = get16(body + 8);  // sender's sport -> our dport match
     uint8_t flags = body[10];
-    uint32_t seq = get32(body + 11), ack = get32(body + 15);
-    const uint8_t* data = body + 19;
-    size_t n = len - 19;
+    uint32_t seq = get32(body + 11), ack = get32(body + 15), cid = get32(body + 19);
+    const uint8_t* data = body + 23;
+    size_t n = len - 23;
     int64_t t = now_us();
 
     if (flags == P_SYN) {
-        // seq carries the opener's connection id. The game reopens a socket on the same ports
-        // whenever a connect fails, so a SYN with a new id replaces the old child.
-        for (auto it = g_ptp.begin(); it != g_ptp.end();) {
-            Ptp& c = it->second;
-            if (c.s == Ptp::ESTAB && c.parent && c.sport == dport && c.dport == sport && c.dmac == src) {
-                if (c.cid == seq) { ptp_send_pkt(c, P_SYNACK, 0, c.cid); return; }  // retransmitted SYN
-                int lid = c.parent;
-                auto lit = g_ptp.find(lid);
-                if (lit != g_ptp.end()) {
-                    auto& q = lit->second.accept_q;
-                    q.erase(std::remove(q.begin(), q.end(), it->first), q.end());
-                }
-                it = g_ptp.erase(it);
-            } else ++it;
-        }
+        // Like TCP: every SYN with a new connection id is a new connection and gets its own
+        // child socket. A repeated SYN (same id) only repeats the SYNACK.
+        for (auto& [id, c] : g_ptp)
+            if (c.s == Ptp::ESTAB && c.parent && c.cid == cid && c.dmac == src) {
+                ptp_send_pkt(c, P_SYNACK, 0, 0);
+                return;
+            }
         for (auto& [id, l] : g_ptp) {
             if (l.s != Ptp::LISTEN || l.sport != dport) continue;
             Ptp c;
             c.id = g_next_ptp++;
             c.s = Ptp::ESTAB; c.smac = g_mac; c.dmac = src; c.sport = dport; c.dport = sport;
             c.bufsize = l.bufsize; c.rexmt_us = l.rexmt_us; c.rexmt_cnt = l.rexmt_cnt;
-            c.parent = l.id; c.cid = seq; c.last_progress = t;
-            int cid = c.id;
-            ptp_send_pkt(c, P_SYNACK, 0, c.cid);
-            int lid = l.id;
-            g_ptp[cid] = std::move(c);
-            g_ptp[lid].accept_q.push_back(cid);
-            ALOG("ptp %d: incoming connection from %s:%u -> child %d", lid, mac_str(src).c_str(), sport, cid);
+            c.parent = l.id; c.cid = cid; c.last_progress = t;
+            int child = c.id, lid = l.id;
+            ptp_send_pkt(c, P_SYNACK, 0, 0);
+            g_ptp[child] = std::move(c);
+            g_ptp[lid].accept_q.push_back(child);
+            ALOG("ptp %d: incoming connection from %s:%u -> child %d", lid, mac_str(src).c_str(), sport, child);
             return;
         }
-        // Nobody listens yet: say nothing. The opener keeps retransmitting its SYN, so the
-        // other side may finish loading and start listening a few seconds later.
+        // Nobody listens: refuse, as a closed TCP port does. The game reopens and retries.
+        Ptp tmp; tmp.smac = g_mac; tmp.dmac = src; tmp.sport = dport; tmp.dport = sport; tmp.cid = cid;
+        ptp_send_pkt(tmp, P_RST, 0, 0);
         return;
     }
 
-    // Find the socket this packet is for: the newest one on these ports in a state that fits.
+    // Every other packet belongs to exactly one connection, found by its id.
     Ptp* p = nullptr;
-    for (auto it = g_ptp.rbegin(); it != g_ptp.rend(); ++it) {
-        Ptp& q = it->second;
-        if (q.sport != dport || q.dport != sport || q.dmac != src) continue;
-        bool fit = (flags == P_SYNACK && q.s == Ptp::SYN_SENT && q.cid == ack) ||
-                   ((flags == P_DATA || flags == P_ACK) && q.s == Ptp::ESTAB) ||
-                   ((flags == P_FIN || flags == P_RST) && (q.s == Ptp::ESTAB || q.s == Ptp::SYN_SENT));
-        if (fit) { p = &q; break; }
-    }
+    for (auto& [id, q] : g_ptp)
+        if (q.cid == cid && q.dmac == src && q.sport == dport && q.dport == sport && q.s != Ptp::LISTEN) { p = &q; break; }
     if (!p) {
         if (flags == P_DATA) {  // stale stream; tell the peer
-            Ptp tmp; tmp.smac = g_mac; tmp.dmac = src; tmp.sport = dport; tmp.dport = sport;
+            Ptp tmp; tmp.smac = g_mac; tmp.dmac = src; tmp.sport = dport; tmp.dport = sport; tmp.cid = cid;
             ptp_send_pkt(tmp, P_RST, 0, 0);
         }
         return;
     }
     switch (flags) {
-    case P_SYNACK: p->s = Ptp::ESTAB; p->last_progress = t; ALOG("ptp %d connected", p->id); break;
+    case P_SYNACK:
+        if (p->s == Ptp::SYN_SENT) { p->s = Ptp::ESTAB; p->last_progress = t; ALOG("ptp %d connected", p->id); }
+        break;
     case P_DATA:
+        if (p->s != Ptp::ESTAB) break;
         if (seq == p->rcv_next) {
             p->rxq.insert(p->rxq.end(), data, data + n);
             p->rcv_next += (uint32_t)n;
@@ -449,6 +438,7 @@ void handle_ptp(const Mac& src, const uint8_t* body, size_t len) {
         ptp_send_pkt(*p, P_ACK, 0, p->rcv_next);
         break;
     case P_ACK: {
+        if (p->s != Ptp::ESTAB) break;
         uint32_t acked = ack - p->snd_una;
         if (acked > 0 && acked <= p->sendq.size()) {
             p->sendq.erase(p->sendq.begin(), p->sendq.begin() + acked);
