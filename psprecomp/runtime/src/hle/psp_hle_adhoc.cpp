@@ -153,6 +153,7 @@ struct Ptp {
     bool fin_rx = false;
     std::deque<int> accept_q;  // listener only
     int parent = 0;
+    uint32_t cid = 0;  // connection id: carried in SYN, echoed in SYNACK
 };
 
 std::mutex g_mu;
@@ -386,58 +387,84 @@ void handle_ptp(const Mac& src, const uint8_t* body, size_t len) {
     int64_t t = now_us();
 
     if (flags == P_SYN) {
-        // find a listener on dport; reuse a child if this peer already connected
-        for (auto& [id, c] : g_ptp)
+        // seq carries the opener's connection id. The game reopens a socket on the same ports
+        // whenever a connect fails, so a SYN with a new id replaces the old child.
+        for (auto it = g_ptp.begin(); it != g_ptp.end();) {
+            Ptp& c = it->second;
             if (c.s == Ptp::ESTAB && c.parent && c.sport == dport && c.dport == sport && c.dmac == src) {
-                ptp_send_pkt(c, P_SYNACK, 0, 0);
-                return;
-            }
+                if (c.cid == seq) { ptp_send_pkt(c, P_SYNACK, 0, c.cid); return; }  // retransmitted SYN
+                int lid = c.parent;
+                auto lit = g_ptp.find(lid);
+                if (lit != g_ptp.end()) {
+                    auto& q = lit->second.accept_q;
+                    q.erase(std::remove(q.begin(), q.end(), it->first), q.end());
+                }
+                it = g_ptp.erase(it);
+            } else ++it;
+        }
         for (auto& [id, l] : g_ptp) {
             if (l.s != Ptp::LISTEN || l.sport != dport) continue;
             Ptp c;
             c.id = g_next_ptp++;
             c.s = Ptp::ESTAB; c.smac = g_mac; c.dmac = src; c.sport = dport; c.dport = sport;
             c.bufsize = l.bufsize; c.rexmt_us = l.rexmt_us; c.rexmt_cnt = l.rexmt_cnt;
-            c.parent = l.id; c.last_progress = t;
+            c.parent = l.id; c.cid = seq; c.last_progress = t;
             int cid = c.id;
-            ptp_send_pkt(c, P_SYNACK, 0, 0);
+            ptp_send_pkt(c, P_SYNACK, 0, c.cid);
+            int lid = l.id;
             g_ptp[cid] = std::move(c);
-            g_ptp[l.id].accept_q.push_back(cid);
-            ALOG("ptp %d: incoming connection from %s:%u -> child %d", l.id, mac_str(src).c_str(), sport, cid);
+            g_ptp[lid].accept_q.push_back(cid);
+            ALOG("ptp %d: incoming connection from %s:%u -> child %d", lid, mac_str(src).c_str(), sport, cid);
             return;
         }
-        // nobody listening
-        Ptp tmp; tmp.smac = g_mac; tmp.dmac = src; tmp.sport = dport; tmp.dport = sport;
-        ptp_send_pkt(tmp, P_RST, 0, 0);
+        // Nobody listens yet: say nothing. The opener keeps retransmitting its SYN, so the
+        // other side may finish loading and start listening a few seconds later.
         return;
     }
-    for (auto& [id, p] : g_ptp) {
-        if (p.sport != dport || p.dport != sport || p.dmac != src) continue;
-        if (p.s == Ptp::SYN_SENT && flags == P_SYNACK) { p.s = Ptp::ESTAB; p.last_progress = t; ALOG("ptp %d connected", id); }
-        else if (p.s == Ptp::SYN_SENT && flags == P_RST) { p.s = Ptp::REFUSED; }
-        else if (flags == P_DATA && p.s == Ptp::ESTAB) {
-            if (seq == p.rcv_next) {
-                p.rxq.insert(p.rxq.end(), data, data + n);
-                p.rcv_next += (uint32_t)n;
-            }
-            ptp_send_pkt(p, P_ACK, 0, p.rcv_next);
-        } else if (flags == P_ACK && p.s == Ptp::ESTAB) {
-            uint32_t acked = ack - p.snd_una;
-            if (acked > 0 && acked <= p.sendq.size()) {
-                p.sendq.erase(p.sendq.begin(), p.sendq.begin() + acked);
-                p.snd_una = ack;
-                if ((int32_t)(p.snd_next - p.snd_una) < 0) p.snd_next = p.snd_una;
-                p.last_progress = t; p.retries = 0;
-            }
-        } else if (flags == P_FIN || flags == P_RST) {
-            p.fin_rx = true;
-            if (flags == P_RST) p.s = Ptp::CLOSED;
+
+    // Find the socket this packet is for: the newest one on these ports in a state that fits.
+    Ptp* p = nullptr;
+    for (auto it = g_ptp.rbegin(); it != g_ptp.rend(); ++it) {
+        Ptp& q = it->second;
+        if (q.sport != dport || q.dport != sport || q.dmac != src) continue;
+        bool fit = (flags == P_SYNACK && q.s == Ptp::SYN_SENT && q.cid == ack) ||
+                   ((flags == P_DATA || flags == P_ACK) && q.s == Ptp::ESTAB) ||
+                   ((flags == P_FIN || flags == P_RST) && (q.s == Ptp::ESTAB || q.s == Ptp::SYN_SENT));
+        if (fit) { p = &q; break; }
+    }
+    if (!p) {
+        if (flags == P_DATA) {  // stale stream; tell the peer
+            Ptp tmp; tmp.smac = g_mac; tmp.dmac = src; tmp.sport = dport; tmp.dport = sport;
+            ptp_send_pkt(tmp, P_RST, 0, 0);
         }
         return;
     }
-    if (flags == P_DATA || flags == P_ACK) {  // stale; tell the peer
-        Ptp tmp; tmp.smac = g_mac; tmp.dmac = src; tmp.sport = dport; tmp.dport = sport;
-        ptp_send_pkt(tmp, P_RST, 0, 0);
+    switch (flags) {
+    case P_SYNACK: p->s = Ptp::ESTAB; p->last_progress = t; ALOG("ptp %d connected", p->id); break;
+    case P_DATA:
+        if (seq == p->rcv_next) {
+            p->rxq.insert(p->rxq.end(), data, data + n);
+            p->rcv_next += (uint32_t)n;
+        }
+        ptp_send_pkt(*p, P_ACK, 0, p->rcv_next);
+        break;
+    case P_ACK: {
+        uint32_t acked = ack - p->snd_una;
+        if (acked > 0 && acked <= p->sendq.size()) {
+            p->sendq.erase(p->sendq.begin(), p->sendq.begin() + acked);
+            p->snd_una = ack;
+            if ((int32_t)(p->snd_next - p->snd_una) < 0) p->snd_next = p->snd_una;
+            p->last_progress = t; p->retries = 0;
+        }
+        break;
+    }
+    case P_FIN:
+        p->fin_rx = true;
+        break;
+    case P_RST:
+        p->fin_rx = true;
+        p->s = (p->s == Ptp::SYN_SENT) ? Ptp::REFUSED : Ptp::CLOSED;
+        break;
     }
 }
 
@@ -530,7 +557,7 @@ void periodic() {
         if (p.s == Ptp::SYN_SENT && t - p.last_syn > p.rexmt_us) {
             if (++p.retries > std::max(p.rexmt_cnt, 5)) { p.s = Ptp::REFUSED; continue; }
             p.last_syn = t;
-            ptp_send_pkt(p, P_SYN, 0, 0);
+            ptp_send_pkt(p, P_SYN, p.cid, 0);
         }
         if (p.s == Ptp::ESTAB) {
             uint32_t sent = p.snd_next - p.snd_una;
@@ -1057,7 +1084,8 @@ void h_PtpOpen(uint8_t* rdram, recomp_context* ctx) {  // (smac*, sport, dmac*, 
     p.rexmt_us = std::clamp<int64_t>(ARG(5), 50000, 1000000);
     p.rexmt_cnt = (int)ARG(6);
     p.last_syn = now_us();
-    ptp_send_pkt(p, P_SYN, 0, 0);
+    p.cid = (uint32_t)(now_us() ^ ((uint64_t)p.id << 20) ^ 0x5bd1e995u);
+    ptp_send_pkt(p, P_SYN, p.cid, 0);
     int id = p.id;
     g_ptp[id] = std::move(p);
     ret(ctx, id);
