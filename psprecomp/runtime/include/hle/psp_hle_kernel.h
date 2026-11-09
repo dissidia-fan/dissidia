@@ -76,6 +76,9 @@ struct PspCallback {
     int notify_arg;       // Argument from notification (e.g., async IO result)
 };
 
+/// Microseconds on the game's clock (what sceKernelGetSystemTimeWide returns).
+uint64_t psp_system_time_us();
+
 /// Mark a callback as pending so sceKernelCheckCallback will dispatch it.
 void psp_kernel_notify_callback(int cbId, int notifyArg);
 

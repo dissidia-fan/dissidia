@@ -775,12 +775,19 @@ void h_CtlGetScanInfo(uint8_t* rdram, recomp_context* ctx) {  // (int* buflen, v
     w32(rdram, lenp, n * SZ);
     ret(ctx, 0);
 }
-void fill_peer(uint8_t* rdram, uint32_t a, const char* nick, const Mac& mac, uint32_t next) {
+// last_seen_us is on now_us()'s clock. The game drops peers whose last_recv (game clock) is
+// more than 20 s old, so a zero here would remove every peer at once.
+void fill_peer(uint8_t* rdram, uint32_t a, const char* nick, const Mac& mac, uint32_t next, int64_t last_seen_us) {
     std::memset(gp(rdram, a), 0, 152);
     w32(rdram, a, next);
     std::strncpy((char*)gp(rdram, a + 4), nick, 127);
     std::memcpy(gp(rdram, a + 132), mac.data(), 6);
     w32(rdram, a + 140, 0x0400);
+    uint64_t age = last_seen_us > 0 ? (uint64_t)std::max<int64_t>(0, now_us() - last_seen_us) : 0;
+    uint64_t sys = psp_system_time_us();
+    uint64_t lr = sys > age ? sys - age : sys;
+    w32(rdram, a + 144, (uint32_t)(lr & 0xffffffffu));
+    w32(rdram, a + 148, (uint32_t)(lr >> 32));
 }
 void h_CtlGetPeerList(uint8_t* rdram, recomp_context* ctx) {  // (int* buflen, void* buf)
     uint32_t lenp = ARG(0), buf = ARG(1);
@@ -795,7 +802,7 @@ void h_CtlGetPeerList(uint8_t* rdram, recomp_context* ctx) {  // (int* buflen, v
     uint32_t n = std::min<uint32_t>(r32(rdram, lenp) / SZ, (uint32_t)ps.size());
     for (uint32_t i = 0; i < n; i++) {
         uint32_t a = buf + i * SZ;
-        fill_peer(rdram, a, ps[i].second.nick, ps[i].first, i + 1 < n ? a + SZ : 0);
+        fill_peer(rdram, a, ps[i].second.nick, ps[i].first, i + 1 < n ? a + SZ : 0, ps[i].second.last_seen);
     }
     w32(rdram, lenp, n * SZ);
     ret(ctx, 0);
@@ -805,10 +812,10 @@ void h_CtlGetPeerInfo(uint8_t* rdram, recomp_context* ctx) {  // (mac*, size, bu
     if (!mp || !buf) { ret(ctx, E_INVALID_ARG); return; }
     Mac m = read_mac(rdram, mp);
     std::lock_guard<std::mutex> lk(g_mu);
-    if (m == g_mac) { fill_peer(rdram, buf, g_nick, g_mac, 0); ret(ctx, 0); return; }
+    if (m == g_mac) { fill_peer(rdram, buf, g_nick, g_mac, 0, now_us()); ret(ctx, 0); return; }
     auto it = g_peers.find(m);
     if (it == g_peers.end() || !same_group(m)) { ret(ctx, E_NO_ENTRY); return; }
-    fill_peer(rdram, buf, it->second.nick, m, 0);
+    fill_peer(rdram, buf, it->second.nick, m, 0, it->second.last_seen);
     ret(ctx, 0);
 }
 
