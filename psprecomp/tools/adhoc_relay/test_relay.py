@@ -4,7 +4,7 @@ import socket, struct, sys, time
 
 HOST = sys.argv[1] if len(sys.argv) > 1 else "127.0.0.1"
 PORT = int(sys.argv[2]) if len(sys.argv) > 2 else 27500
-T_BEACON, T_PDP, T_MATCH, T_PTP, T_RELAY = 1, 2, 3, 4, 5
+T_BEACON, T_PDP, T_MATCH, T_PTP, T_RELAY, T_FRAG = 1, 2, 3, 4, 5, 6
 BCAST = b"\xff" * 6
 
 def pkt(ptype, mac, body):
@@ -59,6 +59,10 @@ check("beacon not seen in the other room", c.recv() is None)
 a.send(T_MATCH, mb + b"hello-B")
 d = b.recv(); check("directed packet reaches B", d is not None and d[4] == T_MATCH and d.endswith(b"hello-B"))
 check("directed packet not seen by C", c.recv() is None)
+
+a.send(T_FRAG, mb + struct.pack('<IBBB', 7, 0, 2, T_MATCH) + b"fragment-0")
+d = b.recv(); check("fragment is routed by destination MAC", d is not None and d[4] == T_FRAG and d.endswith(b"fragment-0"))
+check("fragment not seen by C", c.recv() is None)
 
 a.send(T_PDP, BCAST + b"to-all")
 d = b.recv(); check("broadcast reaches B", d is not None and d.endswith(b"to-all"))

@@ -9,7 +9,9 @@
 // Datagrams are forwarded untouched. The server never looks inside a game message.
 //
 // Wire format (shared with the client): "DSAH", type(1), source MAC(6), body length(2, LE), body.
-// Types 1-4 are the client-to-client packets; type 5 is client <-> server:
+// Types 1-4 and 6 are the client-to-client packets (6 = a fragment of a large message: the client splits what
+// does not fit one datagram, because IP fragments are dropped by many routers; the destination MAC leads its body
+// like a PDP packet); type 5 is client <-> server:
 //   client -> server  op 1 HELLO: room[32], cookie(8)      (cookie 0 asks for one)
 //                     op 4 BYE
 //   server -> client  op 2 CHALLENGE: cookie(8)
@@ -43,7 +45,7 @@ namespace {
 
 using Mac = std::array<uint8_t, 6>;
 constexpr size_t HDR = 13;
-constexpr uint8_t T_BEACON = 1, T_PDP = 2, T_MATCH = 3, T_PTP = 4, T_RELAY = 5;
+constexpr uint8_t T_BEACON = 1, T_PDP = 2, T_MATCH = 3, T_PTP = 4, T_RELAY = 5, T_FRAG = 6;
 constexpr uint8_t OP_HELLO = 1, OP_CHALLENGE = 2, OP_OK = 3, OP_BYE = 4;
 constexpr uint8_t VERSION = 1;
 constexpr size_t MAX_DATAGRAM = 16384;
@@ -249,7 +251,7 @@ void handle_packet(const uint8_t* d, size_t n, const sockaddr_in& from) {
         }
         return;
     }
-    if (type < T_BEACON || type > T_PTP) return;
+    if (type < T_BEACON || type > T_PTP) { if (type != T_FRAG) return; }
 
     auto it = g_clients.find(addr_key(from));
     if (it == g_clients.end() || it->second->mac != src) return;   // unregistered or spoofed MAC

@@ -68,7 +68,7 @@ constexpr uint8_t MO_HELLO = 1, MO_JOIN = 2, MO_ACCEPT = 3, MO_CANCEL = 4, MO_ES
                   MO_DATA = 7, MO_DATA_ACK = 8, MO_PING = 9;
 
 // ---- wire packet types ----
-constexpr uint8_t T_BEACON = 1, T_PDP = 2, T_MATCH = 3, T_PTP = 4, T_RELAY = 5;
+constexpr uint8_t T_BEACON = 1, T_PDP = 2, T_MATCH = 3, T_PTP = 4, T_RELAY = 5, T_FRAG = 6;
 constexpr uint8_t RO_HELLO = 1, RO_CHALLENGE = 2, RO_OK = 3, RO_BYE = 4;   // relay server ops (tools/adhoc_relay)
 constexpr uint8_t P_SYN = 1, P_SYNACK = 2, P_DATA = 3, P_ACK = 4, P_FIN = 5, P_RST = 6;
 
@@ -213,7 +213,7 @@ constexpr uint32_t SCRATCH_SIZE = 0x8000;
 std::atomic<bool> g_pumping{false};
 
 // ---- send ----
-void send_raw(const sockaddr_in& to, uint8_t type, const std::vector<uint8_t>& body) {
+void send_dgram(const sockaddr_in& to, uint8_t type, const std::vector<uint8_t>& body) {
     if (g_sock < 0) return;
     std::vector<uint8_t> p(HDR + body.size());
     p[0] = 'D'; p[1] = 'S'; p[2] = 'A'; p[3] = 'H';
@@ -223,6 +223,33 @@ void send_raw(const sockaddr_in& to, uint8_t type, const std::vector<uint8_t>& b
     std::memcpy(&p[11], &n, 2);
     if (!body.empty()) std::memcpy(&p[HDR], body.data(), body.size());
     (void)!sendto(g_sock, p.data(), p.size(), 0, (const sockaddr*)&to, sizeof to);
+}
+
+// A datagram larger than the path MTU is split by IP into fragments, and many routers (home NAT, a
+// hairpin) drop those. The game's lobby hello is 4.7 KB, so large messages are split here instead,
+// into pieces that fit one packet: T_FRAG = dst MAC(6), message id(4), index(1), count(1), original
+// type(1), then a chunk of the body. The relay routes a T_FRAG by its destination like a PDP packet.
+constexpr size_t MAX_SINGLE = 1300, FRAG_CHUNK = 1100, MAX_FRAGS = 16;
+uint32_t g_frag_id = 1;   // caller holds g_mu
+
+void send_raw(const sockaddr_in& to, uint8_t type, const std::vector<uint8_t>& body) {
+    if (HDR + body.size() <= MAX_SINGLE || type < T_PDP || type > T_PTP || body.size() < 6) {
+        send_dgram(to, type, body);
+        return;
+    }
+    const size_t count = (body.size() + FRAG_CHUNK - 1) / FRAG_CHUNK;
+    if (count > MAX_FRAGS) return;
+    const uint32_t id = g_frag_id++;
+    for (size_t i = 0; i < count; i++) {
+        const size_t off = i * FRAG_CHUNK, n = std::min(FRAG_CHUNK, body.size() - off);
+        std::vector<uint8_t> f;
+        f.reserve(13 + n);
+        f.insert(f.end(), body.begin(), body.begin() + 6);   // destination MAC (all of these types start with it)
+        for (int k = 0; k < 4; k++) f.push_back((id >> (8 * k)) & 0xff);
+        f.push_back((uint8_t)i); f.push_back((uint8_t)count); f.push_back(type);
+        f.insert(f.end(), body.begin() + off, body.begin() + off + n);
+        send_dgram(to, T_FRAG, f);
+    }
 }
 
 bool same_group_peer_known(const Mac& m) {   // caller holds g_mu
@@ -517,6 +544,47 @@ void handle_beacon(const Mac& src, const sockaddr_in& from, const uint8_t* body,
     if (fresh) ANOTE("peer %s (\"%s\") at %s:%u", mac_str(src).c_str(), p.nick, inet_ntoa(from.sin_addr), ntohs(from.sin_port));
 }
 
+struct Reasm {
+    uint8_t count = 0, type = 0;
+    uint32_t got = 0;
+    std::vector<std::vector<uint8_t>> parts;
+    int64_t first = 0;
+};
+std::map<std::pair<Mac, uint32_t>, Reasm> g_reasm;
+
+void dispatch_packet(uint8_t type, const Mac& src, const sockaddr_in& from, const uint8_t* body, size_t blen);
+
+void handle_frag(const Mac& src, const sockaddr_in& from, const uint8_t* body, size_t len) {
+    if (len < 6 + 4 + 1 + 1 + 1) return;
+    Mac dst; std::memcpy(dst.data(), body, 6);
+    if (dst != g_mac && !is_bcast(dst)) return;
+    const uint32_t id = get32(body + 6);
+    const uint8_t idx = body[10], count = body[11], type = body[12];
+    if (count == 0 || count > MAX_FRAGS || idx >= count || type < T_PDP || type > T_PTP) return;
+    if (g_reasm.size() > 64) return;   // bounded memory
+    Reasm& r = g_reasm[{src, id}];
+    if (r.count == 0) { r.count = count; r.type = type; r.parts.resize(count); r.first = now_us(); }
+    if (r.count != count || r.parts[idx].size()) return;
+    r.parts[idx].assign(body + 13, body + len);
+    if (r.parts[idx].empty()) return;
+    if (++r.got < r.count) return;
+    std::vector<uint8_t> whole;
+    for (auto& part : r.parts) whole.insert(whole.end(), part.begin(), part.end());
+    const uint8_t t = r.type;
+    g_reasm.erase({src, id});
+    dispatch_packet(t, src, from, whole.data(), whole.size());
+}
+
+void dispatch_packet(uint8_t type, const Mac& src, const sockaddr_in& from, const uint8_t* body, size_t blen) {
+    switch (type) {
+    case T_BEACON: handle_beacon(src, from, body, blen); break;
+    case T_PDP: handle_pdp(src, body, blen); break;
+    case T_MATCH: handle_match(src, body, blen); break;
+    case T_PTP: handle_ptp(src, body, blen); break;
+    case T_FRAG: handle_frag(src, from, body, blen); break;
+    }
+}
+
 void on_packet(const uint8_t* d, size_t n, const sockaddr_in& from) {
     if (n < HDR || std::memcmp(d, "DSAH", 4) != 0) return;
     uint16_t blen = get16(d + 11);
@@ -540,12 +608,7 @@ void on_packet(const uint8_t* d, size_t n, const sockaddr_in& from) {
             return;
         }
     } else if (d[4] == T_RELAY) return;
-    switch (d[4]) {
-    case T_BEACON: handle_beacon(src, from, body, blen); break;
-    case T_PDP: handle_pdp(src, body, blen); break;
-    case T_MATCH: handle_match(src, body, blen); break;
-    case T_PTP: handle_ptp(src, body, blen); break;
-    }
+    dispatch_packet(d[4], src, from, body, blen);
 }
 
 // ---- periodic work (network thread) ----
@@ -603,6 +666,8 @@ void periodic() {
         } else ++it;
     }
     if (g_scan_due && t >= g_scan_due) { g_scan_due = 0; queue_ctl(CTL_SCAN, 0); }
+    for (auto it = g_reasm.begin(); it != g_reasm.end();)   // drop half-received messages
+        if (t - it->second.first > 3000000) it = g_reasm.erase(it); else ++it;
     // matching timers
     for (auto& [id, m] : g_match) {
         if (!m.started) continue;
