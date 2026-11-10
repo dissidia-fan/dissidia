@@ -39,7 +39,7 @@
 
 In an ad-hoc session ([multiplayer.md](multiplayer.md)) the game runs at the lowest rate any player asked for, so a
 60 fps player and a 30 fps player both run at 30; the setting returns to normal when the session ends. Every player
-shares the wanted rate in their beacons; `frame_end_hook` in `runtime/framerate.cpp` applies the cap.
+shares the wanted rate in their beacons; `frame_end_hook` in `runtime/framerate.cpp` applies the cap. A toast (`ge_draw_toast`, top centre, 5 s) shows the agreed rate when it changes.
 
 ## What 60 fps means here
 

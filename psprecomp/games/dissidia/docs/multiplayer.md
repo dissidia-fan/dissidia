@@ -73,7 +73,7 @@ direct path; how much round-trip time the game tolerates has not been measured, 
 
 Every player's wanted frame rate (30 or 60, from the settings menu) is shared in the beacons. While a player is in a
 group with others, the game runs at the **lowest rate any of them asked for**, so a 60 fps player and a 30 fps player
-both run at 30. It returns to the player's own setting when the group ends. This logic is in
+both run at 30. It returns to the player's own setting when the group ends. A message at the top of the screen tells you the rate for five seconds ("Online: 30 fps (lowest player's setting)"), and again when the group ends. This logic is in
 `runtime/framerate.cpp` (`psp_adhoc_group_fps_cap()`).
 
 ## Options
@@ -105,7 +105,7 @@ The game uses four layers of the PSP network API; each is emulated:
 | Matching | `MatchingInit/Create/Start/Stop/Delete`, `SelectTarget/CancelTarget/SendData/SetHelloOpt` | the lobby state machine: hello, request, accept, established, leave, cancel, data and ping/timeout, as events on the game's callback |
 | PDP / PTP | `PdpCreate/Send/Recv`, `PtpListen/Open/Connect/Accept/Send/Recv/Flush/Close` | PDP is a datagram per call; PTP is a TCP-like reliable stream (connection ids, go-back-N retransmission, partial sends) |
 
-Transport: one UDP socket and one network thread. In LAN mode the socket takes the first free port from 27312 and sends to the LAN, loopback and listed peers; in Internet mode every packet goes to the relay server. Packets start with `DSAH`, a type, the sender's MAC and a body
+Messages larger than 1.3 KB (the lobby hello is 4.7 KB) are split into 1.1 KB `T_FRAG` packets and reassembled by the receiver, because IP-fragmented datagrams are dropped by many routers (a home router's loop-back NAT did exactly that). Transport: one UDP socket and one network thread. In LAN mode the socket takes the first free port from 27312 and sends to the LAN, loopback and listed peers; in Internet mode every packet goes to the relay server. Packets start with `DSAH`, a type, the sender's MAC and a body
 length. Types: beacon (nickname, group, wanted frame rate, known peers), PDP, matching, PTP. Beacons go out twice a
 second to the local ports, the LAN broadcast address and any listed peers; a peer is dropped after 4 s of silence.
 

@@ -2996,6 +2996,78 @@ static void perf_note_flip() {
     }
 }
 
+// Toast: a message box over the picture for a few seconds, same look as the performance overlay. The text
+// is rendered when it changes; each present is then one small blit.
+static std::mutex g_toast_mu;
+static std::string g_toast_text;
+static std::chrono::steady_clock::time_point g_toast_until{};
+static bool g_toast_dirty = false;
+
+void ge_draw_toast(const char* text, int ms) {
+    std::lock_guard<std::mutex> lk(g_toast_mu);
+    g_toast_text = text ? text : "";
+    g_toast_until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+    g_toast_dirty = true;
+}
+
+static void present_toast(const PresentRect& pr) {
+    std::string text;
+    bool dirty;
+    {
+        std::lock_guard<std::mutex> lk(g_toast_mu);
+        if (g_toast_text.empty() || std::chrono::steady_clock::now() >= g_toast_until) return;
+        text = g_toast_text;
+        dirty = g_toast_dirty;
+        g_toast_dirty = false;
+    }
+    static GLuint tex = 0, fbo = 0;
+    static int tw = 0, th = 0, tscale = 0, alloc_w = 0, alloc_h = 0;
+    static std::vector<uint32_t> px;
+    const int scale = psp_sddialog::output_scale();
+    if (dirty || scale != tscale || !tex) {
+        int w = 0, h = 0;
+        if (!psp_sddialog::render_hud_box(text, scale, px, &w, &h) || w <= 0 || h <= 0) return;
+        GLint prev_tex = 0, prev_align = 4, prev_row_len = 0;
+        glGetIntegerv(GL_TEXTURE_BINDING_2D, &prev_tex);
+        glGetIntegerv(GL_UNPACK_ALIGNMENT, &prev_align);
+        glGetIntegerv(GL_UNPACK_ROW_LENGTH, &prev_row_len);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+        if (!tex) {
+            glGenTextures(1, &tex);
+            glBindTexture(GL_TEXTURE_2D, tex);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glGenFramebuffers(1, &fbo);
+        }
+        glBindTexture(GL_TEXTURE_2D, tex);
+        if (w > alloc_w || h > alloc_h) {
+            alloc_w = std::max(w, alloc_w); alloc_h = std::max(h, alloc_h);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, alloc_w, alloc_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+            glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+        }
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+        glBindTexture(GL_TEXTURE_2D, GLuint(prev_tex));
+        glPixelStorei(GL_UNPACK_ALIGNMENT, prev_align);
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, prev_row_len);
+        tw = w; th = h; tscale = scale;
+    }
+    const float sx = float(pr.x1 - pr.x0) / 480.f, sy = float(std::abs(pr.y1 - pr.y0)) / 272.f;
+    const int top = std::max(pr.y0, pr.y1), left = std::min(pr.x0, pr.x1);
+    const int bw = int(std::lround(float(tw) / float(tscale) * sx));
+    const int x0 = left + (int(std::lround(480.f * sx)) - bw) / 2;     // centred
+    const int x1 = x0 + bw;
+    const int y_top = top - int(std::lround(10.f * sy));
+    const int y_bot = y_top - int(std::lround(float(th) / float(tscale) * sy));
+    const GLboolean sc = glIsEnabled(GL_SCISSOR_TEST);
+    if (sc) glDisable(GL_SCISSOR_TEST);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    glBlitFramebuffer(0, 0, tw, th, x0, y_top, x1, y_bot, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+    if (sc) glEnable(GL_SCISSOR_TEST);
+}
+
 static void present_perf_hud(const PresentRect& pr) {
     if (!g_perf_hud.load(std::memory_order_relaxed) || g_perf.text.empty()) return;
     static GLuint tex = 0, fbo = 0;
@@ -3123,7 +3195,7 @@ static void present_blit(GLuint fbo, const char* why = "flip") {
     glBlitFramebuffer(0, 0, 480 * g_rs, 272 * g_rs, pr.x0, pr.y0, pr.x1, pr.y1,
                       GL_COLOR_BUFFER_BIT, pf);
     if (!std::strcmp(why, "flip")) perf_note_flip();
-    if (std::strcmp(why, "menu") != 0) present_perf_hud(pr);
+    if (std::strcmp(why, "menu") != 0) { present_perf_hud(pr); present_toast(pr); }
     present_dialog_overlay(pr);
     present_service_window_capture();
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
