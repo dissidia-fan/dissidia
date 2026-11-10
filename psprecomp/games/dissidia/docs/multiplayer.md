@@ -12,7 +12,7 @@ part is the frame-rate rule in `runtime/framerate.cpp`.
 
 Open Communications mode in the menu and challenge a player as on a PSP. Nothing else needs turning on: the network
 layer starts the first time the game uses it. Players need the same game version and character set (do not mix a
-modded roster with an unmodded one). Both players need a free, unmodified settings page, or the same choices below.
+modded roster with an unmodded one).
 
 ### Internet (the default)
 
