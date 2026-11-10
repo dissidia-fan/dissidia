@@ -4,6 +4,7 @@
 #include "psp_event_loop.h"
 #include "psp_ge_draw.h"
 #include "hle/psp_savedata_dialog.h"
+#include "hle/psp_hle_adhoc.h"
 
 #include <SDL.h>
 #include <algorithm>
@@ -71,11 +72,14 @@ bool g_confirm_cross = true;
 PspFrameRateHook g_fps{nullptr, 0, nullptr, nullptr};
 
 enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_FPS, ROW_QUIT,
+           ROW_NET_MODE, ROW_NET_SERVER, ROW_NET_ROOM, ROW_NET_PEERS, ROW_NET_STATUS,   // Network page
            ROW_PERF, ROW_FX, ROW_SYNC, ROW_RING };   // the last four: Debug page
 std::vector<Row> g_rows;
 int g_sel = 0;
-int g_page = 0;                        // 0 System, 1 Debug (L / R shoulder, Q / E or Tab)
-int g_sel_page[2] = {0, 0};
+constexpr int PAGE_SYSTEM = 0, PAGE_NETWORK = 1, PAGE_DEBUG = 2, PAGES = 3;
+const char* const k_page_names[PAGES] = {"System", "Network", "Debug"};
+int g_page = 0;                        // L / R shoulder, Q / E or Tab: next page
+int g_sel_page[PAGES] = {0, 0, 0};
 int g_ring_next = -1;                  // vertex upload mode saved for the next launch (-1 = unchanged)
 bool g_quit_armed = false;
 bool g_dirty = true;
@@ -162,7 +166,97 @@ int fps_index() {
 }
 constexpr int k_max_rs = 4;
 
+// ---- Network page --------------------------------------------------------------------------------------
+constexpr const char* NET_DEFAULT_SERVER = "party.schindlershadow.com:27500";
+bool g_net_internet = true;
+std::string g_net_server = NET_DEFAULT_SERVER, g_net_room, g_net_peers, g_net_status;
+bool g_net_loaded = false;
+int64_t g_status_next = 0;
+
+// Text entry for the server / room / peers rows: a keyboard types directly; a controller picks a letter
+// (left / right), adds it (Cross) and deletes (Circle), as on a console.
+struct Edit {
+    bool active = false;
+    int field = 0;          // 0 server, 1 room, 2 peers
+    std::string buf;
+    int ci = 0;             // index into the letter list
+    int sel = 1;            // selected row of the editor
+} g_edit;
+const char* const k_edit_chars = "abcdefghijklmnopqrstuvwxyz0123456789.-_:,ABCDEFGHIJKLMNOPQRSTUVWXYZ ";
+constexpr int EDIT_ROWS = 5;   // text, letter, delete, done, cancel
+const char* edit_label() { return g_edit.field == 0 ? "Server" : g_edit.field == 1 ? "Room" : "Direct Peers"; }
+size_t edit_max() { return g_edit.field == 0 ? 63 : g_edit.field == 1 ? 31 : 127; }
+
+void net_load() {
+    if (g_net_loaded) return;
+    g_net_loaded = true;
+    const char* m = std::getenv("PSPRECOMP_ADHOC_MODE");
+    const char* sv = std::getenv("PSPRECOMP_ADHOC_SERVER");
+    const char* rm = std::getenv("PSPRECOMP_ADHOC_ROOM");
+    const char* pe = std::getenv("PSPRECOMP_ADHOC_PEERS");
+    if (m && *m) g_net_internet = !(m[0] == 'l' || m[0] == 'L');
+    else if (pe && *pe) g_net_internet = false;
+    if (sv && *sv) g_net_server = sv;
+    if (rm) g_net_room = rm;
+    if (pe) g_net_peers = pe;
+}
+void net_apply() {   // use and remember the Network page's values
+    psp_adhoc_configure(g_net_internet, g_net_server.c_str(), g_net_room.c_str(), g_net_peers.c_str());
+    save("net_mode", g_net_internet ? "internet" : "lan");
+    save("net_server", g_net_server);
+    save("net_room", g_net_room);
+    save("net_peers", g_net_peers);
+    g_status_next = 0;
+}
+std::string& edit_target() { return g_edit.field == 0 ? g_net_server : g_edit.field == 1 ? g_net_room : g_net_peers; }
+void edit_begin(int field) {
+    g_edit = Edit{};
+    g_edit.active = true;
+    g_edit.field = field;
+    g_edit.buf = edit_target();
+    SDL_StartTextInput();
+    g_dirty = true;
+}
+void edit_end() { g_edit.active = false; SDL_StopTextInput(); g_dirty = true; }
+void edit_commit() {
+    std::string v = g_edit.buf;
+    while (!v.empty() && v.back() == ' ') v.pop_back();
+    while (!v.empty() && v.front() == ' ') v.erase(v.begin());
+    if (g_edit.field == 0 && v.empty()) v = NET_DEFAULT_SERVER;
+    edit_target() = v;
+    edit_end();
+    net_apply();
+}
+void edit_append(char c) {
+    if (c < 0x20 || c > 0x7e || g_edit.buf.size() >= edit_max()) return;
+    g_edit.buf += c;
+    g_dirty = true;
+}
+void edit_backspace() { if (!g_edit.buf.empty()) { g_edit.buf.pop_back(); g_dirty = true; } }
+
+std::vector<psp_sddialog::MenuRow> make_edit_rows() {
+    std::vector<psp_sddialog::MenuRow> out(EDIT_ROWS);
+    std::string shown = g_edit.buf + "_";
+    if (shown.size() > 30) shown = "..." + shown.substr(shown.size() - 27);
+    out[0].label = edit_label();
+    out[0].value = shown;
+    out[0].help = std::string(edit_label()) + "\nType on a keyboard, or pick letters below. Enter or Done saves; Esc or Cancel keeps the old value.";
+    const char c = k_edit_chars[g_edit.ci];
+    out[1].label = "Letter";
+    out[1].value = c == ' ' ? "Space" : std::string(1, c);
+    out[1].can_dec = out[1].can_inc = true;
+    out[1].help = "Letter\nLeft / right choose a character, Cross adds it.";
+    out[2].label = "Delete";
+    out[2].help = "Delete\nRemoves the last character. Circle does the same.";
+    out[3].label = "Done";
+    out[3].help = "Done\nSaves the new value and uses it at once.";
+    out[4].label = "Cancel";
+    out[4].help = "Cancel\nKeeps the old value.";
+    return out;
+}
+
 std::vector<psp_sddialog::MenuRow> make_rows() {
+    if (g_edit.active) return make_edit_rows();
     std::vector<psp_sddialog::MenuRow> out;
     char buf[96];
     for (Row r : g_rows) {
@@ -219,6 +313,33 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             m.help = "Battle logic rate\n60 runs battles at 60 updates a second (twice the PSP's work). Menus stay at 30.";
             break;
         }
+        case ROW_NET_MODE:
+            m.label = "Network";
+            m.value = g_net_internet ? "Internet" : "LAN";
+            m.can_dec = !g_net_internet;
+            m.can_inc = g_net_internet;
+            m.help = "Network\nInternet: play with anyone through the party server (the default). LAN: find players on your own network, or at the addresses under Direct Peers. Saved.";
+            break;
+        case ROW_NET_SERVER:
+            m.label = "Server";
+            m.value = g_net_server;
+            m.help = "Party server\nThe relay server for Internet play: a host name, or host:port. Press Cross to edit. Saved.";
+            break;
+        case ROW_NET_ROOM:
+            m.label = "Room";
+            m.value = g_net_room.empty() ? "Public" : g_net_room;
+            m.help = "Room\nPlayers in the same room see each other. Leave it empty for the public room, or use a name only your friends know. Press Cross to edit. Saved.";
+            break;
+        case ROW_NET_PEERS:
+            m.label = "Direct Peers";
+            m.value = g_net_peers.empty() ? "None" : g_net_peers;
+            m.help = "Direct peers\nExtra addresses to contact directly, in addition to the local network: host or host:port, comma separated. Press Cross to edit. Saved.";
+            break;
+        case ROW_NET_STATUS:
+            m.label = "Status";
+            m.value = g_net_status.empty() ? "..." : g_net_status;
+            m.help = "Network status\nWhether the server answers and how many players are in your room (or nearby, on a LAN). Communications mode starts the connection.";
+            break;
         case ROW_QUIT:
             m.label = "Quit Game";
             m.value = g_quit_armed ? "Press again to quit" : "";
@@ -314,7 +435,17 @@ void apply_fps(int i) {
     save("fps", std::to_string(g_fps.rates[i]));
 }
 
+void build_rows();
+
 void change(int d) {   // left / right on the selected row
+    if (g_edit.active) {
+        if (g_edit.sel == 1) {
+            const int n = int(std::strlen(k_edit_chars));
+            g_edit.ci = (g_edit.ci + d + n) % n;
+            g_dirty = true;
+        }
+        return;
+    }
     if (g_sel < 0 || g_sel >= int(g_rows.size())) return;
     switch (g_rows[size_t(g_sel)]) {
     case ROW_DISPLAY:
@@ -349,6 +480,15 @@ void change(int d) {   // left / right on the selected row
         break;
     }
     case ROW_QUIT: break;
+    case ROW_NET_MODE:
+        if (g_net_internet != (d < 0)) {   // left: Internet, right: LAN
+            g_net_internet = d < 0;
+            net_apply();
+            g_sel_page[g_page] = g_sel;
+            build_rows();   // the rows differ: server and room, or direct peers
+        }
+        break;
+    case ROW_NET_SERVER: case ROW_NET_ROOM: case ROW_NET_PEERS: case ROW_NET_STATUS: break;
     case ROW_PERF:
         if ((d > 0) != ge_draw_perf_overlay()) {
             ge_draw_set_perf_overlay(d > 0);
@@ -377,7 +517,13 @@ void change(int d) {   // left / right on the selected row
 }
 
 void build_rows() {
-    if (g_page == 1) {
+    if (g_page == PAGE_NETWORK) {
+        net_load();
+        g_rows = {ROW_NET_MODE};
+        if (g_net_internet) { g_rows.push_back(ROW_NET_SERVER); g_rows.push_back(ROW_NET_ROOM); }
+        else g_rows.push_back(ROW_NET_PEERS);
+        g_rows.push_back(ROW_NET_STATUS);
+    } else if (g_page == PAGE_DEBUG) {
         g_rows = {ROW_PERF, ROW_FX, ROW_SYNC, ROW_RING};
     } else {
         g_rows = {ROW_DISPLAY, ROW_RES, ROW_SCALE};
@@ -389,7 +535,7 @@ void build_rows() {
 
 void switch_page() {
     g_sel_page[g_page] = g_sel;
-    g_page = 1 - g_page;
+    g_page = (g_page + 1) % PAGES;
     build_rows();
     g_quit_armed = false;
     g_dirty = true;
@@ -400,6 +546,7 @@ void set_open(bool open) {
     if (open) {
         build_res_options();
         pick_window_size();
+        net_load();
         build_rows();
         g_quit_armed = false;
         g_dirty = true;
@@ -408,6 +555,7 @@ void set_open(bool open) {
         std::fprintf(stderr, "[SETTINGS] menu open (game paused)\n");
     } else {
         g_sel_page[g_page] = g_sel;
+        if (g_edit.active) edit_end();
         g_open = false;
         g_wait_release = true;
         psp_sddialog::menu_overlay_clear();
@@ -417,6 +565,7 @@ void set_open(bool open) {
 }
 
 void move_sel(int d) {
+    if (g_edit.active) { g_edit.sel = (g_edit.sel + d + EDIT_ROWS) % EDIT_ROWS; g_dirty = true; return; }
     const int n = int(g_rows.size());
     if (!n) return;
     g_sel = (g_sel + d + n) % n;
@@ -425,6 +574,16 @@ void move_sel(int d) {
 }
 
 void confirm() {
+    if (g_edit.active) {
+        switch (g_edit.sel) {
+        case 1: edit_append(k_edit_chars[g_edit.ci]); break;
+        case 2: edit_backspace(); break;
+        case 3: edit_commit(); break;
+        case 4: edit_end(); break;
+        default: break;
+        }
+        return;
+    }
     if (g_sel < 0 || g_sel >= int(g_rows.size())) return;
     switch (g_rows[size_t(g_sel)]) {
     case ROW_QUIT:
@@ -451,6 +610,11 @@ void confirm() {
     case ROW_FPS:
         apply_fps((fps_index() + 1) % g_fps.count);
         break;
+    case ROW_NET_MODE: change(g_net_internet ? 1 : -1); return;
+    case ROW_NET_SERVER: edit_begin(0); return;
+    case ROW_NET_ROOM: edit_begin(1); return;
+    case ROW_NET_PEERS: edit_begin(2); return;
+    case ROW_NET_STATUS: break;
     case ROW_PERF: change(ge_draw_perf_overlay() ? -1 : 1); return;
     case ROW_FX: change(ge_draw_fx_shaders() ? -1 : 1); return;
     case ROW_SYNC: ge_draw_set_sync_mode((ge_draw_sync_mode() + 1) % 5); break;
@@ -523,6 +687,11 @@ void psp_settings_load_early() {
         put("PSPRECOMP_WINDOW", it->second);
         unsetenv("PSPRECOMP_SCALE");
     }
+    if ((it = g_saved.find("net_mode")) != g_saved.end() && (it->second == "internet" || it->second == "lan"))
+        put("PSPRECOMP_ADHOC_MODE", it->second);
+    if ((it = g_saved.find("net_server")) != g_saved.end() && !it->second.empty()) put("PSPRECOMP_ADHOC_SERVER", it->second);
+    if ((it = g_saved.find("net_room")) != g_saved.end()) put("PSPRECOMP_ADHOC_ROOM", it->second);
+    if ((it = g_saved.find("net_peers")) != g_saved.end()) put("PSPRECOMP_ADHOC_PEERS", it->second);
     if ((it = g_saved.find("perf_overlay")) != g_saved.end()) put("PSPRECOMP_PERF_HUD", it->second == "1" ? "1" : "0");
     if ((it = g_saved.find("ge_ring")) != g_saved.end() && (it->second == "map" || it->second == "sub"))
         put("PSPRECOMP_GE_RING", it->second);
@@ -538,10 +707,25 @@ bool psp_settings_handle_event(const SDL_Event& ev) {
     case SDL_KEYDOWN: {
         const SDL_Keycode k = ev.key.keysym.sym;
         if (k == SDLK_ESCAPE || k == SDLK_F1) {
+            if (open && g_edit.active) { if (!ev.key.repeat) edit_end(); return true; }   // cancel the edit only
             if (!ev.key.repeat) set_open(!open);
             return true;
         }
         if (!open) return false;
+        if (g_edit.active) {   // letters arrive as SDL_TEXTINPUT; only navigation keys act here
+            switch (k) {
+            case SDLK_UP: move_sel(-1); break;
+            case SDLK_DOWN: move_sel(1); break;
+            case SDLK_LEFT: change(-1); break;
+            case SDLK_RIGHT: change(1); break;
+            case SDLK_BACKSPACE: edit_backspace(); break;
+            case SDLK_RETURN: case SDLK_KP_ENTER:
+                if (!ev.key.repeat) { if (g_edit.sel == 1 || g_edit.sel == 2 || g_edit.sel == 4) confirm(); else edit_commit(); }
+                break;
+            default: break;
+            }
+            return false;
+        }
         switch (k) {
         case SDLK_UP: move_sel(-1); break;
         case SDLK_DOWN: move_sel(1); break;
@@ -577,11 +761,23 @@ bool psp_settings_handle_event(const SDL_Event& ev) {
         if (!open || !down) return false;
         const uint8_t ok = g_confirm_cross ? SDL_CONTROLLER_BUTTON_A : SDL_CONTROLLER_BUTTON_B;
         const uint8_t back = g_confirm_cross ? SDL_CONTROLLER_BUTTON_B : SDL_CONTROLLER_BUTTON_A;
+        if (g_edit.active) {   // Circle deletes (or cancels when empty), Start saves
+            if (b == ok) confirm();
+            else if (b == back) { if (g_edit.buf.empty()) edit_end(); else edit_backspace(); }
+            else if (b == SDL_CONTROLLER_BUTTON_START) edit_commit();
+            return false;
+        }
         if (b == ok) confirm();
         else if (b == back || b == SDL_CONTROLLER_BUTTON_START) set_open(false);
         else if (b == SDL_CONTROLLER_BUTTON_LEFTSHOULDER || b == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) switch_page();
         return false;
     }
+    case SDL_TEXTINPUT:
+        if (open && g_edit.active) {
+            for (const char* c = ev.text.text; *c; ++c) edit_append(*c);
+            return true;
+        }
+        return false;
     case SDL_CONTROLLERAXISMOTION:
         if (ev.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX) g_lx = ev.caxis.value;
         if (ev.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY) g_ly = ev.caxis.value;
@@ -609,11 +805,17 @@ void psp_settings_tick() {
     }
     const int scale = psp_sddialog::output_scale();
     const int64_t t = now_ms();
+    if (g_page == PAGE_NETWORK && !g_edit.active && t >= g_status_next) {   // keep the status line live
+        g_status_next = t + 500;
+        char st[128];
+        psp_adhoc_status(st, sizeof st);
+        if (g_net_status != st) { g_net_status = st; g_dirty = true; }
+    }
     if (g_dirty || scale != g_drawn_scale) {
         g_dirty = false;
         g_drawn_scale = scale;
         psp_sddialog::Canvas c(scale);
-        psp_sddialog::render_menu(c, "Settings", g_page ? "Debug" : "System", make_rows(), g_sel, g_confirm_cross);
+        psp_sddialog::render_menu(c, "Settings", k_page_names[g_page], make_rows(), g_edit.active ? g_edit.sel : g_sel, g_confirm_cross);
         psp_sddialog::menu_overlay_publish(c);
         ge_draw_present_overlay_now();
         g_last_present = t;

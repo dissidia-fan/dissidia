@@ -48,6 +48,10 @@ void ge_draw_set_fx_shaders(bool on);
 bool ge_draw_perf_overlay();
 void ge_draw_set_perf_overlay(bool on);
 
+/// A short message over the picture, top centre, for `ms` milliseconds (a new call replaces the old
+/// message). Any thread. Used for "frame rate set to 30 fps" when a multiplayer group agrees on one.
+void ge_draw_toast(const char* text, int ms);
+
 /// Present the last frame with the dialog/menu overlay now (game paused).
 /// Main (GL) thread.
 void ge_draw_present_overlay_now();

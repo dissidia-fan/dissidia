@@ -64,6 +64,10 @@ Gamepads work out of the box. Keyboard: arrows, X/Z/A/S for the face buttons, Q/
 
 Character mod folders in `mods/` are built and loaded every time the game starts. What each step does and every runtime option: [docs/native-build.md](psprecomp/games/dissidia/docs/native-build.md).
 
+## Multiplayer (experimental)
+
+Communications mode works over the internet instead of PSP ad-hoc WiFi. By default the game connects to a party server (`party.schindlershadow.com`), so there is nothing to forward: open Communications mode, and everyone in the same room appears in the lobby (the default is the public room; set a room name under Esc > Network to play with friends only). A LAN mode (players on one network, or listed by address) is on the same page. A full match has been played between two copies on one machine; it is untested with more than two players, on a real LAN between machines, and over the internet, and nothing here delays input, so high latency may make a match unplayable. In a session everyone runs at the lowest frame rate any player chose. Setup, options, the server and how it works: [docs/multiplayer.md](psprecomp/games/dissidia/docs/multiplayer.md).
+
 ## What is not in this repository
 No game data (bring your own ISO), no character mods (`mods/_template/` shows the layout), no texture packs (the loader works with the community packs credited below), no third-party mod ports, no game artwork.
 

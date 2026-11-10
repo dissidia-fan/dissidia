@@ -37,6 +37,8 @@
 #include "psp_settings.h"
 #include "recomp.h"
 #include "hle/psp_hle.h"
+#include "hle/psp_hle_adhoc.h"
+#include "psp_ge_draw.h"
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -122,11 +124,32 @@ void skel_build_hook(uint8_t* rdram, recomp_context* ctx) {
 
 void fx_log_window();
 
+// A multiplayer group agrees on a frame rate: tell the player (a few seconds, top centre), and again when it
+// changes or the group ends.
+void note_negotiated_rate(int cap) {
+    static int shown = 0;
+    if (cap == shown) return;
+    const int own = g_target.load(std::memory_order_relaxed);
+    char msg[96];
+    if (cap) {
+        std::snprintf(msg, sizeof msg, cap < own ? "Online: %d fps (lowest player's setting)" : "Online: %d fps (all players agree)", cap);
+    } else {
+        std::snprintf(msg, sizeof msg, "Online session ended: back to %d fps", own);
+    }
+    std::fprintf(stderr, "[FPS] negotiated frame rate %d (own setting %d)\n", cap, own);
+    ge_draw_toast(msg, 5000);
+    shown = cap;
+}
+
 void frame_end_hook(uint8_t* rdram, recomp_context* ctx) {
     const uint32_t timer = static_cast<uint32_t>(ctx->r[4]);
     g_tick++;
     if (ok(timer)) {
-        const bool want60 = g_target.load(std::memory_order_relaxed) == 60 && (g_scope_all || overlay_id() == 1);
+        // In an ad-hoc session every player runs at the lowest rate any of them asked for, so the
+        // lock-step battle stays in sync (psp_adhoc_group_fps_cap() is 0 when not connected).
+        const int cap = psp_adhoc_group_fps_cap();
+        note_negotiated_rate(cap);
+        const bool want60 = g_target.load(std::memory_order_relaxed) == 60 && cap != 30 && (g_scope_all || overlay_id() == 1);
         const int interval = want60 ? 1 : 2;
         if (r32(timer + 0x10u) != static_cast<uint32_t>(interval)) {
             w32(timer + 0x10u, static_cast<uint32_t>(interval));
@@ -342,6 +365,7 @@ int fps_get() { return g_target.load(); }
 void fps_set(int fps) {
     fps = fps == 60 ? 60 : 30;
     if (g_target.exchange(fps) != fps) std::fprintf(stderr, "[FPS] target frame rate %d\n", fps);
+    psp_adhoc_set_local_fps(fps);   // told to the other players
 }
 const int k_rates[] = {30, 60};
 
@@ -374,5 +398,6 @@ void dissidia_framerate_install(uint8_t* rdram) {
     if (g_log && (g_orig_skel = psp_dispatch_probe_lookup(SKEL_BUILD))) psp_dispatch_register(SKEL_BUILD, skel_build_hook);
     fx_install();
     psp_settings_set_frame_rate_hook({k_rates, 2, fps_get, fps_set});
+    psp_adhoc_set_local_fps(g_target.load());
     std::fprintf(stderr, "[FPS] frame rate %d (battle logic; scope %s)\n", g_target.load(), g_scope_all ? "all" : "battle");
 }

@@ -2,6 +2,7 @@
 #include <cstring>
 #include <string>
 #include "hle/psp_hle.h"
+#include "hle/psp_hle_adhoc.h"
 #include "hle/psp_hle_imports.h"
 #include "psp_scheduler.h"
 #include "recomp.h"
@@ -576,6 +577,7 @@ void psp_hle_register_all_modules() {
     psp_hle_register_power();
     psp_hle_register_ctrl();
     psp_hle_register_utility();
+    psp_hle_register_adhoc();  // overrides the no-op sceNet/sceWlan stubs above
     psp_hle_register_font();
 
     // SAS voice state machine (issue #29)

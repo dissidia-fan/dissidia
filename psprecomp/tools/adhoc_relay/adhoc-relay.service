@@ -1,0 +1,20 @@
+# systemd user service for the ad-hoc relay (install: cp to ~/.config/systemd/user/, then
+#   systemctl --user daemon-reload && systemctl --user enable --now adhoc-relay
+# and `loginctl enable-linger $USER` so it keeps running after you log out).
+[Unit]
+Description=Dissidia ad-hoc multiplayer relay (UDP 27500)
+After=network-online.target
+
+[Service]
+ExecStart=%h/.local/lib/adhoc_relay/adhoc_relay --port 27500
+Restart=always
+RestartSec=2
+# The relay needs no files and no privileges.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+MemoryMax=512M
+
+[Install]
+WantedBy=default.target

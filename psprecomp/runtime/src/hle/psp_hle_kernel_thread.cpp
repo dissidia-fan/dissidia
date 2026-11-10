@@ -1,6 +1,7 @@
 #include <atomic>
 #include "hle/psp_hle.h"
 #include "hle/psp_hle_kernel.h"
+#include "hle/psp_hle_adhoc.h"
 #include "hle/psp_hle_refer_info.h"
 #include "psp_scheduler.h"
 #include "psp_memory.h"
@@ -88,6 +89,9 @@ static uint64_t get_system_time_us() {
         std::chrono::duration_cast<std::chrono::microseconds>(
             now - g_time_base).count());
 }
+
+// Same clock as sceKernelGetSystemTimeWide (the ad-hoc layer stamps peers with it).
+uint64_t psp_system_time_us() { return get_system_time_us(); }
 
 // ---- HLE Functions ----
 
@@ -589,6 +593,7 @@ static void hle_sceKernelDeleteCallback(
 static void hle_sceKernelCheckCallback(
     uint8_t* rdram, recomp_context* ctx
 ) {
+    psp_adhoc_pump(rdram, ctx);  // ad-hoc handlers/callbacks queued by the network thread
     // Iterate callbacks looking for pending dispatch
     for (auto& [id, cb] : g_callbacks) {
         if (!cb.pending) {

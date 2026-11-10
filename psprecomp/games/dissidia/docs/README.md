@@ -8,6 +8,7 @@ Everything about the game itself, the native build and the modding tools, in one
 - [native-build.md](native-build.md): what each setup step does, the work folder, every runtime option (window, scaling, input, camera).
 - [loose-file-mods.md](loose-file-mods.md): how loose files replace `PACKAGE.BIN` entries, the model size budget, package index internals.
 - [texture-packs.md](texture-packs.md): HD texture replacement: dumping, upscaling, the built-in upscaler.
+- [multiplayer.md](multiplayer.md): Communications mode over UDP (LAN, one machine, internet), options, how the ad-hoc stack is emulated.
 - [frame-rate.md](frame-rate.md): native 60 fps battles (how the game paces itself, what was patched), and the in-game settings menu.
 
 ## Making characters
