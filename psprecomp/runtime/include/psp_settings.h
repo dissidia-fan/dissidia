@@ -8,6 +8,9 @@
 // path); on the next start the saved values win over PSPRECOMP_FULLSCREEN /
 // PSPRECOMP_SCALE / PSPRECOMP_WINDOW / PSPRECOMP_RENDER_SCALE / PSPRECOMP_FPS.
 //
+// Pages (L / R shoulder, Q / E or Tab): System (display, frame rate, quit), Network (LAN or
+// Internet, party server, room, direct peers - applied at once through psp_adhoc_configure), Debug.
+//
 // Open / close: Esc or F1 on the keyboard; Guide, or both stick buttons
 // (L3 + R3), on a game controller. PSPRECOMP_SETTINGS_MENU=0 disables it.
 #pragma once

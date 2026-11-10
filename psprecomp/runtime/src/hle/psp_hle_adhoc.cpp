@@ -36,6 +36,7 @@
 #include <functional>
 #include <map>
 #include <mutex>
+#include <random>
 #include <string>
 #include <thread>
 #include <vector>
@@ -67,7 +68,8 @@ constexpr uint8_t MO_HELLO = 1, MO_JOIN = 2, MO_ACCEPT = 3, MO_CANCEL = 4, MO_ES
                   MO_DATA = 7, MO_DATA_ACK = 8, MO_PING = 9;
 
 // ---- wire packet types ----
-constexpr uint8_t T_BEACON = 1, T_PDP = 2, T_MATCH = 3, T_PTP = 4;
+constexpr uint8_t T_BEACON = 1, T_PDP = 2, T_MATCH = 3, T_PTP = 4, T_RELAY = 5;
+constexpr uint8_t RO_HELLO = 1, RO_CHALLENGE = 2, RO_OK = 3, RO_BYE = 4;   // relay server ops (tools/adhoc_relay)
 constexpr uint8_t P_SYN = 1, P_SYNACK = 2, P_DATA = 3, P_ACK = 4, P_FIN = 5, P_RST = 6;
 
 using Mac = std::array<uint8_t, 6>;
@@ -170,6 +172,19 @@ char g_nick[32] = {0};
 std::thread g_thread;
 std::vector<sockaddr_in> g_extra_peers;
 std::map<Mac, Peer> g_peers;
+
+// ---- network mode: LAN (broadcast / loopback / listed peers) or Internet (relay server) ----
+constexpr const char* DEFAULT_SERVER = "party.schindlershadow.com:27500";
+std::once_flag g_cfg_once;
+bool g_relay_mode = true;                 // Internet
+std::string g_cfg_server = DEFAULT_SERVER, g_cfg_room, g_cfg_peers;
+sockaddr_in g_relay_addr{};
+bool g_relay_resolved = false, g_relay_resolve_failed = false, g_relay_ok = false;
+uint64_t g_relay_cookie = 0;
+int g_relay_players = 0;
+int64_t g_relay_hello_next = 0, g_relay_resolve_next = 0, g_relay_ok_at = 0, g_relay_resolved_at = 0;
+bool g_cfg_dirty = false;                 // set by psp_adhoc_configure; the network thread applies it
+std::string g_relay_host_shown;
 // Peers other players told us about (address -> give-up time). They are probed with beacons and, if
 // they answer, become normal peers. This builds a full mesh from a single configured address.
 std::map<uint64_t, int64_t> g_gossip;
@@ -210,8 +225,17 @@ void send_raw(const sockaddr_in& to, uint8_t type, const std::vector<uint8_t>& b
     (void)!sendto(g_sock, p.data(), p.size(), 0, (const sockaddr*)&to, sizeof to);
 }
 
+bool same_group_peer_known(const Mac& m) {   // caller holds g_mu
+    auto it = g_peers.find(m);
+    return it != g_peers.end() && it->second.in_group;
+}
+
 // Caller holds g_mu. Sends to one MAC (or, for broadcast, every peer in our group).
 void send_to_mac(const Mac& dst, uint8_t type, const std::vector<uint8_t>& body) {
+    if (g_relay_mode) {   // everything goes through the server, which fans broadcasts out itself
+        if (g_relay_ok && (is_bcast(dst) || same_group_peer_known(dst))) send_raw(g_relay_addr, type, body);
+        return;
+    }
     if (is_bcast(dst)) {
         for (auto& [m, p] : g_peers)
             if (p.in_group && g_connected && std::strncmp(p.group, g_group, 8) == 0)
@@ -476,7 +500,7 @@ void handle_beacon(const Mac& src, const sockaddr_in& from, const uint8_t* body,
     p.fps = body[41];
     p.last_seen = now_us();
     g_gossip.erase(addr_key(from));   // it answered: now a real peer
-    if (len >= 43) {
+    if (!g_relay_mode && len >= 43) {
         int n = body[42];
         for (int i = 0; i < n && 43 + (size_t)(i + 1) * 6 <= len; i++) {
             sockaddr_in a{}; a.sin_family = AF_INET;
@@ -501,6 +525,21 @@ void on_packet(const uint8_t* d, size_t n, const sockaddr_in& from) {
     if (src == g_mac) return;
     const uint8_t* body = d + HDR;
     std::lock_guard<std::mutex> lk(g_mu);
+    if (g_relay_mode) {   // Internet: only the relay server may talk to us
+        if (!g_relay_resolved || from.sin_addr.s_addr != g_relay_addr.sin_addr.s_addr || from.sin_port != g_relay_addr.sin_port) return;
+        if (d[4] == T_RELAY) {
+            if (blen < 1) return;
+            if (body[0] == RO_CHALLENGE && blen >= 9) {
+                std::memcpy(&g_relay_cookie, body + 1, 8);
+                g_relay_hello_next = 0;   // answer at once
+            } else if (body[0] == RO_OK && blen >= 3) {
+                if (!g_relay_ok) ANOTE("connected to %s", g_relay_host_shown.c_str());
+                g_relay_ok = true; g_relay_ok_at = now_us();
+                g_relay_players = get16(body + 1);
+            }
+            return;
+        }
+    } else if (d[4] == T_RELAY) return;
     switch (d[4]) {
     case T_BEACON: handle_beacon(src, from, body, blen); break;
     case T_PDP: handle_pdp(src, body, blen); break;
@@ -511,11 +550,17 @@ void on_packet(const uint8_t* d, size_t n, const sockaddr_in& from) {
 
 // ---- periodic work (network thread) ----
 void send_beacons() {
+    if (g_relay_mode && !g_relay_ok) return;
     std::vector<uint8_t> b(42, 0);
     std::memcpy(b.data(), g_nick, 31);
     std::memcpy(b.data() + 32, g_group, 8);
     b[40] = g_connected ? 1 : 0;
     b[41] = (uint8_t)g_local_fps;
+    if (g_relay_mode) {   // one copy to the server; it fans it out to the room
+        b.push_back(0);   // no gossip list
+        send_raw(g_relay_addr, T_BEACON, b);
+        return;
+    }
     // gossip: addresses of the peers we hear directly (so everyone learns everyone)
     {
         std::vector<uint8_t> list;
@@ -607,6 +652,9 @@ void periodic() {
     }
 }
 
+void apply_pending_config();
+void relay_service();
+
 void net_thread() {
     int64_t next_beacon = 0, next_tick = 0;
     uint8_t buf[65536];
@@ -627,12 +675,98 @@ void net_thread() {
             std::lock_guard<std::mutex> lk(g_mu);
             send_beacons();
         }
-        if (t >= next_tick) { next_tick = t + 10000; periodic(); }
+        if (t >= next_tick) { next_tick = t + 10000; apply_pending_config(); relay_service(); periodic(); }
     }
 }
 
-void parse_peers(const char* s) {
-    std::string str = s;
+void load_cfg_from_env() {
+    std::call_once(g_cfg_once, [] {
+        const char* m = std::getenv("PSPRECOMP_ADHOC_MODE");
+        const char* pe = std::getenv("PSPRECOMP_ADHOC_PEERS");
+        if (m && *m) g_relay_mode = !(m[0] == 'l' || m[0] == 'L');   // "lan" / "internet"
+        else if (pe && *pe) g_relay_mode = false;                    // listing peers means a direct (LAN) setup
+        if (const char* sv = std::getenv("PSPRECOMP_ADHOC_SERVER")) if (*sv) g_cfg_server = sv;
+        if (const char* r = std::getenv("PSPRECOMP_ADHOC_ROOM")) g_cfg_room = r;
+        if (pe) g_cfg_peers = pe;
+    });
+}
+
+std::vector<sockaddr_in> parse_peers_list(const std::string& str);
+
+// Network thread: applies a configuration change made from the settings menu.
+void apply_pending_config() {
+    std::string peers; bool relay;
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+        if (!g_cfg_dirty) return;
+        g_cfg_dirty = false;
+        peers = g_cfg_peers; relay = g_relay_mode;
+        if (g_relay_ok) {   // tell the old server we are leaving
+            std::vector<uint8_t> bye(1, RO_BYE);
+            send_raw(g_relay_addr, T_RELAY, bye);
+        }
+        g_peers.clear(); g_gossip.clear(); g_extra_peers.clear();
+        g_relay_resolved = g_relay_resolve_failed = g_relay_ok = false;
+        g_relay_cookie = 0; g_relay_players = 0; g_relay_hello_next = 0; g_relay_resolve_next = 0;
+        for (auto& [id, m] : g_match) m.peers.clear();
+        ANOTE("network: %s%s", relay ? "Internet via " : "LAN", relay ? g_cfg_server.c_str() : "");
+    }
+    std::vector<sockaddr_in> ps;
+    if (!relay && !peers.empty()) ps = parse_peers_list(peers);   // DNS lookups happen without the lock
+    std::lock_guard<std::mutex> lk(g_mu);
+    if (!g_relay_mode) g_extra_peers = ps;
+}
+
+// Network thread: keeps the registration with the relay server alive (resolve, hello, cookie).
+void relay_service() {
+    std::string server, room; bool need_resolve = false;
+    const int64_t t = now_us();
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+        if (!g_relay_mode) return;
+        server = g_cfg_server; room = g_cfg_room;
+        need_resolve = (!g_relay_resolved && t >= g_relay_resolve_next) ||
+                       (g_relay_resolved && t - g_relay_resolved_at > 300000000);
+    }
+    if (need_resolve) {
+        std::string host = server, port = "27500";
+        size_t c = server.rfind(':');
+        if (c != std::string::npos) { host = server.substr(0, c); port = server.substr(c + 1); }
+        addrinfo hints{}; hints.ai_family = AF_INET; hints.ai_socktype = SOCK_DGRAM;
+        addrinfo* res = nullptr;
+        int rc = getaddrinfo(host.c_str(), port.c_str(), &hints, &res);   // may block: no lock held
+        std::lock_guard<std::mutex> lk(g_mu);
+        if (rc == 0 && res) {
+            sockaddr_in a = *(sockaddr_in*)res->ai_addr;
+            if (!g_relay_resolved || a.sin_addr.s_addr != g_relay_addr.sin_addr.s_addr || a.sin_port != g_relay_addr.sin_port) {
+                g_relay_addr = a; g_relay_ok = false; g_relay_cookie = 0;
+                ANOTE("relay %s is %s:%u", host.c_str(), inet_ntoa(a.sin_addr), ntohs(a.sin_port));
+            }
+            g_relay_resolved = true; g_relay_resolve_failed = false;
+            g_relay_resolved_at = now_us();
+            g_relay_host_shown = host;
+        } else {
+            if (!g_relay_resolve_failed) ANOTE("cannot look up %s: %s", host.c_str(), gai_strerror(rc));
+            g_relay_resolve_failed = true;
+            g_relay_resolve_next = now_us() + 5000000;
+        }
+        if (res) freeaddrinfo(res);
+    }
+    std::lock_guard<std::mutex> lk(g_mu);
+    if (!g_relay_mode || !g_relay_resolved) return;
+    if (g_relay_ok && t - g_relay_ok_at > 5000000) { g_relay_ok = false; ANOTE("relay stopped answering"); }
+    if (t >= g_relay_hello_next) {
+        g_relay_hello_next = t + 1000000;
+        std::vector<uint8_t> h(1 + 32 + 8, 0);
+        h[0] = RO_HELLO;
+        std::memcpy(h.data() + 1, room.data(), std::min<size_t>(room.size(), 31));
+        std::memcpy(h.data() + 33, &g_relay_cookie, 8);
+        send_raw(g_relay_addr, T_RELAY, h);
+    }
+}
+
+std::vector<sockaddr_in> parse_peers_list(const std::string& str) {
+    std::vector<sockaddr_in> out;
     size_t pos = 0;
     while (pos < str.size()) {
         size_t e = str.find(',', pos);
@@ -653,10 +787,11 @@ void parse_peers(const char* s) {
         sockaddr_in a = *(sockaddr_in*)res->ai_addr;
         freeaddrinfo(res);
         a.sin_family = AF_INET;
-        if (port > 0) { a.sin_port = htons((uint16_t)port); g_extra_peers.push_back(a); }
-        else for (int i = 0; i < g_span; i++) { a.sin_port = htons((uint16_t)(g_base_port + i)); g_extra_peers.push_back(a); }
+        if (port > 0) { a.sin_port = htons((uint16_t)port); out.push_back(a); }
+        else for (int i = 0; i < g_span; i++) { a.sin_port = htons((uint16_t)(g_base_port + i)); out.push_back(a); }
         ANOTE("extra peer %s%s", host.c_str(), port > 0 ? "" : " (ports scan)");
     }
+    return out;
 }
 
 // Starts the socket and thread on first use. Returns false when networking is off or failed.
@@ -668,6 +803,7 @@ bool ensure_net() {
         const char* lg = std::getenv("PSPRECOMP_ADHOC_LOG");
         g_log = lg && lg[0] == '1';
         if (const char* bp = std::getenv("PSPRECOMP_ADHOC_PORT")) g_base_port = std::atoi(bp);
+        load_cfg_from_env();
         g_sock = socket(AF_INET, SOCK_DGRAM, 0);
         if (g_sock < 0) { ANOTE("socket() failed; ad-hoc networking off"); g_enabled = false; return; }
         int one = 1;
@@ -675,8 +811,13 @@ bool ensure_net() {
         if (const char* sp = std::getenv("PSPRECOMP_ADHOC_SPAN")) g_span = std::clamp(std::atoi(sp), 1, 64);
         for (int i = 0; i < g_span && !g_my_port; i++) {
             sockaddr_in a{}; a.sin_family = AF_INET; a.sin_addr.s_addr = htonl(INADDR_ANY);
-            a.sin_port = htons((uint16_t)(g_base_port + i));
-            if (bind(g_sock, (sockaddr*)&a, sizeof a) == 0) g_my_port = (uint16_t)(g_base_port + i);
+            // Internet mode needs no well-known port (all traffic goes to the server): let the OS pick.
+            a.sin_port = g_relay_mode ? 0 : htons((uint16_t)(g_base_port + i));
+            if (bind(g_sock, (sockaddr*)&a, sizeof a) == 0) {
+                sockaddr_in got{}; socklen_t gl = sizeof got;
+                getsockname(g_sock, (sockaddr*)&got, &gl);
+                g_my_port = ntohs(got.sin_port);
+            }
         }
         if (!g_my_port) { ANOTE("could not bind UDP ports %d-%d; ad-hoc networking off", g_base_port, g_base_port + g_span - 1); close(g_sock); g_sock = -1; g_enabled = false; return; }
 
@@ -685,17 +826,18 @@ bool ensure_net() {
         if (mc && std::sscanf(mc, "%x:%x:%x:%x:%x:%x", &m[0], &m[1], &m[2], &m[3], &m[4], &m[5]) == 6)
             for (int i = 0; i < 6; i++) g_mac[i] = (uint8_t)m[i];
         else {
-            char host[128] = {0}; gethostname(host, sizeof host - 1);
-            uint32_t h = 2166136261u;
-            for (const char* c = host; *c; c++) { h ^= (uint8_t)*c; h *= 16777619u; }
-            h ^= g_my_port * 2654435761u;
-            g_mac = Mac{0x02, 0x44, (uint8_t)(h >> 24), (uint8_t)(h >> 16), (uint8_t)(h >> 8), (uint8_t)h};
+            // A random locally administered MAC per launch. (A host-name hash collides: every Steam
+            // Deck is called "steamdeck", and two players with one MAC would kick each other off a relay.)
+            std::random_device rd;
+            uint32_t r1 = rd(), r2 = rd();
+            g_mac = Mac{0x02, (uint8_t)(r1 >> 24), (uint8_t)(r1 >> 16), (uint8_t)(r1 >> 8), (uint8_t)r1, (uint8_t)r2};
         }
         const char* nick = std::getenv("PSPRECOMP_ADHOC_NICK");
         std::snprintf(g_nick, sizeof g_nick, "%s", nick && *nick ? nick : "Player");
-        if (const char* pe = std::getenv("PSPRECOMP_ADHOC_PEERS")) parse_peers(pe);
+        g_cfg_dirty = true;   // the network thread resolves the server / peers
         g_net_ready = true;
-        ANOTE("ready: UDP %u, MAC %s, nick \"%s\"", g_my_port, mac_str(g_mac).c_str(), g_nick);
+        ANOTE("ready: UDP %u, MAC %s, nick \"%s\", %s", g_my_port, mac_str(g_mac).c_str(), g_nick,
+              g_relay_mode ? "Internet" : "LAN");
         g_thread = std::thread(net_thread);
         g_thread.detach();
     });
@@ -1308,6 +1450,31 @@ TRACED("AdhocctlDisconnect", h_CtlDisconnect)
 }  // namespace
 
 // ================= public =================
+void psp_adhoc_configure(bool internet, const char* server, const char* room, const char* peers) {
+    load_cfg_from_env();   // consume the environment first so it cannot overwrite what the menu sets
+    std::lock_guard<std::mutex> lk(g_mu);
+    g_relay_mode = internet;
+    g_cfg_server = (server && *server) ? server : DEFAULT_SERVER;
+    g_cfg_room = room ? room : "";
+    g_cfg_peers = peers ? peers : "";
+    g_cfg_dirty = true;
+}
+
+void psp_adhoc_status(char* out, size_t n) {
+    load_cfg_from_env();
+    std::lock_guard<std::mutex> lk(g_mu);
+    if (!g_enabled) { std::snprintf(out, n, "Off (PSPRECOMP_ADHOC=0)"); return; }
+    if (!g_net_ready) { std::snprintf(out, n, "Starts in Communications mode"); return; }
+    if (g_relay_mode) {
+        if (g_relay_resolve_failed) std::snprintf(out, n, "Cannot find %s", g_cfg_server.c_str());
+        else if (!g_relay_resolved) std::snprintf(out, n, "Looking up %s ...", g_cfg_server.c_str());
+        else if (!g_relay_ok) std::snprintf(out, n, "No answer from the server yet");
+        else std::snprintf(out, n, "Connected, %d online%s%s", g_relay_players, g_cfg_room.empty() ? "" : " in ", g_cfg_room.c_str());
+    } else {
+        std::snprintf(out, n, "LAN: %d nearby", (int)g_peers.size());
+    }
+}
+
 void psp_adhoc_set_local_fps(int fps) { std::lock_guard<std::mutex> lk(g_mu); g_local_fps = fps; }
 
 int psp_adhoc_group_fps_cap() {
